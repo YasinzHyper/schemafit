@@ -71,8 +71,11 @@ schemafit --format json tools/*.json
 # From stdin
 cat schema.json | schemafit -
 
-# List the rules
+# List the rules (rules --fix can rewrite are marked [--fix])
 schemafit rules --provider anthropic
+
+# Rewrite a schema for one provider
+schemafit --fix --provider openai tool.json --out tool.openai.json
 ```
 
 Files can hold a bare JSON Schema or a whole tool / response-format definition. `schemafit` finds the schema inside OpenAI tools (`function.parameters`), OpenAI `response_format`, Anthropic tools (`input_schema`), and MCP tools (`inputSchema`).
@@ -83,12 +86,42 @@ Files can hold a bare JSON Schema or a whole tool / response-format definition. 
 | `-f, --format <name>` | `pretty` (default) or `json` |
 | `-q, --quiet` | Report errors only |
 | `--max-warnings <n>` | Exit 1 when more than `n` warnings are found |
+| `--fix` | Rewrite the schema and write it out. One file, one provider |
+| `-o, --out <file>` | With `--fix`, write there instead of stdout |
 
 Exit codes: `0` compatible, `1` errors found, `2` bad usage or unreadable input. That makes it a one-line CI step:
 
 ```yaml
 - run: npx schemafit --provider openai,anthropic schemas/*.json
 ```
+
+### Fixing a schema
+
+Some findings have one obvious answer, and `--fix` applies it for you:
+
+```console
+$ schemafit --fix --provider openai examples/ticket.json --out ticket.openai.json
+
+examples/ticket.json
+
+  fixed  #/properties/reporter  openai/additional-properties-false
+         Set "additionalProperties": false.
+  fixed  #  openai/additional-properties-false
+         Set "additionalProperties": false.
+
+  OpenAI  ✖ 3 errors, 3 warnings
+  No automatic rewrite for these; the hint says what to change.
+    error  #  openai/all-required
+           Properties missing from "required": category, reporter, tags, replies.
+    ...
+```
+
+- One file and one provider at a time: providers disagree about what a schema should look like, so there is no single "fixed" schema.
+- The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works.
+- The wrapper is preserved. Fix an Anthropic tool definition and you get the tool definition back, with its `name` and `description` intact.
+- Findings with no automatic rewrite are left alone and listed. The exit code still reflects them.
+
+`schemafit rules` marks the rules that `--fix` can resolve; [docs/rules.md](docs/rules.md) lists them as **Fixable**.
 
 ### Generating the JSON from Zod or Pydantic
 
@@ -160,9 +193,22 @@ Each finding has `ruleId`, `provider`, `severity`, `path` (a JSON Pointer), `mes
 expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
 ```
 
+`fix` is the same thing the CLI's `--fix` runs. It never mutates its input:
+
+```ts
+import { fix } from "schemafit";
+
+const { schema: fixed, applied, findings } = fix(schema, { providers: ["openai"] });
+
+console.log(applied.map((item) => `${item.path}: ${item.title}`));
+console.log(`${findings.length} findings left to fix by hand`);
+```
+
+A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(subschema)`, so you can apply fixes selectively instead of all at once.
+
 ## Roadmap
 
-`--fix` (rewrite a schema for a target provider), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

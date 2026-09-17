@@ -15,6 +15,8 @@ const lines = [
   "- **error**: the provider documents the construct as unsupported, and the API rejects the schema.",
   "- **warn**: undocumented, ambiguous, or accepted-but-risky. The schema may work, silently lose the constraint, or be rejected.",
   "",
+  "Rules marked **fixable** are rewritten automatically by `schemafit --fix --provider <id> <file>`.",
+  "",
 ];
 
 for (const provider of Object.values(providers)) {
@@ -28,7 +30,9 @@ for (const provider of Object.values(providers)) {
   for (const rule of provider.rules) {
     lines.push(`### ${rule.id}`, "", rule.summary, "");
     if (rule.notes) lines.push(`> ${rule.notes}`, "");
-    lines.push(`- Severity: **${rule.severity}**`, `- Source: <${rule.source}>`, `- Last verified: ${rule.verified}`, "");
+    lines.push(`- Severity: **${rule.severity}**`);
+    if (rule.fixable) lines.push("- Fixable: **yes**, with `--fix`");
+    lines.push(`- Source: <${rule.source}>`, `- Last verified: ${rule.verified}`, "");
   }
 }
 
