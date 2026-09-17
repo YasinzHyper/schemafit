@@ -6,8 +6,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 
 ## 0.2: Fixes, not just findings
 
-- [ ] Fix infrastructure: rules may attach a `fix` (a pure function from schema to schema); `lint` exposes which findings are fixable; `schemafit --fix --provider <id>` writes the rewritten schema to stdout or `--out`
-- [ ] Fix for `*/additional-properties-false`: add `additionalProperties: false`
+- [x] Fix infrastructure: rules may attach a `fix` (a pure function from schema to schema); `lint` exposes which findings are fixable; `schemafit --fix --provider <id>` writes the rewritten schema to stdout or `--out`
+- [x] Fix for `*/additional-properties-false`: add `additionalProperties: false`
 - [ ] Fix for `openai/all-required`: add missing keys to `required` and make them nullable (`type` array or `anyOf` with `null`)
 - [ ] Fix for `openai/no-one-of`: rewrite `oneOf` to `anyOf`
 - [ ] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
@@ -16,6 +16,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
+- [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
 
 ## 0.3: More ways in
 

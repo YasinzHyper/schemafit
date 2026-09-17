@@ -17,6 +17,29 @@ export function displayPointer(pointer: string): string {
   return `#${pointer}`;
 }
 
+/**
+ * Replaces the value at `pointer` inside `root`, in place. Returns false when the pointer
+ * does not resolve. The root pointer (`""`) has no container to write into, so it fails.
+ */
+export function setPointer(root: unknown, pointer: string, value: unknown): boolean {
+  if (pointer === "" || !pointer.startsWith("/")) return false;
+
+  const tokens = pointer.slice(1).split("/").map(unescapeToken);
+  const last = tokens.pop() as string;
+  const container = resolvePointer(root, joinPointer("", ...tokens));
+
+  if (Array.isArray(container)) {
+    if (!/^\d+$/.test(last) || Number(last) >= container.length) return false;
+    container[Number(last)] = value;
+    return true;
+  }
+  if (typeof container === "object" && container !== null) {
+    (container as Record<string, unknown>)[last] = value;
+    return true;
+  }
+  return false;
+}
+
 export function resolvePointer(root: unknown, pointer: string): unknown {
   if (pointer === "") return root;
   if (!pointer.startsWith("/")) return undefined;

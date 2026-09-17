@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { PROVIDER_IDS, lint, providers, rules, unwrap } from "../src/index.js";
+import { joinPointer, resolvePointer } from "../src/pointer.js";
 
 const example = (name: string): unknown =>
   JSON.parse(readFileSync(new URL(`../examples/${name}`, import.meta.url), "utf8"));
@@ -52,11 +53,12 @@ describe("unwrap", () => {
     const result = unwrap(document);
     expect(result.schema).toBe(schema);
     expect(result.wrapper).toContain(label.split(" ")[0]);
+    expect(resolvePointer(document, joinPointer("", ...result.keys))).toBe(schema);
   });
 
   it("leaves bare schemas alone, even ones with properties named like wrappers", () => {
     const bare = { type: "object", properties: { name: { type: "string" }, schema: { type: "string" } } };
-    expect(unwrap(bare)).toEqual({ schema: bare, wrapper: null });
+    expect(unwrap(bare)).toEqual({ schema: bare, wrapper: null, keys: [] });
   });
 });
 

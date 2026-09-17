@@ -15,6 +15,17 @@ export interface SchemaNode {
   parentKeyword: string | null;
 }
 
+/**
+ * A rewrite that resolves one finding, applied by `fix()` and `schemafit --fix`.
+ * `rewrite` is pure: it returns the replacement for the subschema the finding points at
+ * and never mutates its argument.
+ */
+export interface SchemaFix {
+  /** What applying it does, in the imperative: `Set "additionalProperties": false.` */
+  title: string;
+  rewrite(schema: JsonSchema): JsonSchema;
+}
+
 export interface Finding {
   ruleId: string;
   provider: ProviderId;
@@ -24,6 +35,8 @@ export interface Finding {
   message: string;
   /** How to fix it. */
   hint?: string;
+  /** Present when the finding can be resolved automatically. */
+  fix?: SchemaFix;
   /** Official documentation this rule is derived from. */
   source: string;
 }
@@ -42,6 +55,8 @@ export interface RuleMeta {
   source: string;
   /** ISO date the rule was last checked against `source`. */
   verified: string;
+  /** True when every finding the rule reports carries a `fix`. */
+  fixable?: boolean;
   /** Caveats about how the rule interprets the documentation. */
   notes?: string;
 }
@@ -50,6 +65,7 @@ export interface Report {
   path: string;
   message: string;
   hint?: string;
+  fix?: SchemaFix;
 }
 
 export interface RuleContext {
@@ -85,6 +101,25 @@ export interface LintOptions {
 }
 
 export interface LintResult {
+  findings: Finding[];
+  summary: ProviderSummary[];
+}
+
+/** One fix that `fix()` applied, recorded where it was applied. */
+export interface AppliedFix {
+  ruleId: string;
+  provider: ProviderId;
+  /** JSON Pointer to the subschema that was rewritten, in the schema as it was then. */
+  path: string;
+  title: string;
+}
+
+export interface FixResult {
+  /** The rewritten schema. The input is never mutated. */
+  schema: JsonSchema;
+  /** Fixes applied, in the order they were applied. */
+  applied: AppliedFix[];
+  /** Findings that remain in `schema`. */
   findings: Finding[];
   summary: ProviderSummary[];
 }

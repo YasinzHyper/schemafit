@@ -7,6 +7,8 @@ Every rule is derived from the provider's official documentation and records the
 - **error**: the provider documents the construct as unsupported, and the API rejects the schema.
 - **warn**: undocumented, ambiguous, or accepted-but-risky. The schema may work, silently lose the constraint, or be rejected.
 
+Rules marked **fixable** are rewritten automatically by `schemafit --fix --provider <id> <file>`.
+
 ## OpenAI
 
 Models: Structured Outputs (strict: true)
@@ -46,6 +48,7 @@ Every key in "properties" must be listed in "required".
 Every object must set "additionalProperties": false.
 
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
 - Last verified: 2026-09-17
 
@@ -144,6 +147,7 @@ Models: Structured outputs (output_config.format and strict tool use)
 Every object must set "additionalProperties": false.
 
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
 - Last verified: 2026-09-17
 

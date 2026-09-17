@@ -1,3 +1,6 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli.js";
@@ -93,6 +96,63 @@ describe("cli", () => {
   it("exits 2 on invalid JSON and on non-object schemas", async () => {
     expect((await cli(["-"], "{nope")).code).toBe(2);
     expect((await cli(["-"], "true")).code).toBe(2);
+  });
+
+  it("--fix writes the rewritten schema to stdout and the changes to stderr", async () => {
+    const { code, stdout, stderr } = await cli(["--fix", "-p", "openai", "-"], '{"type":"object","properties":{}}');
+    expect(JSON.parse(stdout)).toEqual({ type: "object", properties: {}, additionalProperties: false });
+    expect(stderr).toContain("openai/additional-properties-false");
+    expect(stderr).toContain('Set "additionalProperties": false.');
+    expect(code).toBe(0);
+  });
+
+  it("--fix keeps the wrapper the schema came in", async () => {
+    const tool = JSON.stringify({ name: "f", input_schema: { type: "object", properties: {} } });
+    const { stdout } = await cli(["--fix", "-p", "anthropic", "-"], tool);
+    expect(JSON.parse(stdout)).toEqual({
+      name: "f",
+      input_schema: { type: "object", properties: {}, additionalProperties: false },
+    });
+  });
+
+  it("--fix exits 1 and lists what it could not fix", async () => {
+    const schema = '{"type":"object","properties":{"a":{"type":"string"}}}';
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "-"], schema);
+    expect(code).toBe(1);
+    expect(stderr).toContain("openai/all-required");
+    expect(stderr).toContain("No automatic rewrite");
+  });
+
+  it("--fix --out writes to a file", async () => {
+    const out = join(await mkdtemp(join(tmpdir(), "schemafit-")), "fixed.json");
+    const { code, stdout } = await cli(["--fix", "-p", "openai", "--out", out, "-"], '{"type":"object","properties":{}}');
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(JSON.parse(await readFile(out, "utf8"))).toMatchObject({ additionalProperties: false });
+  });
+
+  it("--fix says nothing to do for a schema that already fits", async () => {
+    const { code, stderr } = await cli(["--fix", "-p", "openai", example("ticket.portable.json")]);
+    expect(code).toBe(0);
+    expect(stderr).toContain("Nothing to fix");
+  });
+
+  it.each([
+    [["--fix", example("ticket.json")], "exactly one provider"],
+    [["--fix", "-p", "openai"], "exactly one file"],
+    [["--fix", "-p", "openai", "a.json", "b.json"], "exactly one file"],
+    [["--fix", "-p", "openai", "rules"], "rules subcommand"],
+    [["--out", "x.json", "a.json"], "--out only applies"],
+  ])("exits 2 on bad --fix usage: %j", async (args, message) => {
+    const { code, stderr } = await cli(args);
+    expect(code).toBe(2);
+    expect(stderr).toContain(message);
+  });
+
+  it("marks the fixable rules in the rule list", async () => {
+    const { stdout } = await cli(["rules", "-p", "openai"]);
+    expect(stdout).toMatch(/openai\/additional-properties-false.*\[--fix\]/);
+    expect(stdout).not.toMatch(/openai\/nesting-depth.*\[--fix\]/);
   });
 
   it("prints help and version", async () => {

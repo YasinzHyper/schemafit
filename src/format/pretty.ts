@@ -1,11 +1,19 @@
 import { displayPointer } from "../pointer.js";
 import { providers } from "../providers/index.js";
-import type { Finding, LintResult, ProviderSummary, RuleMeta } from "../types.js";
+import type { AppliedFix, Finding, LintResult, ProviderSummary, RuleMeta } from "../types.js";
 
 export interface FileReport {
   file: string;
   wrapper: string | null;
   result: LintResult;
+}
+
+export interface FixReport {
+  file: string;
+  wrapper: string | null;
+  applied: readonly AppliedFix[];
+  findings: readonly Finding[];
+  summary: readonly ProviderSummary[];
 }
 
 const CODES = { red: 31, green: 32, yellow: 33, cyan: 36, bold: 1, dim: 2 } as const;
@@ -58,13 +66,39 @@ export function formatPretty(reports: readonly FileReport[], options: { color: b
   return lines.join("\n");
 }
 
+/** The stderr report of `--fix`: what was rewritten, and what is left to do by hand. */
+export function formatFixed(report: FixReport, options: { color: boolean }): string {
+  const paint = painter(options.color);
+  const lines = [paint("bold", report.file) + (report.wrapper ? paint("dim", `  (${report.wrapper})`) : ""), ""];
+
+  if (report.applied.length === 0) {
+    lines.push(`  ${paint("dim", "Nothing to fix; the schema is unchanged.")}`);
+  }
+  for (const item of report.applied) {
+    lines.push(`  ${paint("green", "fixed")}  ${paint("bold", displayPointer(item.path))}  ${paint("dim", item.ruleId)}`);
+    lines.push(`         ${item.title}`);
+  }
+
+  for (const summary of report.summary) {
+    const name = providers[summary.provider].name;
+    const remaining = report.findings.filter((item) => item.provider === summary.provider);
+    lines.push("", `  ${name}  ${status(summary, paint)}`);
+    if (remaining.length > 0) lines.push(`  ${paint("dim", "No automatic rewrite for these; the hint says what to change.")}`);
+    for (const item of remaining) lines.push(...finding(item, paint));
+  }
+
+  lines.push("");
+  return lines.join("\n");
+}
+
 export function formatRules(rules: readonly RuleMeta[], options: { color: boolean }): string {
   const paint = painter(options.color);
   const width = Math.max(...rules.map((rule) => rule.id.length));
   return rules
     .map((rule) => {
       const label = rule.severity === "error" ? paint("red", "error") : paint("yellow", "warn ");
-      return `${rule.id.padEnd(width)}  ${label}  ${rule.summary}`;
+      const fixable = rule.fixable ? paint("green", " [--fix]") : "";
+      return `${rule.id.padEnd(width)}  ${label}  ${rule.summary}${fixable}`;
     })
     .join("\n");
 }

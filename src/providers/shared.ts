@@ -18,6 +18,7 @@ export function forEachKeyword(
 export function additionalPropertiesFalse(meta: RuleMeta): Rule {
   return {
     ...meta,
+    fixable: true,
     check(ctx) {
       for (const node of ctx.nodes) {
         if (!isObjectSchema(node.schema) || node.schema.additionalProperties === false) continue;
@@ -29,6 +30,10 @@ export function additionalPropertiesFalse(meta: RuleMeta): Rule {
               ? 'Object does not set "additionalProperties": false.'
               : '"additionalProperties" must be exactly false.',
           hint: 'Add "additionalProperties": false to this object.',
+          fix: {
+            title: 'Set "additionalProperties": false.',
+            rewrite: (schema) => ({ ...schema, additionalProperties: false }),
+          },
         });
       }
     },
