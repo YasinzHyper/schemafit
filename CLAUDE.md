@@ -39,5 +39,6 @@ This tool is only worth using if its claims are true. Non-negotiable:
 - Findings point at the subschema that must change, as a JSON Pointer.
 - Public API lives in `src/index.ts`; anything exported there is semver-relevant.
 - Every user-visible change gets a line under `## Unreleased` in `CHANGELOG.md`.
+- Branches are named after the change, `<type>/<short-description>` (`feat/sarif-output`, `fix/anthropic-format-list`), and land on `main` through a pull request.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`).
 - When a roadmap item is done, tick its checkbox in `ROADMAP.md` in the same change.

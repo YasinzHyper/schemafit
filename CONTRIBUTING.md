@@ -59,6 +59,7 @@ Then:
 ## Pull requests
 
 - One logical change per PR.
+- Name the branch after the change: `<type>/<short-description>`, for example `feat/sarif-output` or `fix/anthropic-format-list`.
 - Conventional Commit titles (`feat: ...`, `fix: ...`, `docs: ...`).
 - `npm run check` passes.
 
