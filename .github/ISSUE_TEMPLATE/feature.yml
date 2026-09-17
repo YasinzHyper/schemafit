@@ -1,0 +1,15 @@
+name: Feature or provider request
+description: A new provider, rule, input format, or integration.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Documentation links
+      description: For providers and rules, link the official docs that describe the schema subset.

@@ -1,0 +1,36 @@
+{
+  "title": "SupportTicket",
+  "description": "The same ticket, rewritten to be accepted by OpenAI, Anthropic, and Gemini alike.",
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "description": "3 to 120 characters." },
+    "priority": { "type": "integer", "description": "1 (lowest) to 5 (highest)." },
+    "category": { "type": "string", "enum": ["billing", "bug", "other"] },
+    "reporter": {
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "description": "Email address of the reporter." },
+        "website": { "type": ["string", "null"], "description": "Absolute URL, or null when unknown." }
+      },
+      "required": ["email", "website"],
+      "additionalProperties": false
+    },
+    "tags": { "type": "array", "items": { "type": "string" }, "description": "At most 5 unique tags." },
+    "replies": {
+      "type": "array",
+      "description": "Flat list of replies. parent_id links a reply to the reply it answers.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "parent_id": { "type": ["integer", "null"] },
+          "body": { "type": "string" }
+        },
+        "required": ["id", "parent_id", "body"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["title", "priority", "category", "reporter", "tags", "replies"],
+  "additionalProperties": false
+}

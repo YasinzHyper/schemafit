@@ -1,0 +1,14 @@
+{
+  "name": "get_weather",
+  "description": "Get the current weather for a location.",
+  "strict": true,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "location": { "type": "string" },
+      "days": { "type": "integer", "minimum": 1, "maximum": 14 }
+    },
+    "required": ["location"],
+    "additionalProperties": false
+  }
+}

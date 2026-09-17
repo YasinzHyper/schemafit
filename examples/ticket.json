@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SupportTicket",
+  "description": "A typical schema as emitted by Zod or Pydantic. It looks harmless and fails on every provider.",
+  "type": "object",
+  "properties": {
+    "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "category": { "enum": ["billing", "bug", "Bug", "other"] },
+    "reporter": {
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "website": { "type": "string", "format": "uri" }
+      },
+      "required": ["email"]
+    },
+    "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 5, "uniqueItems": true },
+    "replies": { "type": "array", "items": { "$ref": "#/$defs/reply" } }
+  },
+  "required": ["title", "priority"],
+  "$defs": {
+    "reply": {
+      "type": "object",
+      "properties": {
+        "body": { "type": "string" },
+        "replies": { "type": "array", "items": { "$ref": "#/$defs/reply" } }
+      },
+      "required": ["body", "replies"],
+      "additionalProperties": false
+    }
+  }
+}

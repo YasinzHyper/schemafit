@@ -1,0 +1,30 @@
+name: A rule is wrong or out of date
+description: schemafit flagged something a provider accepts, or missed something a provider rejects.
+labels: [accuracy]
+body:
+  - type: input
+    id: rule
+    attributes:
+      label: Rule id (if one exists)
+      placeholder: openai/unsupported-format
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options: [OpenAI, Anthropic, Gemini, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: schema
+    attributes:
+      label: Minimal schema
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What the provider actually did
+      description: The API response or error message, the model, and the date. A link to documentation is even better.
+    validations:
+      required: true

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "daily/**", "claude/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [20, 22, 24]
+        include:
+          - os: windows-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Smoke-test the built CLI
+        shell: bash
+        run: |
+          node dist/bin.js examples/ticket.portable.json
+          if node dist/bin.js --quiet examples/ticket.json; then
+            echo "expected a non-zero exit code" && exit 1
+          fi

@@ -1,0 +1,65 @@
+{
+  "name": "schemafit",
+  "version": "0.1.0",
+  "description": "Lint JSON Schemas against the structured-output rules of OpenAI, Anthropic, and Gemini — before the API rejects them.",
+  "keywords": [
+    "json-schema",
+    "structured-outputs",
+    "llm",
+    "openai",
+    "anthropic",
+    "claude",
+    "gemini",
+    "tool-calling",
+    "function-calling",
+    "mcp",
+    "linter",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Mohammed Yasin Zuhayr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YasinzHyper/schemafit.git"
+  },
+  "homepage": "https://github.com/YasinzHyper/schemafit#readme",
+  "bugs": {
+    "url": "https://github.com/YasinzHyper/schemafit/issues"
+  },
+  "type": "module",
+  "bin": {
+    "schemafit": "dist/bin.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "docs": "npm run build && node scripts/gen-rules-doc.mjs",
+    "docs:check": "npm run build && node scripts/gen-rules-doc.mjs --check",
+    "check": "npm run typecheck && npm run test && npm run docs:check",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
