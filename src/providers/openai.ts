@@ -51,22 +51,82 @@ const rootObject: Rule = {
   },
 };
 
+/**
+ * The same schema, also accepting null. This is how the docs keep a field optional
+ * under strict mode: "You can denote optional fields by adding `null` as a `type` option."
+ * A schema with nothing to extend — a bare `enum`, a `const`, an empty schema — is
+ * returned unchanged, because there is no documented way to make it nullable.
+ */
+function nullable(schema: JsonSchema): JsonSchema {
+  const types = typesOf(schema);
+  if (types.includes("null")) return schema;
+  if (types.length > 0) return { ...schema, type: [...types, "null"] };
+
+  if (Array.isArray(schema.anyOf)) {
+    const branches = schema.anyOf;
+    if (branches.some((branch) => isJsonSchema(branch) && typesOf(branch).includes("null"))) return schema;
+    return { ...schema, anyOf: [...branches, { type: "null" }] };
+  }
+
+  // A $ref cannot carry a type of its own, so the union goes around it.
+  if (typeof schema.$ref === "string") {
+    const { $ref, ...rest } = schema;
+    return { ...rest, anyOf: [{ $ref }, { type: "null" }] };
+  }
+
+  return schema;
+}
+
+/** The properties of `schema` that are not listed in its `required`, in declaration order. */
+function unrequired(schema: JsonSchema): string[] {
+  if (!isJsonSchema(schema.properties)) return [];
+  const listed = new Set(Array.isArray(schema.required) ? schema.required : []);
+  return Object.keys(schema.properties).filter((key) => !listed.has(key));
+}
+
 const allRequired: Rule = {
   ...meta("all-required", {
     severity: "error",
     summary: 'Every key in "properties" must be listed in "required".',
   }),
+  fixable: true,
   check(ctx) {
     for (const node of ctx.nodes) {
-      const { properties, required } = node.schema;
+      const properties = node.schema.properties;
       if (!isJsonSchema(properties)) continue;
-      const listed = new Set(Array.isArray(required) ? required : []);
-      const missing = Object.keys(properties).filter((key) => !listed.has(key));
+      const missing = unrequired(node.schema);
       if (missing.length === 0) continue;
+
+      // Naming the keys the fix can keep optional keeps its title true to what it does.
+      const nullified = missing.filter((key) => {
+        const property = properties[key];
+        return isJsonSchema(property) && nullable(property) !== property;
+      });
+
       ctx.report({
         path: node.path,
         message: `Properties missing from "required": ${missing.join(", ")}.`,
         hint: 'Add them to "required". To keep a field optional, make it nullable: "type": ["string", "null"].',
+        fix: {
+          title:
+            nullified.length > 0
+              ? `Add ${missing.join(", ")} to "required", and "null" to the type of ${nullified.join(", ")}.`
+              : `Add ${missing.join(", ")} to "required".`,
+          rewrite(schema) {
+            const current = schema.properties;
+            if (!isJsonSchema(current)) return schema;
+            const absent = unrequired(schema);
+            if (absent.length === 0) return schema;
+
+            const rewritten: JsonSchema = { ...current };
+            for (const key of absent) {
+              const property = current[key];
+              if (isJsonSchema(property)) rewritten[key] = nullable(property);
+            }
+            const listed = Array.isArray(schema.required) ? schema.required : [];
+            return { ...schema, properties: rewritten, required: [...listed, ...absent] };
+          },
+        },
       });
     }
   },

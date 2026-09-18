@@ -8,7 +8,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 
 - [x] Fix infrastructure: rules may attach a `fix` (a pure function from schema to schema); `lint` exposes which findings are fixable; `schemafit --fix --provider <id>` writes the rewritten schema to stdout or `--out`
 - [x] Fix for `*/additional-properties-false`: add `additionalProperties: false`
-- [ ] Fix for `openai/all-required`: add missing keys to `required` and make them nullable (`type` array or `anyOf` with `null`)
+- [x] Fix for `openai/all-required`: add missing keys to `required` and make them nullable (`type` array or `anyOf` with `null`)
+- [ ] Make a property nullable that has no `type` to extend: the fix for `openai/all-required` requires a bare `enum` or `const` property without making it nullable, because there is no documented spelling for that. Depends on `openai/nullable-enum` **(needs evidence)**
 - [ ] Fix for `openai/no-one-of`: rewrite `oneOf` to `anyOf`
 - [ ] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
 - [ ] Fix for `*/unsupported-format`: drop `format`, describe it in `description`

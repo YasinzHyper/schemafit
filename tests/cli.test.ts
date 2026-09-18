@@ -116,11 +116,24 @@ describe("cli", () => {
   });
 
   it("--fix exits 1 and lists what it could not fix", async () => {
-    const schema = '{"type":"object","properties":{"a":{"type":"string"}}}';
+    const schema = '{"type":"object","properties":{"a":{"oneOf":[{"type":"string"}]}},"required":["a"]}';
     const { code, stderr } = await cli(["--fix", "-p", "openai", "-"], schema);
     expect(code).toBe(1);
-    expect(stderr).toContain("openai/all-required");
+    expect(stderr).toContain("openai/no-one-of");
     expect(stderr).toContain("No automatic rewrite");
+  });
+
+  it("--fix requires the optional properties and makes them nullable", async () => {
+    const schema = '{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":false}';
+    const { code, stdout, stderr } = await cli(["--fix", "-p", "openai", "-"], schema);
+    expect(JSON.parse(stdout)).toEqual({
+      type: "object",
+      properties: { a: { type: ["string", "null"] } },
+      required: ["a"],
+      additionalProperties: false,
+    });
+    expect(stderr).toContain("openai/all-required");
+    expect(code).toBe(0);
   });
 
   it("--fix --out writes to a file", async () => {

@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `schemafit --fix --provider <id> <file>`: writes the rewritten schema to stdout or `--out <file>`, and reports what changed on stderr. The schema is put back into the tool or `response_format` wrapper it came from, so a fixed tool definition keeps its other fields.
 - `unwrap` now also returns `keys`, the path from the document to the schema, and `rewrap` puts a rewritten schema back there.
 - A fix for `openai/additional-properties-false` and `anthropic/additional-properties-false`: set `additionalProperties: false` on every object that does not.
+- A fix for `openai/all-required`: adds every property missing from `required` and makes it accept `null`, which is how the OpenAI docs keep a field optional under strict mode. A `type` gains `"null"`, an `anyOf` gains a `{ "type": "null" }` branch, and a `$ref` is wrapped in one. A property with no `type` to extend (a bare `enum` or `const`) is required as it is, and the reported fix title says which properties were made nullable.
 - `schemafit rules` marks fixable rules with `[--fix]`, and `docs/rules.md` records them as fixable.
 
 ## 0.1.0 - 2026-09-17

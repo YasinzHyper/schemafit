@@ -72,11 +72,92 @@ describe("fix", () => {
   });
 
   it("reports the findings it cannot fix and applies nothing for them", () => {
-    const result = fix({ type: "object", properties: { id: { type: "string" } } }, { providers: ["openai"] });
+    const result = fix(
+      {
+        type: "object",
+        properties: { id: { oneOf: [{ type: "string" }, { type: "integer" }] } },
+        required: ["id"],
+      },
+      { providers: ["openai"] },
+    );
     const remaining = result.findings.map((finding) => finding.ruleId);
-    expect(remaining).toContain("openai/all-required");
+    expect(remaining).toContain("openai/no-one-of");
     expect(remaining).not.toContain("openai/additional-properties-false");
     expect(result.summary[0]?.errors).toBe(remaining.length);
+  });
+
+  it("requires every property and keeps the missing ones optional with null", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          score: { type: ["integer", "string"] },
+          owner: { anyOf: [{ type: "string" }, { type: "integer" }] },
+          reply: { $ref: "#/$defs/reply", description: "The last reply." },
+        },
+        required: ["id"],
+        $defs: {
+          reply: { type: "object", properties: { body: { type: "string" } }, required: ["body"], additionalProperties: false },
+        },
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      id: { type: "string" },
+      score: { type: ["integer", "string", "null"] },
+      owner: { anyOf: [{ type: "string" }, { type: "integer" }, { type: "null" }] },
+      reply: { description: "The last reply.", anyOf: [{ $ref: "#/$defs/reply" }, { type: "null" }] },
+    });
+    expect(schema.required).toEqual(["id", "score", "owner", "reply"]);
+    expect(applied).toEqual([
+      {
+        ruleId: "openai/all-required",
+        provider: "openai",
+        path: "",
+        title: 'Add score, owner, reply to "required", and "null" to the type of score, owner, reply.',
+      },
+    ]);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves a property it cannot make nullable alone, and says so in the title", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: { kind: { enum: ["a", "b"] }, at: { type: ["string", "null"] } },
+        required: [],
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({ kind: { enum: ["a", "b"] }, at: { type: ["string", "null"] } });
+    expect(schema.required).toEqual(["kind", "at"]);
+    expect(applied[0]?.title).toBe('Add kind, at to "required".');
+  });
+
+  it("requires properties of nested objects and definitions too", () => {
+    const { schema } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: { user: { type: "object", properties: { name: { type: "string" } } } },
+        required: ["user"],
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      user: {
+        type: "object",
+        properties: { name: { type: ["string", "null"] } },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    });
   });
 
   it("does nothing to a schema that is already compatible", () => {
