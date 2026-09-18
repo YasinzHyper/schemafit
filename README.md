@@ -102,17 +102,21 @@ Some findings have one obvious answer, and `--fix` applies it for you:
 ```console
 $ schemafit --fix --provider openai examples/ticket.json --out ticket.openai.json
 
-examples/ticket.json
+ticket.openai.json
 
+  fixed  #/properties/reporter  openai/all-required
+         Add website to "required", and "null" to the type of website.
   fixed  #/properties/reporter  openai/additional-properties-false
          Set "additionalProperties": false.
+  fixed  #  openai/all-required
+         Add category, reporter, tags, replies to "required", and "null" to the type of reporter, tags, replies.
   fixed  #  openai/additional-properties-false
          Set "additionalProperties": false.
 
-  OpenAI  ✖ 3 errors, 3 warnings
+  OpenAI  ✖ 1 error, 3 warnings
   No automatic rewrite for these; the hint says what to change.
-    error  #  openai/all-required
-           Properties missing from "required": category, reporter, tags, replies.
+    error  #/properties/reporter/properties/website  openai/unsupported-format
+           String format "uri" is not one of the documented formats.
     ...
 ```
 
@@ -208,7 +212,7 @@ A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(s
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties` and `required`), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

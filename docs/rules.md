@@ -40,6 +40,7 @@ The root schema must be an object and must not use anyOf.
 Every key in "properties" must be listed in "required".
 
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
 - Last verified: 2026-09-17
 
