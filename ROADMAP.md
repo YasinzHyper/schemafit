@@ -80,7 +80,7 @@ Refinements to the existing providers. Small, and good first contributions.
 - [ ] `anthropic/property-order`: informational note that required properties are emitted before optional ones
 - [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**
 - [ ] `openai/root-ref`: root schema that is only a `$ref` **(needs evidence)**
-- [ ] `openai/nullable-enum`: an enum on a nullable type must include `null` **(needs evidence)**
+- [ ] `openai/nullable-enum`: an enum on a nullable type must include `null` **(needs evidence)**. The docs' own optional-parameter example is `{ "type": ["string", "null"], "enum": ["F", "C"] }`, which argues the enum does *not* have to list `null`; checked 2026-09-19
 - [ ] `gemini/nesting`: heuristic warning for "very large or deeply nested" schemas, with the threshold documented as a heuristic
 - [ ] `*/unresolved-ref`: a local `$ref` that points nowhere, for every provider
 - [ ] `*/empty-object`: an object with `additionalProperties: false` and no properties can only ever be `{}`

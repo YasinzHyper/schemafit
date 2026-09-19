@@ -4,7 +4,7 @@ import { children, isJsonSchema, isObjectSchema, typesOf } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
 
 const SOURCE = "https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas";
-const VERIFIED = "2026-09-17";
+const VERIFIED = "2026-09-19";
 
 const MAX_NESTING_LEVELS = 10;
 const MAX_TOTAL_PROPERTIES = 5000;
