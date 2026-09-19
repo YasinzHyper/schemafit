@@ -75,15 +75,58 @@ describe("fix", () => {
     const result = fix(
       {
         type: "object",
-        properties: { id: { oneOf: [{ type: "string" }, { type: "integer" }] } },
+        properties: { id: { allOf: [{ type: "string" }] } },
         required: ["id"],
       },
       { providers: ["openai"] },
     );
     const remaining = result.findings.map((finding) => finding.ruleId);
-    expect(remaining).toContain("openai/no-one-of");
+    expect(remaining).toContain("openai/unsupported-composition");
     expect(remaining).not.toContain("openai/additional-properties-false");
     expect(result.summary[0]?.errors).toBe(remaining.length);
+  });
+
+  it("renames oneOf to anyOf, at every depth and in place", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["id"],
+        properties: {
+          id: {
+            description: "A string or a number.",
+            oneOf: [{ type: "string" }, { oneOf: [{ type: "integer" }, { type: "number" }] }],
+            title: "Id",
+          },
+        },
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      id: {
+        description: "A string or a number.",
+        anyOf: [{ type: "string" }, { anyOf: [{ type: "integer" }, { type: "number" }] }],
+        title: "Id",
+      },
+    });
+    // The rename keeps the keyword where it was, so the schema still reads in its original order.
+    expect(Object.keys(resolvePointer(schema, "/properties/id") as object)).toEqual(["description", "anyOf", "title"]);
+    expect(applied.map((item) => item.path)).toEqual(["/properties/id/oneOf/1", "/properties/id"]);
+    expect(applied[0]?.title).toBe('Rename "oneOf" to "anyOf".');
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves a oneOf that sits next to an anyOf for a human", () => {
+    const union = { anyOf: [{ type: "string" }], oneOf: [{ type: "integer" }] };
+    const result = fix(
+      { type: "object", additionalProperties: false, required: ["id"], properties: { id: union } },
+      { providers: ["openai"] },
+    );
+
+    expect(result.schema.properties).toEqual({ id: union });
+    expect(result.applied).toEqual([]);
+    expect(result.findings.map((finding) => finding.ruleId)).toEqual(["openai/no-one-of"]);
   });
 
   it("requires every property and keeps the missing ones optional with null", () => {

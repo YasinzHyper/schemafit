@@ -212,7 +212,7 @@ A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(s
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties` and `required`), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, and `oneOf`), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

@@ -147,16 +147,44 @@ const unsupportedComposition = forbiddenKeywords(
   }),
 );
 
+/**
+ * The same schema with its `oneOf` renamed to `anyOf`, keeping the branches and the
+ * position of the keyword. Returns null when there is nothing safe to rename: a `oneOf`
+ * that is not a list of branches, or a schema that already has an `anyOf`, which would
+ * be overwritten.
+ */
+function oneOfAsAnyOf(schema: JsonSchema): JsonSchema | null {
+  if (!Array.isArray(schema.oneOf) || "anyOf" in schema) return null;
+  const rewritten: JsonSchema = {};
+  for (const [keyword, value] of Object.entries(schema)) {
+    if (keyword === "oneOf") rewritten.anyOf = value;
+    else rewritten[keyword] = value;
+  }
+  return rewritten;
+}
+
 const noOneOf = forbiddenKeywords(
   meta("no-one-of", {
     severity: "error",
     summary: 'Unions must use "anyOf"; "oneOf" is not supported.',
-    notes: 'The documentation lists "anyOf" as the only supported union keyword.',
+    notes:
+      'The documentation lists "anyOf" as the only supported union keyword. The fix renames "oneOf" to "anyOf", ' +
+      "which widens the union from exactly one matching branch to at least one; make the branches mutually " +
+      'exclusive if that matters. A schema that already has an "anyOf" of its own is left to be merged by hand.',
+    fixable: true,
   }),
   ["oneOf"],
-  () => ({
+  (_keyword, node) => ({
     message: '"oneOf" is not supported.',
     hint: 'Replace "oneOf" with "anyOf".',
+    ...(oneOfAsAnyOf(node.schema)
+      ? {
+          fix: {
+            title: 'Rename "oneOf" to "anyOf".',
+            rewrite: (schema: JsonSchema) => oneOfAsAnyOf(schema) ?? schema,
+          },
+        }
+      : {}),
   }),
 );
 

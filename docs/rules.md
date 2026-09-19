@@ -65,9 +65,10 @@ allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supp
 
 Unions must use "anyOf"; "oneOf" is not supported.
 
-> The documentation lists "anyOf" as the only supported union keyword.
+> The documentation lists "anyOf" as the only supported union keyword. The fix renames "oneOf" to "anyOf", which widens the union from exactly one matching branch to at least one; make the branches mutually exclusive if that matters. A schema that already has an "anyOf" of its own is left to be merged by hand.
 
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
 - Last verified: 2026-09-17
 
