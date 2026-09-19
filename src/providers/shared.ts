@@ -1,4 +1,4 @@
-import type { Rule, RuleContext, RuleMeta, SchemaNode } from "../types.js";
+import type { Report, Rule, RuleContext, RuleMeta, SchemaNode } from "../types.js";
 import { isObjectSchema } from "../walk.js";
 
 /** Calls `visit` for every node that uses one of `keywords`, once per keyword used. */
@@ -58,17 +58,20 @@ export function allowedFormats(meta: RuleMeta, allowed: readonly string[]): Rule
   };
 }
 
-/** Rule: none of `keywords` may appear. */
+/**
+ * Rule: none of `keywords` may appear. `describe` receives the node as well, so a rule
+ * can attach a `fix` only to the occurrences it knows how to rewrite.
+ */
 export function forbiddenKeywords(
   meta: RuleMeta,
   keywords: readonly string[],
-  describe: (keyword: string) => { message: string; hint?: string },
+  describe: (keyword: string, node: SchemaNode) => Omit<Report, "path">,
 ): Rule {
   return {
     ...meta,
     check(ctx) {
       forEachKeyword(ctx, keywords, (node, keyword) => {
-        ctx.report({ path: node.path, ...describe(keyword) });
+        ctx.report({ path: node.path, ...describe(keyword, node) });
       });
     },
   };

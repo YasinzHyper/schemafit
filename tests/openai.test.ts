@@ -78,6 +78,16 @@ describe("openai", () => {
     const [finding] = findingsFor("openai", schema);
     expect(finding?.ruleId).toBe("openai/no-one-of");
     expect(finding?.hint).toContain("anyOf");
+    expect(finding?.fix?.title).toBe('Rename "oneOf" to "anyOf".');
+  });
+
+  it("no-one-of offers no fix when the schema already has an anyOf", () => {
+    const schema = strictObject({
+      value: { anyOf: [{ type: "string" }], oneOf: [{ type: "number" }] },
+    });
+    const [finding] = findingsFor("openai", schema);
+    expect(finding?.ruleId).toBe("openai/no-one-of");
+    expect(finding?.fix).toBeUndefined();
   });
 
   it("unsupported-format rejects formats outside the documented list", () => {

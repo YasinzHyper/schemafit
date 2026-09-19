@@ -55,7 +55,10 @@ export interface RuleMeta {
   source: string;
   /** ISO date the rule was last checked against `source`. */
   verified: string;
-  /** True when every finding the rule reports carries a `fix`. */
+  /**
+   * True when the rule attaches a `fix` to the findings it can rewrite safely.
+   * A rule may still report a finding without one; `notes` says when.
+   */
   fixable?: boolean;
   /** Caveats about how the rule interprets the documentation. */
   notes?: string;
