@@ -11,7 +11,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fix for `openai/all-required`: add missing keys to `required` and make them nullable (`type` array or `anyOf` with `null`)
 - [ ] Make a property nullable that has no `type` to extend: the fix for `openai/all-required` requires a bare `enum` or `const` property without making it nullable, because there is no documented spelling for that. Depends on `openai/nullable-enum` **(needs evidence)**
 - [x] Fix for `openai/no-one-of`: rewrite `oneOf` to `anyOf`
-- [ ] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
+- [x] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
 - [ ] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
 - [ ] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
 - [ ] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
