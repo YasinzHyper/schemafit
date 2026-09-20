@@ -1,5 +1,5 @@
 import { findRecursiveRefs, isLocalRef } from "../refs.js";
-import type { Provider, Rule, RuleMeta } from "../types.js";
+import type { JsonSchema, Provider, Rule, RuleMeta, SchemaFix } from "../types.js";
 import { isJsonSchema } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
 
@@ -7,7 +7,8 @@ const DOCS = "https://platform.claude.com/docs/en/build-with-claude/structured-o
 const LIMITATIONS = `${DOCS}#json-schema-limitations`;
 const COMPLEXITY = `${DOCS}#schema-complexity-limits`;
 const INVALID_OUTPUTS = `${DOCS}#invalid-outputs`;
-const VERIFIED = "2026-09-17";
+const SDK_TRANSFORM = `${DOCS}#how-sdk-transformation-works`;
+const VERIFIED = "2026-09-20";
 
 const MAX_OPTIONAL_PARAMETERS = 24;
 const MAX_UNION_PARAMETERS = 16;
@@ -86,15 +87,107 @@ const enumPrimitives: Rule = {
   },
 };
 
+function count(value: number, noun: string): string {
+  return `${value} ${noun}${value === 1 ? "" : "s"}`;
+}
+
+/**
+ * What a dropped constraint becomes in `description`, phrased after the docs' own
+ * example: a field with `minimum: 100` keeps the description "Must be at least 100".
+ * The empty string means the keyword carries no constraint worth describing; null means
+ * the value is not one this can phrase, so the finding is reported without a fix rather
+ * than with a sentence that does not say what the schema meant.
+ */
+function constraintNote(keyword: string, value: unknown): string | null {
+  // "uniqueItems": false allows what every array already allows.
+  if (keyword === "uniqueItems") return value === true ? "Items must be unique." : value === false ? "" : null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+
+  switch (keyword) {
+    case "minimum":
+      return `Must be at least ${value}.`;
+    case "maximum":
+      return `Must be at most ${value}.`;
+    case "exclusiveMinimum":
+      return `Must be greater than ${value}.`;
+    case "exclusiveMaximum":
+      return `Must be less than ${value}.`;
+    case "multipleOf":
+      return `Must be a multiple of ${value}.`;
+    case "minLength":
+      return `Must be at least ${count(value, "character")} long.`;
+    case "maxLength":
+      return `Must be at most ${count(value, "character")} long.`;
+    case "minItems":
+      return `Must have at least ${count(value, "item")}.`;
+    case "maxItems":
+      return `Must have at most ${count(value, "item")}.`;
+    default:
+      return null;
+  }
+}
+
+/** `schema` with `note` added as the last sentence of its description. */
+function withNote(schema: JsonSchema, note: string): JsonSchema {
+  const existing = typeof schema.description === "string" ? schema.description.trim() : "";
+  return { ...schema, description: existing.length > 0 ? `${existing} ${note}` : note };
+}
+
+/**
+ * The rewrite the Anthropic SDKs apply to an unsupported constraint: remove the keyword
+ * and state what it required in `description`. `keep` is a value the docs do support to
+ * set the keyword to instead of removing it, which only `minItems` has. Returns null when
+ * the constraint cannot be phrased, and the finding then carries no fix.
+ */
+function moveToDescription(keyword: string, schema: JsonSchema, keep?: number): SchemaFix | null {
+  const note = constraintNote(keyword, schema[keyword]);
+  if (note === null) return null;
+
+  const title =
+    note === ""
+      ? `Remove "${keyword}".`
+      : keep === undefined
+        ? `Remove "${keyword}" and state it in "description".`
+        : `Lower "${keyword}" to ${keep} and state the real minimum in "description".`;
+
+  return {
+    title,
+    rewrite(current) {
+      // The node may have been rewritten since the finding was reported.
+      if (constraintNote(keyword, current[keyword]) !== note) return current;
+      const rewritten: JsonSchema = {};
+      for (const [key, value] of Object.entries(current)) {
+        if (key !== keyword) rewritten[key] = value;
+        else if (keep !== undefined) rewritten[key] = keep;
+      }
+      return note === "" ? rewritten : withNote(rewritten, note);
+    },
+  };
+}
+
+/** Spreads into a report, so `fix` is absent rather than undefined when there is none. */
+function optionalFix(fix: SchemaFix | null): { fix?: SchemaFix } {
+  return fix === null ? {} : { fix };
+}
+
+const MOVES_TO_DESCRIPTION =
+  "The fix is the one the Anthropic SDKs apply when they transform a schema: remove the keyword and state the " +
+  'constraint in "description", the way a field with "minimum": 100 keeps the description "Must be at least 100". ' +
+  "The constraint then only holds as far as the model honours it, so keep validating the response against your " +
+  `original schema. The transformation is documented at ${SDK_TRANSFORM}.`;
+
 const noNumericConstraints = forbiddenKeywords(
   meta("no-numeric-constraints", {
     severity: "error",
     summary: "Numerical constraints (minimum, maximum, multipleOf, ...) are not supported.",
+    fixable: true,
+    notes: MOVES_TO_DESCRIPTION,
   }),
   ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"],
-  (keyword) => ({
+  (keyword, node) => ({
     message: `Numerical constraint "${keyword}" is not supported.`,
     hint: `Remove "${keyword}", state the range in "description", and validate the value in your code.`,
+    ...optionalFix(moveToDescription(keyword, node.schema)),
   }),
 );
 
@@ -102,11 +195,14 @@ const noStringLength = forbiddenKeywords(
   meta("no-string-length", {
     severity: "error",
     summary: "String length constraints (minLength, maxLength) are not supported.",
+    fixable: true,
+    notes: MOVES_TO_DESCRIPTION,
   }),
   ["minLength", "maxLength"],
-  (keyword) => ({
+  (keyword, node) => ({
     message: `String constraint "${keyword}" is not supported.`,
     hint: `Remove "${keyword}", state the limit in "description", and validate the value in your code.`,
+    ...optionalFix(moveToDescription(keyword, node.schema)),
   }),
 );
 
@@ -114,6 +210,8 @@ const arrayConstraints: Rule = {
   ...meta("array-constraints", {
     severity: "error",
     summary: 'The only supported array constraint is "minItems" of 0 or 1.',
+    fixable: true,
+    notes: `${MOVES_TO_DESCRIPTION} "minItems" is lowered to 1 instead of being removed, because 0 and 1 are supported.`,
   }),
   check(ctx) {
     for (const node of ctx.nodes) {
@@ -123,6 +221,10 @@ const arrayConstraints: Rule = {
           path: node.path,
           message: `"minItems": ${JSON.stringify(minItems)} is not supported; only 0 and 1 are.`,
           hint: 'Use "minItems": 1 and state the real minimum in "description".',
+          // Only a minimum above 1 can be lowered to 1; anything else would loosen the schema.
+          ...optionalFix(
+            typeof minItems === "number" && minItems > 1 ? moveToDescription("minItems", node.schema, 1) : null,
+          ),
         });
       }
       for (const keyword of ["maxItems", "uniqueItems"]) {
@@ -131,6 +233,7 @@ const arrayConstraints: Rule = {
             path: node.path,
             message: `Array constraint "${keyword}" is not supported.`,
             hint: `Remove "${keyword}", state the constraint in "description", and validate in your code.`,
+            ...optionalFix(moveToDescription(keyword, node.schema)),
           });
         }
       }

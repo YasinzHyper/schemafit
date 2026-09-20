@@ -13,7 +13,12 @@ All notable changes to this project are documented here. The format follows [Kee
 - A fix for `openai/additional-properties-false` and `anthropic/additional-properties-false`: set `additionalProperties: false` on every object that does not.
 - A fix for `openai/all-required`: adds every property missing from `required` and makes it accept `null`, which is how the OpenAI docs keep a field optional under strict mode. A `type` gains `"null"`, an `anyOf` gains a `{ "type": "null" }` branch, and a `$ref` is wrapped in one. A property with no `type` to extend (a bare `enum` or `const`) is required as it is, and the reported fix title says which properties were made nullable.
 - A fix for `openai/no-one-of`: renames `oneOf` to `anyOf`, keeping the branches and the position of the keyword. The rename widens the union from exactly one matching branch to at least one, which the rule's notes spell out. A schema that already has an `anyOf` of its own is reported without a fix, because the two cannot be merged without changing what the schema accepts.
+- A fix for `anthropic/no-numeric-constraints`, `anthropic/no-string-length`, and `anthropic/array-constraints`: the unsupported keyword is removed and what it required is stated in `description` ("Must be at least 100."), which is the transformation the Anthropic SDKs apply. `minItems` is lowered to 1 rather than removed, because 0 and 1 are supported. A keyword whose value cannot be put into words, such as a draft-04 boolean `exclusiveMinimum`, is still reported but carries no fix, and a `uniqueItems: false` is dropped without a note.
 - `schemafit rules` marks fixable rules with `[--fix]`, and `docs/rules.md` records them as fixable.
+
+### Changed
+
+- Every Anthropic rule was re-checked against the structured outputs documentation and now records `2026-09-20` as its verification date. The documented limits, formats, and unsupported keywords are unchanged.
 
 ## 0.1.0 - 2026-09-17
 

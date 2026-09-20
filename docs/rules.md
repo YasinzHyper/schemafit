@@ -151,7 +151,7 @@ Every object must set "additionalProperties": false.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/no-recursive-schemas
 
@@ -159,7 +159,7 @@ Recursive schemas are not supported.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/no-external-ref
 
@@ -167,7 +167,7 @@ External "$ref"s are not supported.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/enum-primitives
 
@@ -175,31 +175,40 @@ Enum values must be strings, numbers, booleans, or null.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/no-numeric-constraints
 
 Numerical constraints (minimum, maximum, multipleOf, ...) are not supported.
 
+> The fix is the one the Anthropic SDKs apply when they transform a schema: remove the keyword and state the constraint in "description", the way a field with "minimum": 100 keeps the description "Must be at least 100". The constraint then only holds as far as the model honours it, so keep validating the response against your original schema. The transformation is documented at https://platform.claude.com/docs/en/build-with-claude/structured-outputs#how-sdk-transformation-works.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/no-string-length
 
 String length constraints (minLength, maxLength) are not supported.
 
+> The fix is the one the Anthropic SDKs apply when they transform a schema: remove the keyword and state the constraint in "description", the way a field with "minimum": 100 keeps the description "Must be at least 100". The constraint then only holds as far as the model honours it, so keep validating the response against your original schema. The transformation is documented at https://platform.claude.com/docs/en/build-with-claude/structured-outputs#how-sdk-transformation-works.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/array-constraints
 
 The only supported array constraint is "minItems" of 0 or 1.
 
+> The fix is the one the Anthropic SDKs apply when they transform a schema: remove the keyword and state the constraint in "description", the way a field with "minimum": 100 keeps the description "Must be at least 100". The constraint then only holds as far as the model honours it, so keep validating the response against your original schema. The transformation is documented at https://platform.claude.com/docs/en/build-with-claude/structured-outputs#how-sdk-transformation-works. "minItems" is lowered to 1 instead of being removed, because 0 and 1 are supported.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/unsupported-format
 
@@ -207,7 +216,7 @@ String "format" must be one of the documented formats.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/allof-ref
 
@@ -215,7 +224,7 @@ String "format" must be one of the documented formats.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/regex-features
 
@@ -223,7 +232,7 @@ Patterns may not use backreferences, lookahead/lookbehind, or word boundaries.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/optional-parameters-limit
 
@@ -233,7 +242,7 @@ At most 24 optional parameters across all strict schemas in a request.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/union-parameters-limit
 
@@ -243,7 +252,7 @@ At most 16 parameters may use anyOf or type arrays across all strict schemas in 
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ### anthropic/enum-casing
 
@@ -251,7 +260,7 @@ Enum values that differ only in capitalization can be returned with the wrong ca
 
 - Severity: **warn**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#invalid-outputs>
-- Last verified: 2026-09-17
+- Last verified: 2026-09-20
 
 ## Gemini
 

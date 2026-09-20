@@ -66,6 +66,15 @@ describe("anthropic", () => {
     expect(ids(strictObject({ a: { type: "array", items: {}, uniqueItems: true } }))).toEqual(["anthropic/array-constraints"]);
   });
 
+  it("attaches a fix that restates the constraint in the description", () => {
+    const [finding] = findingsFor("anthropic", strictObject({ n: { type: "integer", maximum: 9 } }));
+    expect(finding?.fix?.title).toBe('Remove "maximum" and state it in "description".');
+    expect(finding?.fix?.rewrite({ type: "integer", maximum: 9 })).toEqual({
+      type: "integer",
+      description: "Must be at most 9.",
+    });
+  });
+
   it("unsupported-format accepts uri, unlike OpenAI", () => {
     expect(ids(strictObject({ a: { type: "string", format: "uri" } }))).toEqual([]);
     expect(ids(strictObject({ a: { type: "string", format: "regex" } }))).toEqual(["anthropic/unsupported-format"]);

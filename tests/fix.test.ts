@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fix, lint, rewrap, unwrap } from "../src/index.js";
 import { resolvePointer, setPointer } from "../src/pointer.js";
+import { strictObject } from "./helpers.js";
 
 describe("setPointer", () => {
   it("replaces a nested value in place", () => {
@@ -201,6 +202,75 @@ describe("fix", () => {
         additionalProperties: false,
       },
     });
+  });
+
+  it("moves Anthropic's unsupported numeric and string constraints into the description", () => {
+    const { schema, applied } = fix(
+      strictObject({
+        score: { type: "integer", minimum: 100, maximum: 500, multipleOf: 5 },
+        name: { type: "string", description: "The display name.", minLength: 1, maxLength: 80 },
+      }),
+      { providers: ["anthropic"] },
+    );
+
+    expect(schema.properties).toEqual({
+      score: {
+        type: "integer",
+        description: "Must be at least 100. Must be at most 500. Must be a multiple of 5.",
+      },
+      name: {
+        type: "string",
+        description: "The display name. Must be at least 1 character long. Must be at most 80 characters long.",
+      },
+    });
+    expect(applied.map((item) => item.title)).toEqual([
+      'Remove "minimum" and state it in "description".',
+      'Remove "maximum" and state it in "description".',
+      'Remove "multipleOf" and state it in "description".',
+      'Remove "minLength" and state it in "description".',
+      'Remove "maxLength" and state it in "description".',
+    ]);
+    expect(lint(schema, { providers: ["anthropic"] }).findings).toEqual([]);
+  });
+
+  it("lowers minItems to 1 and describes the array constraints it drops", () => {
+    const { schema, applied } = fix(
+      strictObject({
+        tags: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 10, uniqueItems: true },
+      }),
+      { providers: ["anthropic"] },
+    );
+
+    expect(schema.properties).toEqual({
+      tags: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        description: "Must have at least 2 items. Must have at most 10 items. Items must be unique.",
+      },
+    });
+    expect(applied[0]?.title).toBe('Lower "minItems" to 1 and state the real minimum in "description".');
+    expect(lint(schema, { providers: ["anthropic"] }).findings).toEqual([]);
+  });
+
+  it('drops a "uniqueItems": false that constrains nothing, without a note', () => {
+    const { schema, applied } = fix(strictObject({ tags: { type: "array", items: {}, uniqueItems: false } }), {
+      providers: ["anthropic"],
+    });
+
+    expect(schema.properties).toEqual({ tags: { type: "array", items: {} } });
+    expect(applied.map((item) => item.title)).toEqual(['Remove "uniqueItems".']);
+  });
+
+  it("leaves a constraint it cannot put into words for a human", () => {
+    // The draft-04 spelling, where exclusiveMinimum is a flag on minimum rather than a bound.
+    const result = fix(strictObject({ n: { type: "number", exclusiveMinimum: true } }), {
+      providers: ["anthropic"],
+    });
+
+    expect(result.schema.properties).toEqual({ n: { type: "number", exclusiveMinimum: true } });
+    expect(result.applied).toEqual([]);
+    expect(result.findings.map((finding) => finding.ruleId)).toEqual(["anthropic/no-numeric-constraints"]);
   });
 
   it("does nothing to a schema that is already compatible", () => {
