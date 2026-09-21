@@ -76,7 +76,10 @@ Unions must use "anyOf"; "oneOf" is not supported.
 
 String "format" must be one of the documented formats.
 
+> The fix removes "format" and states what it required in "description", so the requirement still reaches the model as words: "format": "uri" becomes "Must be an absolute URI, such as https://example.com/a." Nothing checks the format any more, so validate the field in your code.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
 - Last verified: 2026-09-19
 
@@ -214,7 +217,10 @@ The only supported array constraint is "minItems" of 0 or 1.
 
 String "format" must be one of the documented formats.
 
+> The fix removes "format" and states what it required in "description", so the requirement still reaches the model as words. It is what the Anthropic SDKs do when they transform a schema: they filter string formats to the supported list and put what the API cannot enforce into the description (https://platform.claude.com/docs/en/build-with-claude/structured-outputs#how-sdk-transformation-works). Nothing checks the format any more, so validate the field in your code.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
 - Last verified: 2026-09-20
 
@@ -285,7 +291,7 @@ Validation keywords outside the documented JSON Schema subset.
 
 String "format" values other than date-time, date, and time are undocumented.
 
-> The docs introduce the list with "such as", so it may not be exhaustive.
+> The docs introduce the list with "such as", so it may not be exhaustive. For the same reason there is no fix: dropping a format that is only undocumented, and may well work, would give up a constraint for nothing.
 
 - Severity: **warn**
 - Source: <https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support>

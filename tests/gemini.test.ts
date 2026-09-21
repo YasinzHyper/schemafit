@@ -42,6 +42,11 @@ describe("gemini", () => {
     expect(ruleIds("gemini", { type: "string", format: "date-time" })).toEqual([]);
   });
 
+  it("undocumented-format keeps the format, because it is undocumented rather than rejected", () => {
+    const [finding] = findingsFor("gemini", { type: "string", format: "email" });
+    expect(finding?.fix).toBeUndefined();
+  });
+
   it("never reports errors", () => {
     const found = findingsFor("gemini", { not: {}, if: {}, allOf: [], const: 1, format: "uri", multipleOf: 2 });
     expect(found.length).toBeGreaterThan(0);

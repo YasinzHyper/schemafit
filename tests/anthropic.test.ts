@@ -80,6 +80,15 @@ describe("anthropic", () => {
     expect(ids(strictObject({ a: { type: "string", format: "regex" } }))).toEqual(["anthropic/unsupported-format"]);
   });
 
+  it("unsupported-format names a format it has no wording for instead of inventing one", () => {
+    const [finding] = findingsFor("anthropic", strictObject({ a: { type: "string", format: "int64" } }));
+    expect(finding?.fix?.title).toBe('Remove "format": "int64" and state it in "description".');
+    expect(finding?.fix?.rewrite({ type: "string", format: "int64", description: "An id." })).toEqual({
+      type: "string",
+      description: 'An id. Must be a string in the "int64" format.',
+    });
+  });
+
   it("allof-ref rejects $ref inside allOf", () => {
     const schema = strictObject({ a: { allOf: [{ $ref: "#/$defs/base" }] } }, { $defs: { base: strictObject({}) } });
     expect(findingsFor("anthropic", schema).map((finding) => [finding.ruleId, finding.path])).toEqual([

@@ -273,6 +273,41 @@ describe("fix", () => {
     expect(result.findings.map((finding) => finding.ruleId)).toEqual(["anthropic/no-numeric-constraints"]);
   });
 
+  it("drops an unsupported format and keeps what it required in the description", () => {
+    const { schema, applied } = fix(
+      strictObject({
+        website: { type: "string", format: "uri", description: "Where to find them." },
+        avatar: { type: "string", format: "uri-reference" },
+        id: { type: "string", format: "uuid" },
+      }),
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      website: {
+        type: "string",
+        description: "Where to find them. Must be an absolute URI, such as https://example.com/a.",
+      },
+      avatar: { type: "string", description: "Must be a URI, absolute or relative." },
+      // uuid is on OpenAI's documented list, so it stays.
+      id: { type: "string", format: "uuid" },
+    });
+    expect(applied.map((item) => [item.path, item.title])).toEqual([
+      ["/properties/website", 'Remove "format": "uri" and state it in "description".'],
+      ["/properties/avatar", 'Remove "format": "uri-reference" and state it in "description".'],
+    ]);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves a format Gemini only leaves undocumented in place", () => {
+    const portable = strictObject({ email: { type: "string", format: "email" } });
+    const result = fix(portable, { providers: ["gemini"] });
+
+    expect(result.schema).toEqual(portable);
+    expect(result.applied).toEqual([]);
+    expect(result.findings.map((finding) => finding.ruleId)).toContain("gemini/undocumented-format");
+  });
+
   it("does nothing to a schema that is already compatible", () => {
     const portable = { type: "object", properties: {}, required: [], additionalProperties: false };
     const result = fix(portable, { providers: ["openai"] });

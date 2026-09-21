@@ -67,7 +67,9 @@ export const gemini: Provider = {
       meta("undocumented-format", {
         severity: "warn",
         summary: 'String "format" values other than date-time, date, and time are undocumented.',
-        notes: 'The docs introduce the list with "such as", so it may not be exhaustive.',
+        notes:
+          'The docs introduce the list with "such as", so it may not be exhaustive. For the same reason there is no ' +
+          "fix: dropping a format that is only undocumented, and may well work, would give up a constraint for nothing.",
       }),
       ["date-time", "date", "time"],
     ),

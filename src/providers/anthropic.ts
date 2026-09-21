@@ -1,7 +1,7 @@
 import { findRecursiveRefs, isLocalRef } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta, SchemaFix } from "../types.js";
 import { isJsonSchema } from "../walk.js";
-import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
+import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords, withNote } from "./shared.js";
 
 const DOCS = "https://platform.claude.com/docs/en/build-with-claude/structured-outputs";
 const LIMITATIONS = `${DOCS}#json-schema-limitations`;
@@ -125,12 +125,6 @@ function constraintNote(keyword: string, value: unknown): string | null {
     default:
       return null;
   }
-}
-
-/** `schema` with `note` added as the last sentence of its description. */
-function withNote(schema: JsonSchema, note: string): JsonSchema {
-  const existing = typeof schema.description === "string" ? schema.description.trim() : "";
-  return { ...schema, description: existing.length > 0 ? `${existing} ${note}` : note };
 }
 
 /**
@@ -405,6 +399,12 @@ export const anthropic: Provider = {
       meta("unsupported-format", {
         severity: "error",
         summary: 'String "format" must be one of the documented formats.',
+        fixable: true,
+        notes:
+          'The fix removes "format" and states what it required in "description", so the requirement still reaches ' +
+          "the model as words. It is what the Anthropic SDKs do when they transform a schema: they filter string " +
+          "formats to the supported list and put what the API cannot enforce into the description " +
+          `(${SDK_TRANSFORM}). Nothing checks the format any more, so validate the field in your code.`,
       }),
       SUPPORTED_FORMATS,
     ),
