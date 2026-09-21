@@ -104,6 +104,8 @@ $ schemafit --fix --provider openai examples/ticket.json --out ticket.openai.jso
 
 ticket.openai.json
 
+  fixed  #/properties/reporter/properties/website  openai/unsupported-format
+         Remove "format": "uri" and state it in "description".
   fixed  #/properties/reporter  openai/all-required
          Add website to "required", and "null" to the type of website.
   fixed  #/properties/reporter  openai/additional-properties-false
@@ -113,15 +115,16 @@ ticket.openai.json
   fixed  #  openai/additional-properties-false
          Set "additionalProperties": false.
 
-  OpenAI  ✖ 1 error, 3 warnings
+  OpenAI  ⚠ compatible, 3 warnings
   No automatic rewrite for these; the hint says what to change.
-    error  #/properties/reporter/properties/website  openai/unsupported-format
-           String format "uri" is not one of the documented formats.
+    warn   #/properties/title  openai/undocumented-keyword
+           "minLength" is not documented as supported and may be rejected.
+           fix: Remove "minLength" and state the constraint in "description".
     ...
 ```
 
 - One file and one provider at a time: providers disagree about what a schema should look like, so there is no single "fixed" schema.
-- A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, so `--fix --provider anthropic` removes the keyword and writes what it required into `description` — the same transformation the Anthropic SDKs apply. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
+- A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, and neither provider accepts every string `format`, so `--fix` removes the keyword and writes what it required into `description` — `"format": "uri"` becomes "Must be an absolute URI, such as https://example.com/a." That is the same transformation the Anthropic SDKs apply. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
 - The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works.
 - The wrapper is preserved. Fix an Anthropic tool definition and you get the tool definition back, with its `name` and `description` intact.
 - Findings with no automatic rewrite are left alone and listed. The exit code still reflects them.
@@ -213,7 +216,7 @@ A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(s
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

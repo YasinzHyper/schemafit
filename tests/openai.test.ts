@@ -95,6 +95,15 @@ describe("openai", () => {
     expect(ids(strictObject({ id: { type: "string", format: "uuid" } }))).toEqual([]);
   });
 
+  it("unsupported-format offers to move the format into the description", () => {
+    const [finding] = findingsFor("openai", strictObject({ url: { type: "string", format: "uri" } }));
+    expect(finding?.fix?.title).toBe('Remove "format": "uri" and state it in "description".');
+    expect(finding?.fix?.rewrite({ type: "string", format: "uri" })).toEqual({
+      type: "string",
+      description: "Must be an absolute URI, such as https://example.com/a.",
+    });
+  });
+
   it("undocumented-keyword warns instead of failing", () => {
     const [finding] = findingsFor("openai", strictObject({ name: { type: "string", minLength: 1 } }));
     expect(finding?.ruleId).toBe("openai/undocumented-keyword");

@@ -12,7 +12,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Make a property nullable that has no `type` to extend: the fix for `openai/all-required` requires a bare `enum` or `const` property without making it nullable, because there is no documented spelling for that. Depends on `openai/nullable-enum` **(needs evidence)**
 - [x] Fix for `openai/no-one-of`: rewrite `oneOf` to `anyOf`
 - [x] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
-- [ ] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
+- [x] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
 - [ ] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
 - [ ] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
@@ -77,6 +77,7 @@ Refinements to the existing providers. Small, and good first contributions.
 - [ ] `anthropic/regex-quantifier-range`: warn on large `{n,m}` ranges, which the docs call out as unsupported without giving a threshold
 - [ ] Anthropic: `oneOf`, `not`, `if`/`then`/`else`, `patternProperties`, `prefixItems` are neither listed as supported nor as unsupported **(needs evidence)**
 - [ ] Fix for the `oneOf` finding inside `gemini/undocumented-keyword`: the same rename to `anyOf`, which the Gemini docs demonstrate. Needs a way to mark a rule as fixable for only some of its keywords
+- [ ] Fix for `gemini/undocumented-format`: the same rewrite as the other providers. Held back because the Gemini docs list their formats with "such as", so a format that is merely undocumented may work, and dropping it would give up a constraint for nothing **(needs evidence)**
 - [ ] `anthropic/property-order`: informational note that required properties are emitted before optional ones
 - [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**
 - [ ] `openai/root-ref`: root schema that is only a `$ref` **(needs evidence)**

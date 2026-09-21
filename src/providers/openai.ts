@@ -192,6 +192,11 @@ const unsupportedFormat = allowedFormats(
   meta("unsupported-format", {
     severity: "error",
     summary: 'String "format" must be one of the documented formats.',
+    fixable: true,
+    notes:
+      'The fix removes "format" and states what it required in "description", so the requirement still reaches the ' +
+      'model as words: "format": "uri" becomes "Must be an absolute URI, such as https://example.com/a." Nothing ' +
+      "checks the format any more, so validate the field in your code.",
   }),
   SUPPORTED_FORMATS,
 );
