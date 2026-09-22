@@ -13,7 +13,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fix for `openai/no-one-of`: rewrite `oneOf` to `anyOf`
 - [x] Fix for `anthropic/no-numeric-constraints`, `no-string-length`, `array-constraints`: drop the keyword and append the constraint to `description`, mirroring what Anthropic's SDKs do
 - [x] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
-- [ ] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
+- [x] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
+- [ ] Merge an `allOf` branch that is a `$ref`, by inlining the definition it points at. Held back because inlining duplicates a shared definition, and a self-referential one cannot be inlined at all
 - [ ] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
