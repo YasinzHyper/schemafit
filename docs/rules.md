@@ -33,7 +33,7 @@ The root schema must be an object and must not use anyOf.
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/all-required
 
@@ -42,7 +42,7 @@ Every key in "properties" must be listed in "required".
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/additional-properties-false
 
@@ -51,15 +51,18 @@ Every object must set "additionalProperties": false.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/unsupported-composition
 
 allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supported.
 
+> Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, required keys, and descriptions on one object. Merging widens an "additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — which is what a single strict object has to accept anyway. Branches that constrain the same key differently are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would change what the schema accepts.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/no-one-of
 
@@ -70,7 +73,7 @@ Unions must use "anyOf"; "oneOf" is not supported.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/unsupported-format
 
@@ -81,7 +84,7 @@ String "format" must be one of the documented formats.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/undocumented-keyword
 
@@ -91,7 +94,7 @@ Validation keywords absent from the documented per-type keyword lists.
 
 - Severity: **warn**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/nesting-depth
 
@@ -101,7 +104,7 @@ A schema may have up to 10 levels of nesting.
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/max-properties
 
@@ -109,7 +112,7 @@ A schema may have up to 5000 object properties in total.
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/enum-limits
 
@@ -117,7 +120,7 @@ Up to 1000 enum values in total; an enum with more than 250 string values may to
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ### openai/string-budget
 
@@ -125,7 +128,7 @@ Property names, definition names, enum values, and const values may total at mos
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-09-19
+- Last verified: 2026-09-22
 
 ## Anthropic
 

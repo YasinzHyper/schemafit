@@ -73,6 +73,34 @@ describe("openai", () => {
     expect(found).toHaveLength(5);
   });
 
+  it("unsupported-composition offers to merge an allOf of plain objects", () => {
+    const schema = strictObject({
+      ticket: {
+        allOf: [
+          { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+          { type: "object", properties: { opened_at: { type: "string" } }, required: ["opened_at"] },
+        ],
+      },
+    });
+    const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merge?.path).toBe("/properties/ticket");
+    expect(merge?.fix?.title).toBe('Merge the 2 "allOf" branches into the object.');
+  });
+
+  it("unsupported-composition offers no merge when two branches disagree about a property", () => {
+    const schema = strictObject({
+      ticket: {
+        allOf: [
+          { type: "object", properties: { id: { type: "string" } } },
+          { type: "object", properties: { id: { type: "integer" } } },
+        ],
+      },
+    });
+    const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merge?.fix).toBeUndefined();
+    expect(merge?.hint).toContain("by hand");
+  });
+
   it("no-one-of asks for anyOf instead", () => {
     const schema = strictObject({ value: { oneOf: [{ type: "string" }, { type: "number" }] } });
     const [finding] = findingsFor("openai", schema);

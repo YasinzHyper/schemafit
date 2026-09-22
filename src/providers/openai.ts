@@ -4,7 +4,7 @@ import { children, isJsonSchema, isObjectSchema, typesOf } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
 
 const SOURCE = "https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas";
-const VERIFIED = "2026-09-19";
+const VERIFIED = "2026-09-22";
 
 const MAX_NESTING_LEVELS = 10;
 const MAX_TOTAL_PROPERTIES = 5000;
@@ -132,19 +132,120 @@ const allRequired: Rule = {
   },
 };
 
+function same(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** True when a schema describes an object and nothing else, or constrains the type not at all. */
+function describesObject(schema: JsonSchema): boolean {
+  const types = typesOf(schema);
+  return types.length === 0 || (types.length === 1 && types[0] === "object");
+}
+
+/** The two property maps as one, or null when both define the same key differently. */
+function mergeProperties(left: unknown, right: unknown): JsonSchema | null {
+  if (!isJsonSchema(left) || !isJsonSchema(right)) return null;
+  const merged: JsonSchema = { ...left };
+  for (const [key, value] of Object.entries(right)) {
+    if (key in merged && !same(merged[key], value)) return null;
+    merged[key] = value;
+  }
+  return merged;
+}
+
+/**
+ * The schema with its `allOf` merged into it: the properties of every branch on one object.
+ * Returns null when the branches cannot be merged without changing what the schema accepts —
+ * a branch that is not a plain object, or two of them constraining the same thing differently.
+ */
+function mergedAllOf(schema: JsonSchema): JsonSchema | null {
+  const branches = schema.allOf;
+  if (!Array.isArray(branches) || branches.length === 0) return null;
+  if (!branches.every((branch) => isJsonSchema(branch) && isObjectSchema(branch) && describesObject(branch))) {
+    return null;
+  }
+
+  const { allOf: _merged, ...host } = schema;
+  if (!describesObject(host)) return null;
+
+  const merged: JsonSchema = {};
+  for (const participant of [host, ...(branches as JsonSchema[])]) {
+    for (const [keyword, value] of Object.entries(participant)) {
+      const current = merged[keyword];
+      if (current === undefined || same(current, value)) {
+        merged[keyword] = value;
+        continue;
+      }
+      switch (keyword) {
+        case "properties": {
+          const properties = mergeProperties(current, value);
+          if (!properties) return null;
+          merged.properties = properties;
+          break;
+        }
+        case "required": {
+          if (!Array.isArray(current) || !Array.isArray(value)) return null;
+          merged.required = [...new Set([...current, ...value])];
+          break;
+        }
+        case "description": {
+          if (typeof current !== "string" || typeof value !== "string") return null;
+          merged.description = `${current} ${value}`;
+          break;
+        }
+        case "additionalProperties": {
+          // The intersection of an open and a closed object is the closed one.
+          if (current !== false && value !== false) return null;
+          merged.additionalProperties = false;
+          break;
+        }
+        default:
+          return null;
+      }
+    }
+  }
+  return merged;
+}
+
 const unsupportedComposition = forbiddenKeywords(
   meta("unsupported-composition", {
     severity: "error",
     summary: "allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supported.",
+    fixable: true,
+    notes:
+      'Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, ' +
+      'required keys, and descriptions on one object. Merging widens an "additionalProperties": false in a branch, ' +
+      "which then no longer rejects the properties of its siblings — which is what a single strict object has to " +
+      'accept anyway. Branches that constrain the same key differently are left to be merged by hand, and "not", ' +
+      '"if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would ' +
+      "change what the schema accepts.",
   }),
   ["allOf", "not", "dependentRequired", "dependentSchemas", "if", "then", "else"],
-  (keyword) => ({
-    message: `"${keyword}" is not supported.`,
-    hint:
-      keyword === "allOf"
-        ? "Merge the subschemas into a single object by hand."
-        : 'Model the alternatives with "anyOf", or move the condition into "description".',
-  }),
+  (keyword, node) => {
+    if (keyword !== "allOf") {
+      return {
+        message: `"${keyword}" is not supported.`,
+        hint: 'Model the alternatives with "anyOf", or move the condition into "description".',
+      };
+    }
+    const merged = mergedAllOf(node.schema);
+    const branches = Array.isArray(node.schema.allOf) ? node.schema.allOf.length : 0;
+    return {
+      message: '"allOf" is not supported.',
+      hint: merged ? "Merge the subschemas into a single object." : "Merge the subschemas into a single object by hand.",
+      ...(merged
+        ? {
+            fix: {
+              title:
+                branches === 1
+                  ? 'Merge the "allOf" branch into the object.'
+                  : `Merge the ${branches} "allOf" branches into the object.`,
+              rewrite: (schema: JsonSchema) => mergedAllOf(schema) ?? schema,
+            },
+          }
+        : {}),
+    };
+  },
 );
 
 /**

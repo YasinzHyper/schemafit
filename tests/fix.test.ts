@@ -130,6 +130,86 @@ describe("fix", () => {
     expect(result.findings.map((finding) => finding.ruleId)).toEqual(["openai/no-one-of"]);
   });
 
+  it("merges an allOf of objects into the object that holds it", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        description: "A ticket.",
+        allOf: [
+          {
+            type: "object",
+            properties: { id: { type: "string" } },
+            required: ["id"],
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            description: "Tracking fields.",
+            properties: { opened_at: { type: "string", format: "date-time" } },
+            required: ["opened_at"],
+          },
+        ],
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema).toEqual({
+      type: "object",
+      description: "A ticket. Tracking fields.",
+      properties: { id: { type: "string" }, opened_at: { type: "string", format: "date-time" } },
+      required: ["id", "opened_at"],
+      additionalProperties: false,
+    });
+    expect(applied.map((item) => item.title)).toContain('Merge the 2 "allOf" branches into the object.');
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("merges an allOf nested inside another one, deepest first", () => {
+    const { schema, applied } = fix(
+      strictObject({
+        ticket: {
+          type: "object",
+          additionalProperties: false,
+          allOf: [
+            {
+              type: "object",
+              properties: { id: { type: "string" } },
+              required: ["id"],
+              allOf: [{ type: "object", properties: { kind: { type: "string" } }, required: ["kind"] }],
+            },
+          ],
+        },
+      }),
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      ticket: {
+        type: "object",
+        additionalProperties: false,
+        properties: { id: { type: "string" }, kind: { type: "string" } },
+        required: ["id", "kind"],
+      },
+    });
+    const merges = applied.filter((item) => item.ruleId === "openai/unsupported-composition");
+    expect(merges.map((item) => item.path)).toEqual(["/properties/ticket/allOf/0", "/properties/ticket"]);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves an allOf whose branches constrain the same property differently", () => {
+    const intersection = {
+      allOf: [
+        { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+        { type: "object", properties: { id: { type: "integer" } }, required: ["id"] },
+      ],
+    };
+    const result = fix(strictObject({ ticket: intersection }), { providers: ["openai"] });
+
+    expect(result.schema.properties).toMatchObject({ ticket: { allOf: intersection.allOf } });
+    expect(result.applied.map((item) => item.ruleId)).not.toContain("openai/unsupported-composition");
+    expect(result.findings.map((finding) => finding.ruleId)).toContain("openai/unsupported-composition");
+  });
+
   it("requires every property and keeps the missing ones optional with null", () => {
     const { schema, applied } = fix(
       {
