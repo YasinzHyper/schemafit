@@ -31,7 +31,10 @@ Models: Structured Outputs (strict: true)
 
 The root schema must be an object and must not use anyOf.
 
+> The fix wraps the root in an object with one required property, "result", and the model then returns { "result": ... } instead of the bare value, so the code that reads the response has to unwrap it. Definitions stay at the root, where references to them keep resolving. A root that carries nothing but definitions has nothing to wrap and is reported without a fix.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
 - Last verified: 2026-09-22
 

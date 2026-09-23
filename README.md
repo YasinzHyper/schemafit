@@ -125,6 +125,7 @@ ticket.openai.json
 
 - One file and one provider at a time: providers disagree about what a schema should look like, so there is no single "fixed" schema.
 - An `allOf` of plain objects is merged into one object, properties, required keys, and descriptions together, the way you would merge it by hand. Branches that constrain the same key differently are left alone, and so are the composition keywords whose meaning cannot survive a rewrite (`not`, `if`/`then`/`else`).
+- A root that OpenAI will not take — a union, an array, a primitive, which is what a Zod discriminated union or `z.array()` compiles to — is wrapped in an object with one required property, `result`, and the report names that key. The model then answers `{ "result": ... }`, so unwrap it on the way out. Definitions stay at the root, where `#/$defs/...` references still find them.
 - A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, and neither provider accepts every string `format`, so `--fix` removes the keyword and writes what it required into `description` — `"format": "uri"` becomes "Must be an absolute URI, such as https://example.com/a." That is the same transformation the Anthropic SDKs apply. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
 - The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works.
 - The wrapper is preserved. Fix an Anthropic tool definition and you get the tool definition back, with its `name` and `description` intact.
@@ -217,7 +218,7 @@ A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(s
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

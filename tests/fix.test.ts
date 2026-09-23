@@ -388,6 +388,76 @@ describe("fix", () => {
     expect(result.findings.map((finding) => finding.ruleId)).toContain("gemini/undocumented-format");
   });
 
+  it("wraps a union root in an object and keeps the definitions where refs find them", () => {
+    const { schema, applied } = fix(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        description: "A ticket or an error.",
+        anyOf: [{ $ref: "#/$defs/ticket" }, { $ref: "#/$defs/error" }],
+        $defs: {
+          ticket: strictObject({ id: { type: "string" } }),
+          error: strictObject({ message: { type: "string" } }),
+        },
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        result: {
+          description: "A ticket or an error.",
+          anyOf: [{ $ref: "#/$defs/ticket" }, { $ref: "#/$defs/error" }],
+        },
+      },
+      required: ["result"],
+      additionalProperties: false,
+      $defs: {
+        ticket: strictObject({ id: { type: "string" } }),
+        error: strictObject({ message: { type: "string" } }),
+      },
+    });
+    expect(applied).toEqual([
+      {
+        ruleId: "openai/root-object",
+        provider: "openai",
+        path: "",
+        title: 'Wrap the root in an object with one property, "result".',
+      },
+    ]);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("wraps an array root, and fixes what the wrapping exposes", () => {
+    const { schema } = fix(
+      { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+      { providers: ["openai"] },
+    );
+
+    expect(schema).toEqual({
+      type: "object",
+      properties: {
+        result: {
+          type: "array",
+          items: strictObject({ id: { type: "string" } }),
+        },
+      },
+      required: ["result"],
+      additionalProperties: false,
+    });
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves a root with nothing to wrap for a human", () => {
+    const definitionsOnly = { $defs: { ticket: strictObject({ id: { type: "string" } }) } };
+    const result = fix(definitionsOnly, { providers: ["openai"] });
+
+    expect(result.schema).toEqual(definitionsOnly);
+    expect(result.applied).toEqual([]);
+    expect(result.findings.map((finding) => finding.ruleId)).toContain("openai/root-object");
+  });
+
   it("does nothing to a schema that is already compatible", () => {
     const portable = { type: "object", properties: {}, required: [], additionalProperties: false };
     const result = fix(portable, { providers: ["openai"] });

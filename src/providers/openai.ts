@@ -29,23 +29,75 @@ function meta(name: string, rest: Omit<RuleMeta, "id" | "provider" | "source" | 
   return { id: `openai/${name}`, provider: "openai", source: SOURCE, verified: VERIFIED, ...rest };
 }
 
+/** The property the root is wrapped in, when it is not an object itself. */
+const WRAPPER_KEY = "result";
+
+/** Keywords that describe the document rather than what it accepts, and so stay at the root. */
+const DOCUMENT_KEYWORDS = ["$schema", "$id"];
+const DEFINITION_KEYWORDS = ["$defs", "definitions"];
+
+/**
+ * The root schema as the single required property of a strict object, which is the shape
+ * the docs ask for. Definitions stay at the root, so `#/$defs/...` references still resolve;
+ * everything the root said about the value it accepts moves inside, where it still says it.
+ * Returns null when there is nothing to wrap — a root that carries only definitions.
+ */
+function wrappedRoot(schema: JsonSchema): JsonSchema | null {
+  const before: JsonSchema = {};
+  const after: JsonSchema = {};
+  const inner: JsonSchema = {};
+  for (const [keyword, value] of Object.entries(schema)) {
+    if (DOCUMENT_KEYWORDS.includes(keyword)) before[keyword] = value;
+    else if (DEFINITION_KEYWORDS.includes(keyword)) after[keyword] = value;
+    else inner[keyword] = value;
+  }
+  if (Object.keys(inner).length === 0) return null;
+
+  return {
+    ...before,
+    type: "object",
+    properties: { [WRAPPER_KEY]: inner },
+    required: [WRAPPER_KEY],
+    additionalProperties: false,
+    ...after,
+  };
+}
+
 const rootObject: Rule = {
   ...meta("root-object", {
     severity: "error",
     summary: "The root schema must be an object and must not use anyOf.",
+    fixable: true,
+    notes:
+      `The fix wraps the root in an object with one required property, "${WRAPPER_KEY}", and the model then ` +
+      `returns { "${WRAPPER_KEY}": ... } instead of the bare value, so the code that reads the response has to ` +
+      "unwrap it. Definitions stay at the root, where references to them keep resolving. A root that carries " +
+      "nothing but definitions has nothing to wrap and is reported without a fix.",
   }),
   check(ctx) {
+    const wrapped = wrappedRoot(ctx.root);
+    const fix = wrapped
+      ? {
+          fix: {
+            title: `Wrap the root in an object with one property, "${WRAPPER_KEY}".`,
+            rewrite: (schema: JsonSchema) => wrappedRoot(schema) ?? schema,
+          },
+        }
+      : {};
+
     if ("anyOf" in ctx.root) {
       ctx.report({
         path: "",
         message: 'The root schema uses "anyOf". The root must be a plain object.',
         hint: 'Wrap the union in an object: { "type": "object", "properties": { "result": { "anyOf": [...] } } }.',
+        ...fix,
       });
     } else if (!typesOf(ctx.root).includes("object")) {
       ctx.report({
         path: "",
         message: 'The root schema must have "type": "object".',
         hint: "Wrap arrays, unions, and primitives in an object property.",
+        ...fix,
       });
     }
   },

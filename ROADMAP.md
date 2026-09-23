@@ -15,7 +15,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
 - [x] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
 - [ ] Merge an `allOf` branch that is a `$ref`, by inlining the definition it points at. Held back because inlining duplicates a shared definition, and a self-referential one cannot be inlined at all
-- [ ] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
+- [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
 - [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
