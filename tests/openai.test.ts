@@ -87,6 +87,62 @@ describe("openai", () => {
     expect(merge?.fix?.title).toBe('Merge the 2 "allOf" branches into the object.');
   });
 
+  it("unsupported-composition inlines an allOf branch that is only a $ref", () => {
+    // The shape Pydantic emits for a field that has both a model type and a description.
+    const schema = strictObject(
+      { reporter: { allOf: [{ $ref: "#/$defs/user" }], description: "Who filed it." } },
+      { $defs: { user: strictObject({ name: { type: "string" } }) } },
+    );
+    const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merge?.fix?.title).toBe('Merge the "allOf" branch into the object, inlining #/$defs/user.');
+    const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
+    expect(merge?.fix?.rewrite(reporter)).toEqual({
+      description: "Who filed it.",
+      ...strictObject({ name: { type: "string" } }),
+    });
+  });
+
+  it("unsupported-composition offers no merge for a $ref branch that is used elsewhere", () => {
+    const schema = strictObject(
+      { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { $ref: "#/$defs/user" } },
+      { $defs: { user: strictObject({ name: { type: "string" } }) } },
+    );
+    const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merge?.fix).toBeUndefined();
+  });
+
+  it("unsupported-composition offers no merge for a $ref branch that refers back to itself", () => {
+    const direct = strictObject(
+      { tree: { allOf: [{ $ref: "#/$defs/node" }] } },
+      { $defs: { node: strictObject({ child: { anyOf: [{ $ref: "#/$defs/node" }, { type: "null" }] } }) } },
+    );
+    const mutual = strictObject(
+      { start: { allOf: [{ $ref: "#/$defs/a" }] } },
+      {
+        $defs: {
+          a: strictObject({ b: { $ref: "#/$defs/b" } }),
+          b: strictObject({ a: { anyOf: [{ $ref: "#/$defs/a" }, { type: "null" }] } }),
+        },
+      },
+    );
+    for (const schema of [direct, mutual]) {
+      const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+      expect(merge?.fix).toBeUndefined();
+    }
+  });
+
+  it("unsupported-composition offers no merge for a $ref that is external or carries siblings", () => {
+    const external = strictObject({ user: { allOf: [{ $ref: "https://example.com/user.json" }] } });
+    const siblings = strictObject(
+      { reporter: { allOf: [{ $ref: "#/$defs/user", description: "Who filed it." }] } },
+      { $defs: { user: strictObject({ name: { type: "string" } }) } },
+    );
+    for (const schema of [external, siblings]) {
+      const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+      expect(merge?.fix).toBeUndefined();
+    }
+  });
+
   it("unsupported-composition offers no merge when two branches disagree about a property", () => {
     const schema = strictObject({
       ticket: {

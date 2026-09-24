@@ -60,7 +60,7 @@ Every object must set "additionalProperties": false.
 
 allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supported.
 
-> Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, required keys, and descriptions on one object. Merging widens an "additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — which is what a single strict object has to accept anyway. Branches that constrain the same key differently are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would change what the schema accepts.
+> Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, but only when the definition it names is used nowhere else and does not refer back to itself: inlining a shared definition would leave two copies to drift apart, and a self-referential one cannot be inlined at all. The definition stays under "$defs" once its only use is inlined, unused but harmless. Merging widens an "additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — which is what a single strict object has to accept anyway. Branches that constrain the same key differently are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would change what the schema accepts.
 
 - Severity: **error**
 - Fixable: **yes**, with `--fix`

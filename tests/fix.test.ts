@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { JsonSchema } from "../src/index.js";
 import { fix, lint, rewrap, unwrap } from "../src/index.js";
 import { resolvePointer, setPointer } from "../src/pointer.js";
 import { strictObject } from "./helpers.js";
@@ -162,6 +163,61 @@ describe("fix", () => {
     });
     expect(applied.map((item) => item.title)).toContain('Merge the 2 "allOf" branches into the object.');
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("inlines the definition behind a bare $ref branch and merges it in", () => {
+    const { schema, applied } = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }], description: "Who filed it." } },
+        { $defs: { user: strictObject({ name: { type: "string" } }) } },
+      ),
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      reporter: {
+        description: "Who filed it.",
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    });
+    expect(applied.map((item) => item.title)).toContain(
+      'Merge the "allOf" branch into the object, inlining #/$defs/user.',
+    );
+    // The definition is left where it was: the fix rewrites the branch, not the whole schema.
+    expect(schema.$defs).toEqual({ user: strictObject({ name: { type: "string" } }) });
+    // And the inlined copy shares nothing with it, so rewriting one never touches the other.
+    const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
+    const user = (schema.$defs as Record<string, JsonSchema>).user as JsonSchema;
+    expect(reporter.properties).not.toBe(user.properties);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves an allOf whose $ref branch is shared or recursive alone", () => {
+    const shared = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { $ref: "#/$defs/user" } },
+        { $defs: { user: strictObject({ name: { type: "string" } }) } },
+      ),
+      { providers: ["openai"] },
+    );
+    expect(shared.schema.properties).toEqual({
+      reporter: { allOf: [{ $ref: "#/$defs/user" }] },
+      assignee: { $ref: "#/$defs/user" },
+    });
+    expect(shared.findings.map((finding) => finding.ruleId)).toContain("openai/unsupported-composition");
+
+    const recursive = fix(
+      strictObject(
+        { tree: { allOf: [{ $ref: "#/$defs/node" }] } },
+        { $defs: { node: strictObject({ child: { anyOf: [{ $ref: "#/$defs/node" }, { type: "null" }] } }) } },
+      ),
+      { providers: ["openai"] },
+    );
+    expect(recursive.schema.properties).toEqual({ tree: { allOf: [{ $ref: "#/$defs/node" }] } });
+    expect(recursive.findings.map((finding) => finding.ruleId)).toContain("openai/unsupported-composition");
   });
 
   it("merges an allOf nested inside another one, deepest first", () => {
