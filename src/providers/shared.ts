@@ -112,19 +112,20 @@ export function allowedFormats(meta: RuleMeta, allowed: readonly string[]): Rule
 }
 
 /**
- * Rule: none of `keywords` may appear. `describe` receives the node as well, so a rule
- * can attach a `fix` only to the occurrences it knows how to rewrite.
+ * Rule: none of `keywords` may appear. `describe` receives the node and the context as well,
+ * so a rule can attach a `fix` only to the occurrences it knows how to rewrite, and can reach
+ * the root when rewriting one means resolving a `$ref`.
  */
 export function forbiddenKeywords(
   meta: RuleMeta,
   keywords: readonly string[],
-  describe: (keyword: string, node: SchemaNode) => Omit<Report, "path">,
+  describe: (keyword: string, node: SchemaNode, ctx: RuleContext) => Omit<Report, "path">,
 ): Rule {
   return {
     ...meta,
     check(ctx) {
       forEachKeyword(ctx, keywords, (node, keyword) => {
-        ctx.report({ path: node.path, ...describe(keyword, node) });
+        ctx.report({ path: node.path, ...describe(keyword, node, ctx) });
       });
     },
   };

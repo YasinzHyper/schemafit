@@ -1,6 +1,7 @@
+import { resolvePointer } from "../pointer.js";
 import { resolveLocalRef } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta } from "../types.js";
-import { children, isJsonSchema, isObjectSchema, typesOf } from "../walk.js";
+import { children, isJsonSchema, isObjectSchema, typesOf, walk } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
 
 const SOURCE = "https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas";
@@ -205,23 +206,91 @@ function mergeProperties(left: unknown, right: unknown): JsonSchema | null {
   return merged;
 }
 
+/** The `$ref` of a branch that is nothing but a reference, so inlining it loses nothing. */
+function refOnly(branch: JsonSchema): string | null {
+  const keywords = Object.keys(branch);
+  return keywords.length === 1 && keywords[0] === "$ref" && typeof branch.$ref === "string" ? branch.$ref : null;
+}
+
+/** True when the subschema at `path` refers back to itself, directly or through another definition. */
+function refersToItself(root: JsonSchema, path: string): boolean {
+  const seen = new Set<string>([path]);
+
+  const visit = (schema: JsonSchema, at: string): boolean => {
+    const reachable = [...children(schema, at)];
+    if (typeof schema.$ref === "string") {
+      const target = resolveLocalRef(root, schema.$ref);
+      if (target?.path === path) return true;
+      if (target) reachable.push({ schema: target.schema, path: target.path, parentKeyword: "$ref" });
+    }
+    for (const next of reachable) {
+      if (seen.has(next.path)) continue;
+      seen.add(next.path);
+      if (visit(next.schema, next.path)) return true;
+    }
+    return false;
+  };
+
+  const start = resolvePointer(root, path);
+  return isJsonSchema(start) ? visit(start, path) : false;
+}
+
+/** How many subschemas point at `path` with a local `$ref`. */
+function refCount(root: JsonSchema, path: string): number {
+  return walk(root).filter((node) => {
+    const { $ref } = node.schema;
+    return typeof $ref === "string" && resolveLocalRef(root, $ref)?.path === path;
+  }).length;
+}
+
+/**
+ * The definition a bare `$ref` branch names, when putting it in the branch's place is safe:
+ * the definition must be an object, must not refer back to itself — such a branch cannot be
+ * inlined at all — and must be used nowhere else, because inlining a shared definition would
+ * leave the schema carrying two copies that drift apart. The copy is deep, so the merged
+ * object shares nothing with the definition it came from.
+ */
+function inlinableRef(root: JsonSchema, ref: string): JsonSchema | null {
+  const target = resolveLocalRef(root, ref);
+  if (!target || target.path === "") return null;
+  if (refersToItself(root, target.path) || refCount(root, target.path) !== 1) return null;
+  return structuredClone(target.schema);
+}
+
+/**
+ * The branches of `allOf`, with a branch that is nothing but a `$ref` replaced by the
+ * definition it names. Returns null when a branch cannot stand as a plain object.
+ */
+function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSchema[]; inlined: string[] } | null {
+  const raw = schema.allOf;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+
+  const branches: JsonSchema[] = [];
+  const inlined: string[] = [];
+  for (const branch of raw) {
+    if (!isJsonSchema(branch)) return null;
+    const ref = refOnly(branch);
+    const resolved = ref === null ? branch : inlinableRef(root, ref);
+    if (!resolved || !isObjectSchema(resolved) || !describesObject(resolved)) return null;
+    if (ref !== null) inlined.push(ref);
+    branches.push(resolved);
+  }
+  return { branches, inlined };
+}
+
 /**
  * The schema with its `allOf` merged into it: the properties of every branch on one object.
  * Returns null when the branches cannot be merged without changing what the schema accepts —
  * a branch that is not a plain object, or two of them constraining the same thing differently.
  */
-function mergedAllOf(schema: JsonSchema): JsonSchema | null {
-  const branches = schema.allOf;
-  if (!Array.isArray(branches) || branches.length === 0) return null;
-  if (!branches.every((branch) => isJsonSchema(branch) && isObjectSchema(branch) && describesObject(branch))) {
-    return null;
-  }
+function mergedAllOf(schema: JsonSchema, branches: readonly JsonSchema[] | null): JsonSchema | null {
+  if (!branches) return null;
 
   const { allOf: _merged, ...host } = schema;
   if (!describesObject(host)) return null;
 
   const merged: JsonSchema = {};
-  for (const participant of [host, ...(branches as JsonSchema[])]) {
+  for (const participant of [host, ...branches]) {
     for (const [keyword, value] of Object.entries(participant)) {
       const current = merged[keyword];
       if (current === undefined || same(current, value)) {
@@ -266,33 +335,37 @@ const unsupportedComposition = forbiddenKeywords(
     fixable: true,
     notes:
       'Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, ' +
-      'required keys, and descriptions on one object. Merging widens an "additionalProperties": false in a branch, ' +
-      "which then no longer rejects the properties of its siblings — which is what a single strict object has to " +
-      'accept anyway. Branches that constrain the same key differently are left to be merged by hand, and "not", ' +
-      '"if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would ' +
-      "change what the schema accepts.",
+      'required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, but ' +
+      "only when the definition it names is used nowhere else and does not refer back to itself: inlining a shared " +
+      "definition would leave two copies to drift apart, and a self-referential one cannot be inlined at all. The " +
+      'definition stays under "$defs" once its only use is inlined, unused but harmless. Merging widens an ' +
+      '"additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — ' +
+      "which is what a single strict object has to accept anyway. Branches that constrain the same key differently " +
+      'are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" ' +
+      "carry no fix, because dropping them would change what the schema accepts.",
   }),
   ["allOf", "not", "dependentRequired", "dependentSchemas", "if", "then", "else"],
-  (keyword, node) => {
+  (keyword, node, ctx) => {
     if (keyword !== "allOf") {
       return {
         message: `"${keyword}" is not supported.`,
         hint: 'Model the alternatives with "anyOf", or move the condition into "description".',
       };
     }
-    const merged = mergedAllOf(node.schema);
-    const branches = Array.isArray(node.schema.allOf) ? node.schema.allOf.length : 0;
+    const root = ctx.root;
+    const resolved = allOfBranches(node.schema, root);
+    const merged = mergedAllOf(node.schema, resolved?.branches ?? null);
+    const count = Array.isArray(node.schema.allOf) ? node.schema.allOf.length : 0;
+    const subject = count === 1 ? 'the "allOf" branch' : `the ${count} "allOf" branches`;
+    const naming = resolved && resolved.inlined.length > 0 ? `, inlining ${resolved.inlined.join(" and ")}` : "";
     return {
       message: '"allOf" is not supported.',
       hint: merged ? "Merge the subschemas into a single object." : "Merge the subschemas into a single object by hand.",
       ...(merged
         ? {
             fix: {
-              title:
-                branches === 1
-                  ? 'Merge the "allOf" branch into the object.'
-                  : `Merge the ${branches} "allOf" branches into the object.`,
-              rewrite: (schema: JsonSchema) => mergedAllOf(schema) ?? schema,
+              title: `Merge ${subject} into the object${naming}.`,
+              rewrite: (schema: JsonSchema) => mergedAllOf(schema, allOfBranches(schema, root)?.branches ?? null) ?? schema,
             },
           }
         : {}),
