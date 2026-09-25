@@ -15,8 +15,9 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fix for `*/unsupported-format`: drop `format`, describe it in `description`
 - [x] Fix for `openai/unsupported-composition`: merge simple `allOf` branches (objects without conflicting keys) into one schema
 - [x] Merge an `allOf` branch that is a `$ref`, by inlining the definition it points at, when that definition is used nowhere else and does not refer back to itself
-- [ ] Inline a `$ref` branch whose definition is used more than once, which today is left alone because inlining would leave two copies to drift apart. Needs a way to decide when duplicating is the better trade
-- [ ] Prune a `$defs` entry left unused after inlining its only use. Needs a fix that may rewrite more than the subschema its finding points at
+- [x] Inline a `$ref` branch whose definition is used more than once, as a copy that leaves the original under `$defs`, because the alternative is an `allOf` no fix can resolve
+- [ ] Prune a `$defs` entry left with no references at all once its uses have been inlined. Needs a fix that may rewrite more than the subschema its finding points at
+- [ ] Merge an `allOf` branch that describes something other than an object — a string with an `enum`, a number with a `minimum` — which is what Pydantic emits for an annotated enum field. Today every branch must be a plain object, so those are left alone
 - [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`

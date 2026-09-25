@@ -243,39 +243,69 @@ function refCount(root: JsonSchema, path: string): number {
   }).length;
 }
 
+/** A `$ref` branch the fix replaced with the definition it names. */
+interface InlinedRef {
+  ref: string;
+  /** True when other subschemas reference the definition too, so the original has to stay. */
+  shared: boolean;
+}
+
 /**
  * The definition a bare `$ref` branch names, when putting it in the branch's place is safe:
- * the definition must be an object, must not refer back to itself — such a branch cannot be
- * inlined at all — and must be used nowhere else, because inlining a shared definition would
- * leave the schema carrying two copies that drift apart. The copy is deep, so the merged
- * object shares nothing with the definition it came from.
+ * the definition must be an object and must not refer back to itself, which cannot be inlined
+ * at all. A definition other subschemas also reference is copied rather than moved, and
+ * `shared` records that, because the original stays under `$defs` for them. Copying is the
+ * better trade: leaving the branch alone leaves an `allOf` the API rejects and no fix can
+ * resolve, while a second copy only costs size, which the property, nesting, and string-size
+ * rules measure again over the fixed schema. The copy is deep, so the merged object shares
+ * nothing with the definition it came from.
  */
-function inlinableRef(root: JsonSchema, ref: string): JsonSchema | null {
+function inlinableRef(root: JsonSchema, ref: string): { schema: JsonSchema; shared: boolean } | null {
   const target = resolveLocalRef(root, ref);
   if (!target || target.path === "") return null;
-  if (refersToItself(root, target.path) || refCount(root, target.path) !== 1) return null;
-  return structuredClone(target.schema);
+  if (refersToItself(root, target.path)) return null;
+  return { schema: structuredClone(target.schema), shared: refCount(root, target.path) > 1 };
 }
 
 /**
  * The branches of `allOf`, with a branch that is nothing but a `$ref` replaced by the
  * definition it names. Returns null when a branch cannot stand as a plain object.
  */
-function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSchema[]; inlined: string[] } | null {
+function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSchema[]; inlined: InlinedRef[] } | null {
   const raw = schema.allOf;
   if (!Array.isArray(raw) || raw.length === 0) return null;
 
   const branches: JsonSchema[] = [];
-  const inlined: string[] = [];
+  const inlined: InlinedRef[] = [];
   for (const branch of raw) {
     if (!isJsonSchema(branch)) return null;
     const ref = refOnly(branch);
-    const resolved = ref === null ? branch : inlinableRef(root, ref);
-    if (!resolved || !isObjectSchema(resolved) || !describesObject(resolved)) return null;
-    if (ref !== null) inlined.push(ref);
-    branches.push(resolved);
+    const resolved = ref === null ? { schema: branch, shared: false } : inlinableRef(root, ref);
+    if (!resolved || !isObjectSchema(resolved.schema) || !describesObject(resolved.schema)) return null;
+    if (ref !== null) inlined.push({ ref, shared: resolved.shared });
+    branches.push(resolved.schema);
   }
   return { branches, inlined };
+}
+
+/**
+ * The clause a fix title uses for the `$ref` branches it put in place. A definition used
+ * nowhere else is inlined; one that is shared is copied, which the title says outright,
+ * because the original stays where it is and the two are no longer one definition.
+ */
+function describeInlined(inlined: readonly InlinedRef[]): string {
+  const moved = inlined.filter((entry) => !entry.shared).map((entry) => entry.ref);
+  const copied = inlined.filter((entry) => entry.shared).map((entry) => entry.ref);
+
+  const clauses: string[] = [];
+  if (moved.length > 0) clauses.push(`inlining ${moved.join(" and ")}`);
+  if (copied.length > 0) {
+    const [stays, them] = copied.length === 1 ? ["stays", "it"] : ["stay", "them"];
+    clauses.push(
+      `copying ${copied.join(" and ")}, which ${stays} under "$defs" because the schema references ${them} elsewhere too`,
+    );
+  }
+  return clauses.length > 0 ? `, ${clauses.join(", and ")}` : "";
 }
 
 /**
@@ -335,10 +365,13 @@ const unsupportedComposition = forbiddenKeywords(
     fixable: true,
     notes:
       'Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, ' +
-      'required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, but ' +
-      "only when the definition it names is used nowhere else and does not refer back to itself: inlining a shared " +
-      "definition would leave two copies to drift apart, and a self-referential one cannot be inlined at all. The " +
-      'definition stays under "$defs" once its only use is inlined, unused but harmless. Merging widens an ' +
+      'required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, unless ' +
+      "the definition it names refers back to itself, which cannot be inlined at all. A definition other subschemas " +
+      'also reference is copied rather than moved, and the fix title says so: the original stays under "$defs" for ' +
+      'them, and the two are no longer one definition. The alternative is worse, because an untouched "allOf" is an ' +
+      "error no fix can resolve, while a copy only costs size, which the property, nesting, and string-size rules " +
+      'measure again over the fixed schema. A definition left with no references at all stays under "$defs", unused ' +
+      "but harmless. Merging widens an " +
       '"additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — ' +
       "which is what a single strict object has to accept anyway. Branches that constrain the same key differently " +
       'are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" ' +
@@ -357,7 +390,7 @@ const unsupportedComposition = forbiddenKeywords(
     const merged = mergedAllOf(node.schema, resolved?.branches ?? null);
     const count = Array.isArray(node.schema.allOf) ? node.schema.allOf.length : 0;
     const subject = count === 1 ? 'the "allOf" branch' : `the ${count} "allOf" branches`;
-    const naming = resolved && resolved.inlined.length > 0 ? `, inlining ${resolved.inlined.join(" and ")}` : "";
+    const naming = resolved ? describeInlined(resolved.inlined) : "";
     return {
       message: '"allOf" is not supported.',
       hint: merged ? "Merge the subschemas into a single object." : "Merge the subschemas into a single object by hand.",

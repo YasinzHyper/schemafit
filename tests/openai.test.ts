@@ -102,13 +102,17 @@ describe("openai", () => {
     });
   });
 
-  it("unsupported-composition offers no merge for a $ref branch that is used elsewhere", () => {
+  it("unsupported-composition copies a $ref branch whose definition is used elsewhere", () => {
     const schema = strictObject(
       { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { $ref: "#/$defs/user" } },
       { $defs: { user: strictObject({ name: { type: "string" } }) } },
     );
     const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
-    expect(merge?.fix).toBeUndefined();
+    expect(merge?.fix?.title).toBe(
+      'Merge the "allOf" branch into the object, copying #/$defs/user, which stays under "$defs" because the schema references it elsewhere too.',
+    );
+    const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
+    expect(merge?.fix?.rewrite(reporter)).toEqual(strictObject({ name: { type: "string" } }));
   });
 
   it("unsupported-composition offers no merge for a $ref branch that refers back to itself", () => {

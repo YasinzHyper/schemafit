@@ -195,20 +195,57 @@ describe("fix", () => {
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
   });
 
-  it("leaves an allOf whose $ref branch is shared or recursive alone", () => {
-    const shared = fix(
+  it("copies a definition the rest of the schema also references, and keeps it where it was", () => {
+    const user = strictObject({ name: { type: "string" } });
+    const { schema, applied } = fix(
       strictObject(
         { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { $ref: "#/$defs/user" } },
-        { $defs: { user: strictObject({ name: { type: "string" } }) } },
+        { $defs: { user } },
       ),
       { providers: ["openai"] },
     );
-    expect(shared.schema.properties).toEqual({
-      reporter: { allOf: [{ $ref: "#/$defs/user" }] },
+
+    expect(schema.properties).toEqual({
+      reporter: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      // The other reference still needs the definition, so it stays exactly as it was.
       assignee: { $ref: "#/$defs/user" },
     });
-    expect(shared.findings.map((finding) => finding.ruleId)).toContain("openai/unsupported-composition");
+    expect(schema.$defs).toEqual({ user });
+    expect(applied.map((item) => item.title)).toContain(
+      'Merge the "allOf" branch into the object, copying #/$defs/user, which stays under "$defs" because the schema references it elsewhere too.',
+    );
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
 
+  it("names the inlined and the copied definitions apart in one title", () => {
+    const { applied } = fix(
+      strictObject(
+        {
+          reporter: { allOf: [{ $ref: "#/$defs/user" }, { $ref: "#/$defs/badge" }] },
+          assignee: { $ref: "#/$defs/user" },
+        },
+        {
+          $defs: {
+            user: strictObject({ name: { type: "string" } }),
+            badge: strictObject({ colour: { type: "string" } }),
+          },
+        },
+      ),
+      { providers: ["openai"] },
+    );
+
+    expect(applied.map((item) => item.title)).toContain(
+      'Merge the 2 "allOf" branches into the object, inlining #/$defs/badge, and copying #/$defs/user, ' +
+        'which stays under "$defs" because the schema references it elsewhere too.',
+    );
+  });
+
+  it("leaves an allOf whose $ref branch is recursive alone", () => {
     const recursive = fix(
       strictObject(
         { tree: { allOf: [{ $ref: "#/$defs/node" }] } },
