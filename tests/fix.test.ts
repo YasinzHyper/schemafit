@@ -183,16 +183,74 @@ describe("fix", () => {
         additionalProperties: false,
       },
     });
-    expect(applied.map((item) => item.title)).toContain(
+    expect(applied.map((item) => item.title)).toEqual([
       'Merge the "allOf" branch into the object, inlining #/$defs/user.',
-    );
-    // The definition is left where it was: the fix rewrites the branch, not the whole schema.
-    expect(schema.$defs).toEqual({ user: strictObject({ name: { type: "string" } }) });
-    // And the inlined copy shares nothing with it, so rewriting one never touches the other.
-    const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
-    const user = (schema.$defs as Record<string, JsonSchema>).user as JsonSchema;
-    expect(reporter.properties).not.toBe(user.properties);
+      "Remove #/$defs/user, which nothing references any more.",
+    ]);
+    // Inlining was the definition's last use, so the empty "$defs" map goes with it.
+    expect(schema).not.toHaveProperty("$defs");
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("keeps a definition that other parts of the schema still reach", () => {
+    const { schema, applied } = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, owner: { $ref: "#/$defs/account" } },
+        {
+          $defs: {
+            user: strictObject({ name: { type: "string" } }),
+            account: strictObject({ id: { type: "string" } }),
+          },
+        },
+      ),
+      { providers: ["openai"] },
+    );
+
+    // Only the inlined definition goes; the map stays for the one still in use.
+    expect(schema.$defs).toEqual({ account: strictObject({ id: { type: "string" } }) });
+    expect(applied.map((item) => item.path)).toContain("/$defs/user");
+  });
+
+  it("prunes a definition once the last reference to it is inlined", () => {
+    const { schema, applied } = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { allOf: [{ $ref: "#/$defs/user" }] } },
+        { $defs: { user: strictObject({ name: { type: "string" } }) } },
+      ),
+      { providers: ["openai"] },
+    );
+
+    expect(schema).not.toHaveProperty("$defs");
+    // The copy is reported once: the first merge leaves the other reference behind.
+    expect(applied.filter((item) => item.path === "/$defs/user")).toHaveLength(1);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("never removes a property an allOf branch referenced, only a definition", () => {
+    const { schema } = fix(
+      strictObject({
+        base: strictObject({ id: { type: "string" } }),
+        ticket: { allOf: [{ $ref: "#/properties/base" }] },
+      }),
+      { providers: ["openai"] },
+    );
+
+    // A local $ref can point anywhere. "base" is a property of the object, not a definition,
+    // so inlining it must not take it out of the schema.
+    expect(schema.properties).toHaveProperty("base");
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("leaves an unused definition the fix never touched alone", () => {
+    const unused = strictObject({ code: { type: "string" } });
+    const { schema } = fix(
+      strictObject({ reporter: { allOf: [{ $ref: "#/$defs/user" }] } }, { $defs: { user: strictObject({ name: { type: "string" } }), unused } }),
+      { providers: ["openai"] },
+    );
+
+    // Pruning follows the fix, so a definition nobody referenced to begin with is not the
+    // fix's to remove.
+    expect(schema.$defs).toEqual({ unused });
   });
 
   it("copies a definition the rest of the schema also references, and keeps it where it was", () => {
@@ -216,8 +274,12 @@ describe("fix", () => {
       assignee: { $ref: "#/$defs/user" },
     });
     expect(schema.$defs).toEqual({ user });
+    // The copy shares nothing with the definition, so rewriting one never touches the other.
+    const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
+    const original = (schema.$defs as Record<string, JsonSchema>).user as JsonSchema;
+    expect(reporter.properties).not.toBe(original.properties);
     expect(applied.map((item) => item.title)).toContain(
-      'Merge the "allOf" branch into the object, copying #/$defs/user, which stays under "$defs" because the schema references it elsewhere too.',
+      'Merge the "allOf" branch into the object, copying #/$defs/user, because the schema references it elsewhere too.',
     );
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
   });
@@ -241,7 +303,7 @@ describe("fix", () => {
 
     expect(applied.map((item) => item.title)).toContain(
       'Merge the 2 "allOf" branches into the object, inlining #/$defs/badge, and copying #/$defs/user, ' +
-        'which stays under "$defs" because the schema references it elsewhere too.',
+        "because the schema references it elsewhere too.",
     );
   });
 
