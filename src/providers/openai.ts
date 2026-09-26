@@ -246,6 +246,8 @@ function refCount(root: JsonSchema, path: string): number {
 /** A `$ref` branch the fix replaced with the definition it names. */
 interface InlinedRef {
   ref: string;
+  /** JSON Pointer to the definition, so the fix can name what it may orphan. */
+  path: string;
   /** True when other subschemas reference the definition too, so the original has to stay. */
   shared: boolean;
 }
@@ -254,17 +256,22 @@ interface InlinedRef {
  * The definition a bare `$ref` branch names, when putting it in the branch's place is safe:
  * the definition must be an object and must not refer back to itself, which cannot be inlined
  * at all. A definition other subschemas also reference is copied rather than moved, and
- * `shared` records that, because the original stays under `$defs` for them. Copying is the
- * better trade: leaving the branch alone leaves an `allOf` the API rejects and no fix can
- * resolve, while a second copy only costs size, which the property, nesting, and string-size
- * rules measure again over the fixed schema. The copy is deep, so the merged object shares
- * nothing with the definition it came from.
+ * `shared` records that, because the original has to stay for them. Copying is the better
+ * trade: leaving the branch alone leaves an `allOf` the API rejects and no fix can resolve,
+ * while a second copy only costs size, which the property, nesting, and string-size rules
+ * measure again over the fixed schema. The copy is deep, so the merged object shares nothing
+ * with the definition it came from. Either way the fix names the definition in `prunes`, and
+ * the engine drops it once nothing references it any more.
  */
-function inlinableRef(root: JsonSchema, ref: string): { schema: JsonSchema; shared: boolean } | null {
+function inlinableRef(root: JsonSchema, ref: string): { schema: JsonSchema; path: string; shared: boolean } | null {
   const target = resolveLocalRef(root, ref);
   if (!target || target.path === "") return null;
   if (refersToItself(root, target.path)) return null;
-  return { schema: structuredClone(target.schema), shared: refCount(root, target.path) > 1 };
+  return {
+    schema: structuredClone(target.schema),
+    path: target.path,
+    shared: refCount(root, target.path) > 1,
+  };
 }
 
 /**
@@ -280,9 +287,9 @@ function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSc
   for (const branch of raw) {
     if (!isJsonSchema(branch)) return null;
     const ref = refOnly(branch);
-    const resolved = ref === null ? { schema: branch, shared: false } : inlinableRef(root, ref);
+    const resolved = ref === null ? { schema: branch, path: "", shared: false } : inlinableRef(root, ref);
     if (!resolved || !isObjectSchema(resolved.schema) || !describesObject(resolved.schema)) return null;
-    if (ref !== null) inlined.push({ ref, shared: resolved.shared });
+    if (ref !== null) inlined.push({ ref, path: resolved.path, shared: resolved.shared });
     branches.push(resolved.schema);
   }
   return { branches, inlined };
@@ -291,7 +298,9 @@ function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSc
 /**
  * The clause a fix title uses for the `$ref` branches it put in place. A definition used
  * nowhere else is inlined; one that is shared is copied, which the title says outright,
- * because the original stays where it is and the two are no longer one definition.
+ * because the original stays for the references the fix does not touch and the two are no
+ * longer one definition. The title does not promise it stays for good: once the last
+ * reference is inlined too, the engine prunes it.
  */
 function describeInlined(inlined: readonly InlinedRef[]): string {
   const moved = inlined.filter((entry) => !entry.shared).map((entry) => entry.ref);
@@ -300,10 +309,8 @@ function describeInlined(inlined: readonly InlinedRef[]): string {
   const clauses: string[] = [];
   if (moved.length > 0) clauses.push(`inlining ${moved.join(" and ")}`);
   if (copied.length > 0) {
-    const [stays, them] = copied.length === 1 ? ["stays", "it"] : ["stay", "them"];
-    clauses.push(
-      `copying ${copied.join(" and ")}, which ${stays} under "$defs" because the schema references ${them} elsewhere too`,
-    );
+    const them = copied.length === 1 ? "it" : "them";
+    clauses.push(`copying ${copied.join(" and ")}, because the schema references ${them} elsewhere too`);
   }
   return clauses.length > 0 ? `, ${clauses.join(", and ")}` : "";
 }
@@ -367,11 +374,12 @@ const unsupportedComposition = forbiddenKeywords(
       'Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, ' +
       'required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, unless ' +
       "the definition it names refers back to itself, which cannot be inlined at all. A definition other subschemas " +
-      'also reference is copied rather than moved, and the fix title says so: the original stays under "$defs" for ' +
-      'them, and the two are no longer one definition. The alternative is worse, because an untouched "allOf" is an ' +
-      "error no fix can resolve, while a copy only costs size, which the property, nesting, and string-size rules " +
-      'measure again over the fixed schema. A definition left with no references at all stays under "$defs", unused ' +
-      "but harmless. Merging widens an " +
+      "also reference is copied rather than moved, and the fix title says so: the original stays for them, and the " +
+      'two are no longer one definition. The alternative is worse, because an untouched "allOf" is an error no fix ' +
+      "can resolve, while a copy only costs size, which the property, nesting, and string-size rules measure again " +
+      "over the fixed schema. A definition the fix leaves with no references at all is removed, together with the " +
+      '"$defs" map it empties, because an orphan is not free: its name counts toward the 120,000-character string ' +
+      "budget and its properties toward the 5000-property limit. Merging widens an " +
       '"additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — ' +
       "which is what a single strict object has to accept anyway. Branches that constrain the same key differently " +
       'are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" ' +
@@ -399,6 +407,7 @@ const unsupportedComposition = forbiddenKeywords(
             fix: {
               title: `Merge ${subject} into the object${naming}.`,
               rewrite: (schema: JsonSchema) => mergedAllOf(schema, allOfBranches(schema, root)?.branches ?? null) ?? schema,
+              prunes: (resolved?.inlined ?? []).map((entry) => entry.path),
             },
           }
         : {}),

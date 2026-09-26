@@ -109,7 +109,7 @@ describe("openai", () => {
     );
     const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
     expect(merge?.fix?.title).toBe(
-      'Merge the "allOf" branch into the object, copying #/$defs/user, which stays under "$defs" because the schema references it elsewhere too.',
+      'Merge the "allOf" branch into the object, copying #/$defs/user, because the schema references it elsewhere too.',
     );
     const reporter = (schema.properties as Record<string, JsonSchema>).reporter as JsonSchema;
     expect(merge?.fix?.rewrite(reporter)).toEqual(strictObject({ name: { type: "string" } }));
