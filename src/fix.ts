@@ -40,11 +40,24 @@ function isReferenced(root: JsonSchema, pointer: string): boolean {
   });
 }
 
+/** True when `pointer` names a subschema of `root`, i.e. a path `walk()` yields. */
+function isSubschemaPath(root: JsonSchema, pointer: string): boolean {
+  return walk(root).some((node) => node.path === pointer);
+}
+
 /**
  * Deletes the definition at `pointer` from `root`, in place, along with the map it leaves
  * empty. Only an entry of a `$defs` or `definitions` map is removed: a local `$ref` may point
  * at any subschema, and a property nothing else references is still part of what the schema
  * accepts. Returns false when the pointer names anything else, or nothing at all.
+ *
+ * The last two tokens spelling `$defs`/`definitions` and a name is not enough to make one: a
+ * property *named* `$defs` reads exactly the same. What separates them is the map's owner. A
+ * definition map belongs to a subschema without being one, so `walk()` yields
+ * `/properties/x/$defs/user` and `/properties/x`, never `/properties/x/$defs`. Requiring the
+ * owner to be a path `walk()` yields therefore accepts `/$defs/user` and
+ * `/properties/x/$defs/user`, owned by the root and by `/properties/x`, and rejects
+ * `/properties/$defs/items`, whose owner `/properties` is a map of names, not a subschema.
  */
 function removeDefinition(root: JsonSchema, pointer: string): boolean {
   if (!pointer.startsWith("/")) return false;
@@ -53,6 +66,7 @@ function removeDefinition(root: JsonSchema, pointer: string): boolean {
   const name = tokens.pop() as string;
   const keyword = tokens[tokens.length - 1];
   if (keyword !== "$defs" && keyword !== "definitions") return false;
+  if (!isSubschemaPath(root, joinPointer("", ...tokens.slice(0, -1)))) return false;
 
   const map = resolvePointer(root, joinPointer("", ...tokens));
   if (!isJsonSchema(map) || !(name in map)) return false;

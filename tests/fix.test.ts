@@ -241,6 +241,41 @@ describe("fix", () => {
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
   });
 
+  it.each(["$defs", "definitions"])("keeps what a property named %s describes", (name) => {
+    const items = strictObject({ a: { type: "string" } });
+    const { schema, applied } = fix(
+      strictObject({
+        [name]: { type: "array", items },
+        ticket: { allOf: [{ $ref: `#/properties/${name}/items` }] },
+      }),
+      { providers: ["openai"] },
+    );
+
+    // The last two tokens of #/properties/$defs/items spell a definition entry, but the map
+    // they sit in is the object's "properties", not a definition map, so "items" is a
+    // constraint the schema declares and pruning it would widen what the schema accepts.
+    expect((schema.properties as Record<string, JsonSchema>)[name]).toEqual({ type: "array", items });
+    expect(applied.map((item) => item.path)).not.toContain(`/properties/${name}/items`);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("prunes a definition map that belongs to a nested subschema", () => {
+    const { schema, applied } = fix(
+      strictObject({
+        ticket: {
+          ...strictObject({ reporter: { allOf: [{ $ref: "#/properties/ticket/$defs/user" }] } }),
+          $defs: { user: strictObject({ name: { type: "string" } }) },
+        },
+      }),
+      { providers: ["openai"] },
+    );
+
+    // Here "$defs" is the keyword, and its owner #/properties/ticket is a subschema, so the
+    // entry is a definition and goes once its last reference is inlined.
+    expect((schema.properties as Record<string, JsonSchema>).ticket).not.toHaveProperty("$defs");
+    expect(applied.map((item) => item.path)).toContain("/properties/ticket/$defs/user");
+  });
+
   it("leaves an unused definition the fix never touched alone", () => {
     const unused = strictObject({ code: { type: "string" } });
     const { schema } = fix(
