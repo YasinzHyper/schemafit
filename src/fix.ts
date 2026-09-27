@@ -1,7 +1,8 @@
 import { lint } from "./lint.js";
-import { resolvePointer, setPointer } from "./pointer.js";
+import { displayPointer, joinPointer, resolvePointer, setPointer, unescapeToken } from "./pointer.js";
+import { resolveLocalRef } from "./refs.js";
 import type { AppliedFix, Finding, FixResult, JsonSchema, LintOptions } from "./types.js";
-import { isJsonSchema } from "./walk.js";
+import { isJsonSchema, walk } from "./walk.js";
 
 /**
  * Applying a fix can expose a finding that was hidden behind it, so the schema is
@@ -17,6 +18,65 @@ function depth(pointer: string): number {
 /** Deepest subschema first, so rewriting a parent already sees its fixed children. */
 function deepestFirst(findings: readonly Finding[]): Finding[] {
   return [...findings].sort((a, b) => depth(b.path) - depth(a.path));
+}
+
+/** True when `pointer` is `ancestor` or sits inside it. */
+function within(pointer: string, ancestor: string): boolean {
+  return pointer === ancestor || pointer.startsWith(`${ancestor}/`);
+}
+
+/**
+ * True when a subschema outside `pointer` still reaches it with a local `$ref`, counting a
+ * reference to anything inside it. References from within `pointer` itself do not count:
+ * a definition that only refers to itself is unreachable once its last use is gone.
+ */
+function isReferenced(root: JsonSchema, pointer: string): boolean {
+  return walk(root).some((node) => {
+    if (within(node.path, pointer)) return false;
+    const { $ref } = node.schema;
+    if (typeof $ref !== "string") return false;
+    const target = resolveLocalRef(root, $ref);
+    return target !== undefined && within(target.path, pointer);
+  });
+}
+
+/** True when `pointer` names a subschema of `root`, i.e. a path `walk()` yields. */
+function isSubschemaPath(root: JsonSchema, pointer: string): boolean {
+  return walk(root).some((node) => node.path === pointer);
+}
+
+/**
+ * Deletes the definition at `pointer` from `root`, in place, along with the map it leaves
+ * empty. Only an entry of a `$defs` or `definitions` map is removed: a local `$ref` may point
+ * at any subschema, and a property nothing else references is still part of what the schema
+ * accepts. Returns false when the pointer names anything else, or nothing at all.
+ *
+ * The last two tokens spelling `$defs`/`definitions` and a name is not enough to make one: a
+ * property *named* `$defs` reads exactly the same. What separates them is the map's owner. A
+ * definition map belongs to a subschema without being one, so `walk()` yields
+ * `/properties/x/$defs/user` and `/properties/x`, never `/properties/x/$defs`. Requiring the
+ * owner to be a path `walk()` yields therefore accepts `/$defs/user` and
+ * `/properties/x/$defs/user`, owned by the root and by `/properties/x`, and rejects
+ * `/properties/$defs/items`, whose owner `/properties` is a map of names, not a subschema.
+ */
+function removeDefinition(root: JsonSchema, pointer: string): boolean {
+  if (!pointer.startsWith("/")) return false;
+
+  const tokens = pointer.slice(1).split("/").map(unescapeToken);
+  const name = tokens.pop() as string;
+  const keyword = tokens[tokens.length - 1];
+  if (keyword !== "$defs" && keyword !== "definitions") return false;
+  if (!isSubschemaPath(root, joinPointer("", ...tokens.slice(0, -1)))) return false;
+
+  const map = resolvePointer(root, joinPointer("", ...tokens));
+  if (!isJsonSchema(map) || !(name in map)) return false;
+
+  delete map[name];
+  if (Object.keys(map).length > 0) return true;
+
+  const owner = resolvePointer(root, joinPointer("", ...tokens.slice(0, -1)));
+  if (isJsonSchema(owner)) delete owner[keyword];
+  return true;
 }
 
 /**
@@ -57,6 +117,18 @@ export function fix(schema: unknown, options: LintOptions = {}): FixResult {
         title: finding.fix.title,
       });
       changed = true;
+
+      // The rewrite may have been the last use of a definition. An orphan is not free: its
+      // name and its property names still count toward the OpenAI size limits.
+      for (const pointer of finding.fix.prunes ?? []) {
+        if (isReferenced(current, pointer) || !removeDefinition(current, pointer)) continue;
+        applied.push({
+          ruleId: finding.ruleId,
+          provider: finding.provider,
+          path: pointer,
+          title: `Remove ${displayPointer(pointer)}, which nothing references any more.`,
+        });
+      }
     }
 
     if (!changed) break;

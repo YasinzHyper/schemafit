@@ -24,6 +24,13 @@ export interface SchemaFix {
   /** What applying it does, in the imperative: `Set "additionalProperties": false.` */
   title: string;
   rewrite(schema: JsonSchema): JsonSchema;
+  /**
+   * Definitions the rewrite may leave behind, as JSON Pointers from the root (`/$defs/user`).
+   * `fix()` removes each one after the rewrite, but only when nothing outside it references it
+   * any more, so a rule can name a definition it might orphan without having to know whether
+   * the rest of the schema still needs it.
+   */
+  prunes?: readonly string[];
 }
 
 export interface Finding {
