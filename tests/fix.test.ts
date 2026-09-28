@@ -288,6 +288,101 @@ describe("fix", () => {
     expect(schema.$defs).toEqual({ unused });
   });
 
+  describe("pruneUnusedDefs", () => {
+    const withOrphans = (): JsonSchema =>
+      strictObject(
+        { user: { $ref: "#/$defs/user" } },
+        {
+          $defs: {
+            user: strictObject({ name: { type: "string" } }),
+            legacy: strictObject({ code: { $ref: "#/$defs/code" } }),
+            code: { type: "string" },
+          },
+        },
+      );
+
+    it("removes a definition the input left unreferenced, and what only it referenced", () => {
+      const { schema, applied } = fix(withOrphans(), { providers: ["openai"], pruneUnusedDefs: true });
+
+      // "code" is reachable only through "legacy", so it is an orphan as soon as "legacy" goes.
+      expect(schema.$defs).toEqual({ user: strictObject({ name: { type: "string" } }) });
+      expect(applied.map((item) => item.path)).toEqual(["/$defs/legacy", "/$defs/code"]);
+      expect(applied[0]).toEqual({ path: "/$defs/legacy", title: "Remove #/$defs/legacy, which nothing references." });
+    });
+
+    it("keeps every definition when the option is off", () => {
+      const before = withOrphans();
+      const { schema, applied } = fix(before, { providers: ["openai"] });
+      expect(schema.$defs).toEqual(before.$defs);
+      expect(applied).toEqual([]);
+    });
+
+    it("removes the definition map it empties, at any depth", () => {
+      const { schema } = fix(
+        strictObject({ ticket: { ...strictObject({ id: { type: "string" } }), $defs: { unused: { type: "string" } } } }),
+        { providers: ["openai"], pruneUnusedDefs: true },
+      );
+      expect((schema.properties as Record<string, JsonSchema>).ticket).not.toHaveProperty("$defs");
+    });
+
+    it("removes a draft-07 \"definitions\" entry too", () => {
+      const { schema } = fix(strictObject({ id: { type: "string" } }, { definitions: { unused: { type: "string" } } }), {
+        providers: ["openai"],
+        pruneUnusedDefs: true,
+      });
+      expect(schema).not.toHaveProperty("definitions");
+    });
+
+    it("keeps a definition that only a fix stopped referencing, reporting it as the fix's", () => {
+      const { schema, applied } = fix(
+        strictObject({ reporter: { allOf: [{ $ref: "#/$defs/user" }] } }, { $defs: { user: strictObject({ name: { type: "string" } }) } }),
+        { providers: ["openai"], pruneUnusedDefs: true },
+      );
+
+      // The fix's own prune runs first, so the removal still names the rule that caused it.
+      expect(schema).not.toHaveProperty("$defs");
+      expect(applied.find((item) => item.path === "/$defs/user")).toMatchObject({
+        ruleId: "openai/unsupported-composition",
+        title: "Remove #/$defs/user, which nothing references any more.",
+      });
+    });
+
+    it.each([
+      ["an anchor reference", { $ref: "#user" }],
+      ["a $dynamicRef", { $dynamicRef: "#node" }],
+      ["an external reference", { $ref: "https://example.com/user.json" }],
+      ["a $ref that resolves to nothing", { $ref: "#/$defs/typo" }],
+    ])("prunes nothing when the schema holds %s", (_name, reference) => {
+      const $defs = { user: strictObject({ name: { type: "string" } }) };
+      const { schema } = fix(strictObject({ user: reference as JsonSchema }, { $defs }), {
+        providers: ["openai"],
+        pruneUnusedDefs: true,
+      });
+
+      // The reference cannot be followed, so "user" only looks unreferenced.
+      expect(schema.$defs).toEqual($defs);
+    });
+
+    it("prunes nothing below a subschema that re-bases references with its own $id", () => {
+      const inner = { ...strictObject({ name: { type: "string" } }), $id: "https://example.com/user" };
+      const { schema } = fix(strictObject({ user: { $ref: "#/$defs/user" } }, { $defs: { user: inner, spare: { type: "string" } } }), {
+        providers: ["openai"],
+        pruneUnusedDefs: true,
+      });
+      expect(schema.$defs).toHaveProperty("spare");
+    });
+
+    it.each(["$defs", "definitions"])("keeps a property named %s, which is not a definition map", (name) => {
+      const property = strictObject({ code: { type: "string" } });
+      const { schema, applied } = fix(strictObject({ [name]: property }), { providers: ["openai"], pruneUnusedDefs: true });
+
+      // Nothing references #/properties/$defs/properties/code either, but "properties" is a
+      // map of names, not a definition map, so everything below it is what the schema accepts.
+      expect((schema.properties as Record<string, JsonSchema>)[name]).toEqual(property);
+      expect(applied).toEqual([]);
+    });
+  });
+
   it("copies a definition the rest of the schema also references, and keeps it where it was", () => {
     const user = strictObject({ name: { type: "string" } });
     const { schema, applied } = fix(

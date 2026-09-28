@@ -75,7 +75,9 @@ export function formatFixed(report: FixReport, options: { color: boolean }): str
     lines.push(`  ${paint("dim", "Nothing to fix; the schema is unchanged.")}`);
   }
   for (const item of report.applied) {
-    lines.push(`  ${paint("green", "fixed")}  ${paint("bold", displayPointer(item.path))}  ${paint("dim", item.ruleId)}`);
+    // A prune the input asked for carries no rule, so the report names the flag instead.
+    const by = item.ruleId ?? "--prune-unused-defs";
+    lines.push(`  ${paint("green", "fixed")}  ${paint("bold", displayPointer(item.path))}  ${paint("dim", by)}`);
     lines.push(`         ${item.title}`);
   }
 

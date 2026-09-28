@@ -7,6 +7,7 @@ export { PROVIDER_IDS } from "./types.js";
 export type {
   AppliedFix,
   Finding,
+  FixOptions,
   FixResult,
   JsonSchema,
   LintOptions,

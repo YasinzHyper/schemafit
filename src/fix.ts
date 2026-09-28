@@ -1,7 +1,7 @@
 import { lint } from "./lint.js";
 import { displayPointer, joinPointer, resolvePointer, setPointer, unescapeToken } from "./pointer.js";
 import { resolveLocalRef } from "./refs.js";
-import type { AppliedFix, Finding, FixResult, JsonSchema, LintOptions } from "./types.js";
+import type { AppliedFix, Finding, FixOptions, FixResult, JsonSchema } from "./types.js";
 import { isJsonSchema, walk } from "./walk.js";
 
 /**
@@ -79,6 +79,58 @@ function removeDefinition(root: JsonSchema, pointer: string): boolean {
   return true;
 }
 
+/** Every `$defs` / `definitions` entry in `root`, as JSON Pointers, outermost map first. */
+function definitionPointers(root: JsonSchema): string[] {
+  const pointers: string[] = [];
+  for (const node of walk(root)) {
+    for (const keyword of ["$defs", "definitions"]) {
+      const map = node.schema[keyword];
+      if (!isJsonSchema(map)) continue;
+      for (const name of Object.keys(map)) pointers.push(joinPointer(node.path, keyword, name));
+    }
+  }
+  return pointers;
+}
+
+/**
+ * True when every reference in `root` can be followed to a subschema of `root`. Pruning reads
+ * the reference graph to decide what nothing needs any more, so a reference it cannot follow
+ * has to stop it: the definition behind an anchor (`"$ref": "#user"`), a `$dynamicRef`, or a
+ * URL would look unreferenced and go. A nested `$id` stops it too, because it re-bases the
+ * references below it, so a pointer that resolves here may name something else there.
+ */
+function referencesAreComplete(root: JsonSchema): boolean {
+  return walk(root).every((node) => {
+    if (node.path !== "" && node.schema.$id !== undefined) return false;
+    for (const keyword of ["$ref", "$dynamicRef"]) {
+      const ref = node.schema[keyword];
+      if (ref === undefined) continue;
+      if (typeof ref !== "string" || resolveLocalRef(root, ref) === undefined) return false;
+    }
+    return true;
+  });
+}
+
+/**
+ * Removes every definition of `root` that no `$ref` reaches, in place, and reports what went.
+ * Repeated to a fixpoint, because removing a definition can orphan the one it referenced.
+ * Each round removes at least one entry of a finite set, so it terminates.
+ */
+function pruneUnusedDefs(root: JsonSchema): AppliedFix[] {
+  const removed: AppliedFix[] = [];
+  if (!referencesAreComplete(root)) return removed;
+
+  for (;;) {
+    let changed = false;
+    for (const pointer of definitionPointers(root)) {
+      if (isReferenced(root, pointer) || !removeDefinition(root, pointer)) continue;
+      removed.push({ path: pointer, title: `Remove ${displayPointer(pointer)}, which nothing references.` });
+      changed = true;
+    }
+    if (!changed) return removed;
+  }
+}
+
 /**
  * Lints `schema` and applies every fix the findings carry, repeating until nothing
  * changes. The input is left untouched; the rewritten schema is returned.
@@ -86,14 +138,18 @@ function removeDefinition(root: JsonSchema, pointer: string): boolean {
  *
  * Fixes for different providers can contradict each other, so pass a single provider
  * unless the schema is meant to satisfy all of them at once.
+ *
+ * `pruneUnusedDefs` additionally removes the definitions the input itself left unreferenced.
  */
-export function fix(schema: unknown, options: LintOptions = {}): FixResult {
+export function fix(schema: unknown, options: FixOptions = {}): FixResult {
   if (!isJsonSchema(schema)) {
     throw new TypeError("Schema must be a JSON object.");
   }
 
   let current = structuredClone(schema);
   const applied: AppliedFix[] = [];
+  // Before the first lint, so no fix is spent rewriting a definition that is about to go.
+  if (options.pruneUnusedDefs) applied.push(...pruneUnusedDefs(current));
   let result = lint(current, options);
 
   for (let pass = 0; pass < MAX_PASSES; pass += 1) {
@@ -129,6 +185,14 @@ export function fix(schema: unknown, options: LintOptions = {}): FixResult {
           title: `Remove ${displayPointer(pointer)}, which nothing references any more.`,
         });
       }
+    }
+
+    // A rewrite can orphan a definition no `prunes` named, such as one that only the
+    // definition it just inlined referenced.
+    if (options.pruneUnusedDefs) {
+      const pruned = pruneUnusedDefs(current);
+      applied.push(...pruned);
+      changed ||= pruned.length > 0;
     }
 
     if (!changed) break;
