@@ -34,6 +34,9 @@ Options
   -q, --quiet             Report errors only
       --max-warnings <n>  Exit 1 when more than <n> warnings are found
       --fix               Apply every available fix and write the schema out
+      --prune-unused-defs
+                          With --fix, also remove the definitions the input
+                          left unreferenced
   -o, --out <file>        With --fix, write there instead of stdout
   -h, --help              Show this help
   -v, --version           Show the version
@@ -45,6 +48,11 @@ Files may hold a bare JSON Schema or a tool / response-format definition
 should look like. It keeps the wrapper the schema came in, reports what it changed on
 stderr so stdout stays pipeable, and leaves findings that have no fix alone.
 "schemafit rules" marks the rules it can fix.
+
+--prune-unused-defs drops every definition no $ref reaches, not only the ones --fix
+orphans itself. It changes nothing about what the schema accepts, and it frees the
+size budget an unused definition spends. Leave it off if another document $refs into
+this one.
 
 Exit codes
   0  compatible with every selected provider
@@ -97,14 +105,21 @@ async function readDocument(file: string, io: CliIo): Promise<{ label: string; d
   }
 }
 
+/** What `--fix` was asked to do, beyond the file it reads. */
+interface FixRequest {
+  provider: ProviderId;
+  out: string | undefined;
+  pruneUnusedDefs: boolean;
+}
+
 /** Rewrites one file for one provider and reports what changed on stderr. */
-async function runFix(file: string, provider: ProviderId, out: string | undefined, io: CliIo): Promise<number> {
+async function runFix(file: string, { provider, out, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<number> {
   const { label, document } = await readDocument(file, io);
   const { schema, wrapper, keys } = unwrap(document);
 
   let result;
   try {
-    result = fix(schema, { providers: [provider] });
+    result = fix(schema, { providers: [provider], pruneUnusedDefs });
   } catch (error) {
     if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
     throw error;
@@ -136,6 +151,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         quiet: { type: "boolean", short: "q", default: false },
         "max-warnings": { type: "string" },
         fix: { type: "boolean", default: false },
+        "prune-unused-defs": { type: "boolean", default: false },
         out: { type: "string", short: "o" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "v", default: false },
@@ -168,6 +184,9 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     if (values.out !== undefined && !values.fix) {
       throw new UsageError("--out only applies with --fix.");
     }
+    if (values["prune-unused-defs"] && !values.fix) {
+      throw new UsageError("--prune-unused-defs only applies with --fix.");
+    }
 
     if (values.fix) {
       const [file] = positionals;
@@ -179,7 +198,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       if (selected.length !== 1 || only === undefined) {
         throw new UsageError("--fix needs exactly one provider: pass --provider <id>.");
       }
-      return await runFix(file, only, values.out, io);
+      return await runFix(file, { provider: only, out: values.out, pruneUnusedDefs: values["prune-unused-defs"] }, io);
     }
 
     if (positionals[0] === "rules") {

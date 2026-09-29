@@ -152,6 +152,26 @@ describe("cli", () => {
     expect(JSON.parse(await readFile(out, "utf8"))).toMatchObject({ additionalProperties: false });
   });
 
+  it("--fix --prune-unused-defs drops a definition nothing references", async () => {
+    const schema = JSON.stringify({
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+      $defs: { legacy: { type: "string" } },
+    });
+
+    const kept = await cli(["--fix", "-p", "openai", "-"], schema);
+    expect(JSON.parse(kept.stdout)).toHaveProperty("$defs");
+    expect(kept.stderr).toContain("Nothing to fix");
+
+    const { code, stdout, stderr } = await cli(["--fix", "-p", "openai", "--prune-unused-defs", "-"], schema);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).not.toHaveProperty("$defs");
+    expect(stderr).toContain("--prune-unused-defs");
+    expect(stderr).toContain("Remove #/$defs/legacy, which nothing references.");
+  });
+
   it("--fix says nothing to do for a schema that already fits", async () => {
     const { code, stderr } = await cli(["--fix", "-p", "openai", example("ticket.portable.json")]);
     expect(code).toBe(0);
@@ -164,6 +184,7 @@ describe("cli", () => {
     [["--fix", "-p", "openai", "a.json", "b.json"], "exactly one file"],
     [["--fix", "-p", "openai", "rules"], "rules subcommand"],
     [["--out", "x.json", "a.json"], "--out only applies"],
+    [["--prune-unused-defs", "a.json"], "--prune-unused-defs only applies"],
   ])("exits 2 on bad --fix usage: %j", async (args, message) => {
     const { code, stderr } = await cli(args);
     expect(code).toBe(2);

@@ -110,6 +110,17 @@ export interface LintOptions {
   providers?: readonly ProviderId[];
 }
 
+export interface FixOptions extends LintOptions {
+  /**
+   * Also remove every `$defs` / `definitions` entry that no `$ref` reaches, including the ones
+   * the input already left unreferenced. Off by default: an unreferenced definition costs
+   * against the provider size limits but changes nothing about what the schema accepts, and
+   * another document may `$ref` into it. Nothing is removed from a schema whose references
+   * cannot all be followed.
+   */
+  pruneUnusedDefs?: boolean;
+}
+
 export interface LintResult {
   findings: Finding[];
   summary: ProviderSummary[];
@@ -117,8 +128,12 @@ export interface LintResult {
 
 /** One fix that `fix()` applied, recorded where it was applied. */
 export interface AppliedFix {
-  ruleId: string;
-  provider: ProviderId;
+  /**
+   * The rule whose finding asked for the rewrite. Absent when no finding did, which today
+   * means a definition `pruneUnusedDefs` removed because nothing referenced it.
+   */
+  ruleId?: string;
+  provider?: ProviderId;
   /** JSON Pointer to the subschema that was rewritten, in the schema as it was then. */
   path: string;
   title: string;

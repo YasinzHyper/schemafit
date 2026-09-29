@@ -1,5 +1,5 @@
 import { resolvePointer } from "../pointer.js";
-import { resolveLocalRef } from "../refs.js";
+import { referenceSites, referenceTarget, resolveLocalRef } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta } from "../types.js";
 import { children, isJsonSchema, isObjectSchema, typesOf, walk } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
@@ -235,12 +235,13 @@ function refersToItself(root: JsonSchema, path: string): boolean {
   return isJsonSchema(start) ? visit(start, path) : false;
 }
 
-/** How many subschemas point at `path` with a local `$ref`. */
+/**
+ * How many references in the document point at `path`. Counted over every reference keyword
+ * wherever it sits, so a definition a `$ref` under a keyword `walk()` does not visit still needs
+ * is seen as shared and copied rather than moved out from under it.
+ */
 function refCount(root: JsonSchema, path: string): number {
-  return walk(root).filter((node) => {
-    const { $ref } = node.schema;
-    return typeof $ref === "string" && resolveLocalRef(root, $ref)?.path === path;
-  }).length;
+  return referenceSites(root).filter((site) => referenceTarget(root, site)?.path === path).length;
 }
 
 /** A `$ref` branch the fix replaced with the definition it names. */
