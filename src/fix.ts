@@ -1,6 +1,6 @@
 import { lint } from "./lint.js";
 import { displayPointer, joinPointer, resolvePointer, setPointer, unescapeToken } from "./pointer.js";
-import { resolveLocalRef } from "./refs.js";
+import { referenceSites, referenceTarget } from "./refs.js";
 import type { AppliedFix, Finding, FixOptions, FixResult, JsonSchema } from "./types.js";
 import { isJsonSchema, walk } from "./walk.js";
 
@@ -26,16 +26,18 @@ function within(pointer: string, ancestor: string): boolean {
 }
 
 /**
- * True when a subschema outside `pointer` still reaches it with a local `$ref`, counting a
+ * True when something outside `pointer` still reaches it with a local reference, counting a
  * reference to anything inside it. References from within `pointer` itself do not count:
  * a definition that only refers to itself is unreachable once its last use is gone.
+ *
+ * Every reference in the document counts, wherever it sits, not only the ones under a keyword
+ * `walk()` visits: a definition removed while a `$ref` the walker never saw still names it
+ * leaves a schema that does not resolve.
  */
 function isReferenced(root: JsonSchema, pointer: string): boolean {
-  return walk(root).some((node) => {
-    if (within(node.path, pointer)) return false;
-    const { $ref } = node.schema;
-    if (typeof $ref !== "string") return false;
-    const target = resolveLocalRef(root, $ref);
+  return referenceSites(root).some((site) => {
+    if (within(site.path, pointer)) return false;
+    const target = referenceTarget(root, site);
     return target !== undefined && within(target.path, pointer);
   });
 }
@@ -96,19 +98,32 @@ function definitionPointers(root: JsonSchema): string[] {
  * True when every reference in `root` can be followed to a subschema of `root`. Pruning reads
  * the reference graph to decide what nothing needs any more, so a reference it cannot follow
  * has to stop it: the definition behind an anchor (`"$ref": "#user"`), a `$dynamicRef`, or a
- * URL would look unreferenced and go. A nested `$id` stops it too, because it re-bases the
- * references below it, so a pointer that resolves here may name something else there.
+ * URL would look unreferenced and go.
+ *
+ * "Every reference" means every one in the document, found by reading the document as plain
+ * JSON, and not only the ones under a keyword `walk()` visits. A reference the walker does not
+ * reach is invisible twice over - it neither looks unfollowable here nor holds its definition
+ * in place in `isReferenced` - so the schema would come back with a `$ref` pointing at nothing.
+ * Requiring each reference to sit at a path `walk()` yields keeps that from depending on the
+ * walker growing a keyword later: today a `$ref` under draft-07 `dependencies` or in a
+ * `contentSchema` stops pruning outright, and if the walker learns those keywords, the same
+ * reference starts holding its definition in place instead.
+ *
+ * A nested `$id` stops pruning too, because it re-bases the references below it, so a pointer
+ * that resolves here may name something else there. Looking for one on the subschemas `walk()`
+ * yields is enough: a reference that passes the test above sits on one of them, and so does
+ * every subschema enclosing it.
  */
 function referencesAreComplete(root: JsonSchema): boolean {
-  return walk(root).every((node) => {
+  const subschemas = new Set<string>();
+  for (const node of walk(root)) {
     if (node.path !== "" && node.schema.$id !== undefined) return false;
-    for (const keyword of ["$ref", "$dynamicRef"]) {
-      const ref = node.schema[keyword];
-      if (ref === undefined) continue;
-      if (typeof ref !== "string" || resolveLocalRef(root, ref) === undefined) return false;
-    }
-    return true;
-  });
+    subschemas.add(node.path);
+  }
+
+  return referenceSites(root).every(
+    (site) => subschemas.has(site.path) && referenceTarget(root, site) !== undefined,
+  );
 }
 
 /**

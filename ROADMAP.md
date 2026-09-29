@@ -89,6 +89,7 @@ Refinements to the existing providers. Small, and good first contributions.
 - [ ] `openai/nullable-enum`: an enum on a nullable type must include `null` **(needs evidence)**. The docs' own optional-parameter example is `{ "type": ["string", "null"], "enum": ["F", "C"] }`, which argues the enum does *not* have to list `null`; checked 2026-09-19
 - [ ] `gemini/nesting`: heuristic warning for "very large or deeply nested" schemas, with the threshold documented as a heuristic
 - [ ] `*/unresolved-ref`: a local `$ref` that points nowhere, for every provider
+- [ ] `openai/dependencies`: draft-07 `dependencies`, which `dependentSchemas` and `dependentRequired` replaced, is reported by no rule today, so a schema written against draft-07 gets no finding for it where a 2020-12 one does
 - [ ] `*/unused-definition`: informational note naming a definition nothing references, so the rewrite `--fix --prune-unused-defs` performs has a finding behind it like every other fix
 - [ ] `*/empty-object`: an object with `additionalProperties: false` and no properties can only ever be `{}`
 - [ ] `*/missing-description`: opt-in style rule; descriptions measurably improve structured output quality

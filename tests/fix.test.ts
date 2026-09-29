@@ -350,6 +350,7 @@ describe("fix", () => {
     it.each([
       ["an anchor reference", { $ref: "#user" }],
       ["a $dynamicRef", { $dynamicRef: "#node" }],
+      ["a $recursiveRef that resolves to nothing", { $recursiveRef: "#node" }],
       ["an external reference", { $ref: "https://example.com/user.json" }],
       ["a $ref that resolves to nothing", { $ref: "#/$defs/typo" }],
     ])("prunes nothing when the schema holds %s", (_name, reference) => {
@@ -370,6 +371,45 @@ describe("fix", () => {
         pruneUnusedDefs: true,
       });
       expect(schema.$defs).toHaveProperty("spare");
+    });
+
+    it.each([
+      [
+        'draft-07 "dependencies"',
+        { dependencies: { card: { $ref: "#/definitions/billing" } } },
+      ],
+      [
+        "a contentSchema",
+        { contentMediaType: "application/json", contentSchema: { $ref: "#/definitions/billing" } },
+      ],
+    ])("prunes nothing when a reference sits under %s, which walk() does not visit", (_name, holder) => {
+      const definitions = { billing: strictObject({ address: { type: "string" } }) };
+      const { schema, applied } = fix(
+        { ...strictObject({ card: { type: "string" } }), ...(holder as JsonSchema), definitions },
+        { providers: ["openai"], pruneUnusedDefs: true },
+      );
+
+      // Neither keyword is one walk() descends into, so the reference is invisible to the
+      // walker and "billing" looks unreferenced. Removing it would hand back a schema whose
+      // $ref points at nothing, under a title claiming nothing referenced it.
+      expect(schema.definitions).toEqual(definitions);
+      expect(applied).toEqual([]);
+    });
+
+    it("keeps a definition a reference walk() does not visit still needs", () => {
+      const user = strictObject({ name: { type: "string" } });
+      const { schema } = fix(
+        {
+          ...strictObject({ reporter: { allOf: [{ $ref: "#/$defs/user" }] } }),
+          dependencies: { reporter: { $ref: "#/$defs/user" } },
+          $defs: { user },
+        },
+        { providers: ["openai"], pruneUnusedDefs: true },
+      );
+
+      // The allOf fix inlines its own reference and names #/$defs/user as an orphan it may
+      // have made. The reference under "dependencies" is the one still holding it in place.
+      expect(schema.$defs).toEqual({ user });
     });
 
     it.each(["$defs", "definitions"])("keeps a property named %s, which is not a definition map", (name) => {
