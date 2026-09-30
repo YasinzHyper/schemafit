@@ -18,7 +18,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Inline a `$ref` branch whose definition is used more than once, as a copy that leaves the original under `$defs`, because the alternative is an `allOf` no fix can resolve
 - [x] Prune a `$defs` entry left with no references at all once its uses have been inlined. Needs a fix that may rewrite more than the subschema its finding points at
 - [x] Prune definitions the input already left unreferenced, behind a flag (`--fix --prune-unused-defs`), because removing one the author wrote and never referenced is a different decision from removing one a rewrite orphaned
-- [ ] Merge an `allOf` branch that describes something other than an object — a string with an `enum`, a number with a `minimum` — which is what Pydantic emits for an annotated enum field. Today every branch must be a plain object, so those are left alone
+- [x] Merge an `allOf` branch that describes something other than an object — a string with an `enum`, a number with a `minimum` — which is what Pydantic emits for an annotated enum field, by intersecting the types and enum values and keeping the tighter of two bounds
 - [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
@@ -84,7 +84,8 @@ Refinements to the existing providers. Small, and good first contributions.
 - [ ] Fix for the `oneOf` finding inside `gemini/undocumented-keyword`: the same rename to `anyOf`, which the Gemini docs demonstrate. Needs a way to mark a rule as fixable for only some of its keywords
 - [ ] Fix for `gemini/undocumented-format`: the same rewrite as the other providers. Held back because the Gemini docs list their formats with "such as", so a format that is merely undocumented may work, and dropping it would give up a constraint for nothing **(needs evidence)**
 - [ ] `anthropic/property-order`: informational note that required properties are emitted before optional ones
-- [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**
+- [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**. Also blocks merging an `allOf` branch that carries a `$ref` beside other keywords, which the fix leaves alone today: the merged schema would put the reference next to those keywords, and the docs do not say whether that is read at all
+- [ ] Merge two `allOf` branches that both describe an array, by merging their `items` the way the object branches merge their `properties`. Today two different `items` are a conflict and the `allOf` is left alone
 - [ ] `openai/root-ref`: root schema that is only a `$ref` **(needs evidence)**
 - [ ] `openai/nullable-enum`: an enum on a nullable type must include `null` **(needs evidence)**. The docs' own optional-parameter example is `{ "type": ["string", "null"], "enum": ["F", "C"] }`, which argues the enum does *not* have to list `null`; checked 2026-09-19
 - [ ] `gemini/nesting`: heuristic warning for "very large or deeply nested" schemas, with the threshold documented as a heuristic

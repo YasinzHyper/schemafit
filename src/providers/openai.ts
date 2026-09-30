@@ -189,12 +189,6 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** True when a schema describes an object and nothing else, or constrains the type not at all. */
-function describesObject(schema: JsonSchema): boolean {
-  const types = typesOf(schema);
-  return types.length === 0 || (types.length === 1 && types[0] === "object");
-}
-
 /** The two property maps as one, or null when both define the same key differently. */
 function mergeProperties(left: unknown, right: unknown): JsonSchema | null {
   if (!isJsonSchema(left) || !isJsonSchema(right)) return null;
@@ -205,6 +199,44 @@ function mergeProperties(left: unknown, right: unknown): JsonSchema | null {
   }
   return merged;
 }
+
+/**
+ * The two `type` declarations as one: the types both accept, in the order the first lists them.
+ * Returns null when they accept nothing in common, because an `allOf` of a string and a number
+ * matches no instance at all and there is no single type that says so.
+ */
+function mergeTypes(left: unknown, right: unknown): string | string[] | null {
+  const wanted = typesOf({ type: right });
+  const kept = typesOf({ type: left }).filter((type) => wanted.includes(type));
+  if (kept.length === 0) return null;
+  return kept.length === 1 ? (kept[0] as string) : kept;
+}
+
+/**
+ * The two `enum` lists as one: the values both allow, in the order the first lists them.
+ * Returns null when no value is allowed by both, which is again an `allOf` nothing matches.
+ */
+function mergeEnums(left: unknown, right: unknown): unknown[] | null {
+  if (!Array.isArray(left) || !Array.isArray(right)) return null;
+  const kept = left.filter((value) => right.some((other) => same(value, other)));
+  return kept.length === 0 ? null : kept;
+}
+
+/**
+ * Keywords whose intersection is simply the tighter of the two bounds: the larger lower bound,
+ * the smaller upper bound. Draft-04 spells `exclusiveMinimum` and `exclusiveMaximum` as booleans,
+ * which are not bounds to compare, so a non-numeric value on either side stops the merge.
+ */
+const TIGHTER_BOUND: Record<string, "larger" | "smaller"> = {
+  minimum: "larger",
+  exclusiveMinimum: "larger",
+  minLength: "larger",
+  minItems: "larger",
+  maximum: "smaller",
+  exclusiveMaximum: "smaller",
+  maxLength: "smaller",
+  maxItems: "smaller",
+};
 
 /** The `$ref` of a branch that is nothing but a reference, so inlining it loses nothing. */
 function refOnly(branch: JsonSchema): string | null {
@@ -255,9 +287,9 @@ interface InlinedRef {
 
 /**
  * The definition a bare `$ref` branch names, when putting it in the branch's place is safe:
- * the definition must be an object and must not refer back to itself, which cannot be inlined
- * at all. A definition other subschemas also reference is copied rather than moved, and
- * `shared` records that, because the original has to stay for them. Copying is the better
+ * the definition must not refer back to itself, which cannot be inlined at all. A definition
+ * other subschemas also reference is copied rather than moved, and `shared` records that,
+ * because the original has to stay for them. Copying is the better
  * trade: leaving the branch alone leaves an `allOf` the API rejects and no fix can resolve,
  * while a second copy only costs size, which the property, nesting, and string-size rules
  * measure again over the fixed schema. The copy is deep, so the merged object shares nothing
@@ -277,7 +309,8 @@ function inlinableRef(root: JsonSchema, ref: string): { schema: JsonSchema; path
 
 /**
  * The branches of `allOf`, with a branch that is nothing but a `$ref` replaced by the
- * definition it names. Returns null when a branch cannot stand as a plain object.
+ * definition it names. Returns null when there is nothing to merge, when a `$ref` branch names
+ * a definition that cannot be inlined, or when a branch carries a `$ref` beside other keywords.
  */
 function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSchema[]; inlined: InlinedRef[] } | null {
   const raw = schema.allOf;
@@ -288,8 +321,12 @@ function allOfBranches(schema: JsonSchema, root: JsonSchema): { branches: JsonSc
   for (const branch of raw) {
     if (!isJsonSchema(branch)) return null;
     const ref = refOnly(branch);
+    // A branch carrying a "$ref" beside other keywords is left alone: there is nothing to
+    // inline, and merging would put the reference next to those keywords on one schema, which
+    // the documented subset does not describe.
+    if (ref === null && "$ref" in branch) return null;
     const resolved = ref === null ? { schema: branch, path: "", shared: false } : inlinableRef(root, ref);
-    if (!resolved || !isObjectSchema(resolved.schema) || !describesObject(resolved.schema)) return null;
+    if (!resolved) return null;
     if (ref !== null) inlined.push({ ref, path: resolved.path, shared: resolved.shared });
     branches.push(resolved.schema);
   }
@@ -317,16 +354,17 @@ function describeInlined(inlined: readonly InlinedRef[]): string {
 }
 
 /**
- * The schema with its `allOf` merged into it: the properties of every branch on one object.
- * Returns null when the branches cannot be merged without changing what the schema accepts —
- * a branch that is not a plain object, or two of them constraining the same thing differently.
+ * The schema with its `allOf` merged into it: everything the host and every branch say, on one
+ * schema. Objects contribute their properties and required keys, and anything else contributes
+ * the constraint it declares, narrowed to what the branches agree on — the types and enum values
+ * common to all of them, the tighter of two bounds. Returns null when the branches cannot be
+ * merged without changing what the schema accepts: two of them constraining the same thing
+ * differently, or a keyword whose intersection cannot be written as a single keyword.
  */
 function mergedAllOf(schema: JsonSchema, branches: readonly JsonSchema[] | null): JsonSchema | null {
   if (!branches) return null;
 
   const { allOf: _merged, ...host } = schema;
-  if (!describesObject(host)) return null;
-
   const merged: JsonSchema = {};
   for (const participant of [host, ...branches]) {
     for (const [keyword, value] of Object.entries(participant)) {
@@ -358,8 +396,23 @@ function mergedAllOf(schema: JsonSchema, branches: readonly JsonSchema[] | null)
           merged.additionalProperties = false;
           break;
         }
-        default:
-          return null;
+        case "type": {
+          const type = mergeTypes(current, value);
+          if (type === null) return null;
+          merged.type = type;
+          break;
+        }
+        case "enum": {
+          const values = mergeEnums(current, value);
+          if (!values) return null;
+          merged.enum = values;
+          break;
+        }
+        default: {
+          const bound = TIGHTER_BOUND[keyword];
+          if (!bound || typeof current !== "number" || typeof value !== "number") return null;
+          merged[keyword] = bound === "larger" ? Math.max(current, value) : Math.min(current, value);
+        }
       }
     }
   }
@@ -372,9 +425,13 @@ const unsupportedComposition = forbiddenKeywords(
     summary: "allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supported.",
     fixable: true,
     notes:
-      'Only "allOf" can be rewritten, and only when every branch is a plain object: the fix puts their properties, ' +
-      'required keys, and descriptions on one object. A branch that is nothing but a "$ref" is inlined first, unless ' +
-      "the definition it names refers back to itself, which cannot be inlined at all. A definition other subschemas " +
+      'Only "allOf" can be rewritten: the fix puts what the host and every branch say on one schema. Object ' +
+      'branches contribute their properties, required keys, and descriptions; a branch that describes something ' +
+      'else contributes its own constraint, narrowed to what the branches agree on — the types and enum values ' +
+      'common to all of them, the larger of two lower bounds, the smaller of two upper bounds. A branch that is ' +
+      'nothing but a "$ref" is inlined first, unless the definition it names refers back to itself, which cannot ' +
+      "be inlined at all. A branch that carries a \"$ref\" beside other keywords is left alone, because there is " +
+      "nothing to inline and the reference would end up next to those keywords. A definition other subschemas " +
       "also reference is copied rather than moved, and the fix title says so: the original stays for them, and the " +
       'two are no longer one definition. The alternative is worse, because an untouched "allOf" is an error no fix ' +
       "can resolve, while a copy only costs size, which the property, nesting, and string-size rules measure again " +
@@ -382,9 +439,11 @@ const unsupportedComposition = forbiddenKeywords(
       '"$defs" map it empties, because an orphan is not free: its name counts toward the 120,000-character string ' +
       "budget and its properties toward the 5000-property limit. Merging widens an " +
       '"additionalProperties": false in a branch, which then no longer rejects the properties of its siblings — ' +
-      "which is what a single strict object has to accept anyway. Branches that constrain the same key differently " +
-      'are left to be merged by hand, and "not", "if"/"then"/"else", "dependentRequired", and "dependentSchemas" ' +
-      "carry no fix, because dropping them would change what the schema accepts.",
+      "which is what a single strict object has to accept anyway. Branches that constrain the same thing " +
+      'differently — two "pattern"s, two "format"s, two properties of the same name — are left to be merged by ' +
+      'hand, as are branches with no type or enum value in common, which accept nothing at all. "not", ' +
+      '"if"/"then"/"else", "dependentRequired", and "dependentSchemas" carry no fix, because dropping them would ' +
+      "change what the schema accepts.",
   }),
   ["allOf", "not", "dependentRequired", "dependentSchemas", "if", "then", "else"],
   (keyword, node, ctx) => {
@@ -399,6 +458,9 @@ const unsupportedComposition = forbiddenKeywords(
     const merged = mergedAllOf(node.schema, resolved?.branches ?? null);
     const count = Array.isArray(node.schema.allOf) ? node.schema.allOf.length : 0;
     const subject = count === 1 ? 'the "allOf" branch' : `the ${count} "allOf" branches`;
+    // What the result is, so the title reads right for the string or number an annotated
+    // scalar field merges into as well as for an object.
+    const target = merged && isObjectSchema(merged) ? "object" : "schema";
     const naming = resolved ? describeInlined(resolved.inlined) : "";
     return {
       message: '"allOf" is not supported.',
@@ -406,7 +468,7 @@ const unsupportedComposition = forbiddenKeywords(
       ...(merged
         ? {
             fix: {
-              title: `Merge ${subject} into the object${naming}.`,
+              title: `Merge ${subject} into the ${target}${naming}.`,
               rewrite: (schema: JsonSchema) => mergedAllOf(schema, allOfBranches(schema, root)?.branches ?? null) ?? schema,
               prunes: (resolved?.inlined ?? []).map((entry) => entry.path),
             },

@@ -147,6 +147,52 @@ describe("openai", () => {
     }
   });
 
+  it("unsupported-composition merges a branch that describes a string rather than an object", () => {
+    // The shape a generator emits for an annotated enum field: a $ref to the enum definition,
+    // with the description that could not sit beside the reference on the branch's parent.
+    const schema = strictObject(
+      { priority: { allOf: [{ $ref: "#/$defs/Priority" }], description: "How urgent it is." } },
+      { $defs: { Priority: { type: "string", enum: ["low", "high"] } } },
+    );
+    const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merge?.fix?.title).toBe('Merge the "allOf" branch into the schema, inlining #/$defs/Priority.');
+    const priority = (schema.properties as Record<string, JsonSchema>).priority as JsonSchema;
+    expect(merge?.fix?.rewrite(priority)).toEqual({
+      description: "How urgent it is.",
+      type: "string",
+      enum: ["low", "high"],
+    });
+  });
+
+  it("unsupported-composition narrows the bounds and enum values the branches agree on", () => {
+    const schema = strictObject({
+      score: { type: "integer", allOf: [{ minimum: 1, maximum: 100 }, { minimum: 10, maximum: 50 }] },
+      unit: { allOf: [{ type: "string", enum: ["C", "F", "K"] }, { enum: ["C", "K"] }] },
+    });
+    const properties = schema.properties as Record<string, JsonSchema>;
+    const merges = findingsFor("openai", schema).filter((f) => f.ruleId === "openai/unsupported-composition");
+    expect(merges.find((f) => f.path === "/properties/score")?.fix?.rewrite(properties.score as JsonSchema)).toEqual({
+      type: "integer",
+      minimum: 10,
+      maximum: 50,
+    });
+    expect(merges.find((f) => f.path === "/properties/unit")?.fix?.rewrite(properties.unit as JsonSchema)).toEqual({
+      type: "string",
+      enum: ["C", "K"],
+    });
+  });
+
+  it("unsupported-composition offers no merge when the branches accept nothing in common", () => {
+    const types = strictObject({ value: { allOf: [{ type: "string" }, { type: "number" }] } });
+    const values = strictObject({ unit: { allOf: [{ enum: ["C"] }, { enum: ["F"] }] } });
+    const patterns = strictObject({ id: { allOf: [{ pattern: "^a" }, { pattern: "^b" }] } });
+    for (const schema of [types, values, patterns]) {
+      const merge = findingsFor("openai", schema).find((f) => f.ruleId === "openai/unsupported-composition");
+      expect(merge?.fix).toBeUndefined();
+      expect(merge?.hint).toContain("by hand");
+    }
+  });
+
   it("unsupported-composition offers no merge when two branches disagree about a property", () => {
     const schema = strictObject({
       ticket: {
