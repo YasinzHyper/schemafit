@@ -116,7 +116,7 @@ describe("cli", () => {
   });
 
   it("--fix exits 1 and lists what it could not fix", async () => {
-    const schema = '{"type":"object","properties":{"a":{"allOf":[{"type":"string"}]}},"required":["a"]}';
+    const schema = '{"type":"object","properties":{"a":{"allOf":[{"type":"string"},{"type":"number"}]}},"required":["a"]}';
     const { code, stderr } = await cli(["--fix", "-p", "openai", "-"], schema);
     expect(code).toBe(1);
     expect(stderr).toContain("openai/unsupported-composition");

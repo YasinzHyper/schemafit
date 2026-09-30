@@ -77,7 +77,7 @@ describe("fix", () => {
     const result = fix(
       {
         type: "object",
-        properties: { id: { allOf: [{ type: "string" }] } },
+        properties: { id: { allOf: [{ type: "string" }, { type: "number" }] } },
         required: ["id"],
       },
       { providers: ["openai"] },
@@ -189,6 +189,46 @@ describe("fix", () => {
     ]);
     // Inlining was the definition's last use, so the empty "$defs" map goes with it.
     expect(schema).not.toHaveProperty("$defs");
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("inlines a definition that describes a string and prunes it once it is merged", () => {
+    const { schema, applied } = fix(
+      strictObject(
+        { priority: { allOf: [{ $ref: "#/$defs/Priority" }], description: "How urgent the ticket is." } },
+        { $defs: { Priority: { type: "string", enum: ["low", "normal", "high"] } } },
+      ),
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      priority: {
+        description: "How urgent the ticket is.",
+        type: "string",
+        enum: ["low", "normal", "high"],
+      },
+    });
+    expect(applied.map((item) => item.title)).toEqual([
+      'Merge the "allOf" branch into the schema, inlining #/$defs/Priority.',
+      "Remove #/$defs/Priority, which nothing references any more.",
+    ]);
+    expect(schema).not.toHaveProperty("$defs");
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("merges an allOf of scalar constraints down to what every branch allows", () => {
+    const { schema } = fix(
+      strictObject({
+        score: { type: "integer", allOf: [{ minimum: 1, maximum: 100 }, { minimum: 10, maximum: 50 }] },
+        unit: { allOf: [{ type: "string", enum: ["C", "F", "K"] }, { enum: ["C", "K"] }] },
+      }),
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      score: { type: "integer", minimum: 10, maximum: 50 },
+      unit: { type: "string", enum: ["C", "K"] },
+    });
     expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
   });
 
