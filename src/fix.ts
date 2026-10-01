@@ -151,8 +151,11 @@ function pruneUnusedDefs(root: JsonSchema): AppliedFix[] {
  * changes. The input is left untouched; the rewritten schema is returned.
  * Throws a TypeError when `schema` is not a JSON object.
  *
- * Fixes for different providers can contradict each other, so pass a single provider
- * unless the schema is meant to satisfy all of them at once.
+ * Several providers may be selected at once: every one of their fixes is applied to the
+ * same schema, and the result is the most portable one the rules can reach, the schema all
+ * of them accept. The schema is re-linted after each pass, so a rewrite that exposes
+ * another provider's finding is fixed in the next one. Pass a single provider to keep the
+ * constraints the others do not support, which a portable rewrite has to give up.
  *
  * `pruneUnusedDefs` additionally removes the definitions the input itself left unreferenced.
  */

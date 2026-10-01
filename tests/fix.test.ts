@@ -830,6 +830,54 @@ describe("fix", () => {
     expect(result.schema).toEqual(portable);
   });
 
+  it("applies every selected provider's fixes to the same schema", () => {
+    const schema = strictObject({
+      kind: { oneOf: [{ type: "string" }, { type: "number" }] },
+      score: { type: "integer", minimum: 1 },
+    });
+    const result = fix(schema, { providers: ["openai", "anthropic"] });
+
+    // OpenAI asked for the `oneOf` rename, Anthropic for the `minimum` it does not
+    // support. Neither provider's rewrite undid the other's.
+    expect(result.schema).toEqual(
+      strictObject({
+        kind: { anyOf: [{ type: "string" }, { type: "number" }] },
+        score: { type: "integer", description: "Must be at least 1." },
+      }),
+    );
+    expect(result.summary.every((summary) => summary.compatible)).toBe(true);
+    expect(result.findings).toEqual([]);
+  });
+
+  it("gives up the constraints a single provider would have kept", () => {
+    const schema = strictObject({ score: { type: "integer", minimum: 1, maximum: 5 } });
+    expect(fix(schema, { providers: ["openai"] }).schema).toEqual(schema);
+    expect(fix(schema, { providers: ["openai", "anthropic"] }).schema).toMatchObject({
+      properties: { score: { type: "integer", description: "Must be at least 1. Must be at most 5." } },
+    });
+  });
+
+  it("settles, so fixing an already fixed schema changes nothing", () => {
+    const shapes: JsonSchema[] = [
+      { type: "object", properties: { a: { type: "string", format: "uri", minLength: 3, pattern: "^a+$" } } },
+      { type: "object", properties: { b: { oneOf: [{ type: "string" }, { type: "number" }] } } },
+      {
+        type: "object",
+        properties: { c: { allOf: [{ $ref: "#/$defs/base" }], description: "c" } },
+        $defs: { base: { type: "object", properties: { z: { type: "string" } } } },
+      },
+      { anyOf: [{ type: "string" }, { type: "number" }] },
+      { type: "array", items: { type: "string" }, minItems: 2, uniqueItems: true },
+    ];
+
+    for (const shape of shapes) {
+      const once = fix(shape, { providers: ["openai", "anthropic", "gemini"] });
+      const twice = fix(once.schema, { providers: ["openai", "anthropic", "gemini"] });
+      expect(twice.applied).toEqual([]);
+      expect(twice.schema).toEqual(once.schema);
+    }
+  });
+
   it("rejects a non-object schema the way lint does", () => {
     expect(() => fix("nope")).toThrow(TypeError);
   });

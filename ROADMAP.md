@@ -20,7 +20,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Prune definitions the input already left unreferenced, behind a flag (`--fix --prune-unused-defs`), because removing one the author wrote and never referenced is a different decision from removing one a rewrite orphaned
 - [x] Merge an `allOf` branch that describes something other than an object — a string with an `enum`, a number with a `minimum` — which is what Pydantic emits for an annotated enum field, by intersecting the types and enum values and keeping the tighter of two bounds
 - [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
-- [ ] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
+- [x] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
 - [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
 

@@ -81,10 +81,13 @@ export function formatFixed(report: FixReport, options: { color: boolean }): str
     lines.push(`         ${item.title}`);
   }
 
+  // One line per provider, aligned the way the lint report aligns them, because --fix
+  // may be asked for several providers at once.
+  const width = Math.max(...report.summary.map((summary) => providers[summary.provider].name.length));
+  lines.push("");
   for (const summary of report.summary) {
-    const name = providers[summary.provider].name;
     const remaining = report.findings.filter((item) => item.provider === summary.provider);
-    lines.push("", `  ${name}  ${status(summary, paint)}`);
+    lines.push(`  ${providers[summary.provider].name.padEnd(width)}  ${status(summary, paint)}`);
     if (remaining.length > 0) lines.push(`  ${paint("dim", "No automatic rewrite for these; the hint says what to change.")}`);
     for (const item of remaining) lines.push(...finding(item, paint));
   }

@@ -172,6 +172,35 @@ describe("cli", () => {
     expect(stderr).toContain("Remove #/$defs/legacy, which nothing references.");
   });
 
+  it("--fix rewrites for every provider when none is named", async () => {
+    const schema = '{"type":"object","properties":{"a":{"type":"string","minLength":3}},"required":["a"]}';
+    const { code, stdout, stderr } = await cli(["--fix", "-"], schema);
+    expect(JSON.parse(stdout)).toEqual({
+      type: "object",
+      properties: { a: { type: "string", description: "Must be at least 3 characters long." } },
+      required: ["a"],
+      additionalProperties: false,
+    });
+    expect(stderr).toContain("anthropic/no-string-length");
+    expect(stderr).toContain("openai/additional-properties-false");
+    expect(stderr.match(/✔ compatible/g)).toHaveLength(3);
+    expect(code).toBe(0);
+  });
+
+  it("--fix keeps a constraint the named provider supports", async () => {
+    const schema = '{"type":"object","properties":{"a":{"type":"string","minLength":3}},"required":["a"]}';
+    const { stdout } = await cli(["--fix", "-p", "openai", "-"], schema);
+    expect(JSON.parse(stdout).properties.a).toEqual({ type: "string", minLength: 3 });
+  });
+
+  it("--fix reports every selected provider that is still incompatible", async () => {
+    const { code, stderr } = await cli(["--fix", "-p", "openai,anthropic", example("ticket.json")]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("OpenAI     ✔ compatible");
+    expect(stderr).toContain("anthropic/no-recursive-schemas");
+    expect(stderr).not.toContain("Gemini");
+  });
+
   it("--fix says nothing to do for a schema that already fits", async () => {
     const { code, stderr } = await cli(["--fix", "-p", "openai", example("ticket.portable.json")]);
     expect(code).toBe(0);
@@ -179,7 +208,6 @@ describe("cli", () => {
   });
 
   it.each([
-    [["--fix", example("ticket.json")], "exactly one provider"],
     [["--fix", "-p", "openai"], "exactly one file"],
     [["--fix", "-p", "openai", "a.json", "b.json"], "exactly one file"],
     [["--fix", "-p", "openai", "rules"], "rules subcommand"],

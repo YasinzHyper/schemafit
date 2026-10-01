@@ -74,7 +74,10 @@ cat schema.json | schemafit -
 # List the rules (rules --fix can rewrite are marked [--fix])
 schemafit rules --provider anthropic
 
-# Rewrite a schema for one provider
+# Rewrite a schema so every provider accepts it
+schemafit --fix tool.json --out tool.portable.json
+
+# ... or for one provider, keeping what the others do not support
 schemafit --fix --provider openai tool.json --out tool.openai.json
 
 # ... and drop the definitions nothing references while you are at it
@@ -89,7 +92,7 @@ Files can hold a bare JSON Schema or a whole tool / response-format definition. 
 | `-f, --format <name>` | `pretty` (default) or `json` |
 | `-q, --quiet` | Report errors only |
 | `--max-warnings <n>` | Exit 1 when more than `n` warnings are found |
-| `--fix` | Rewrite the schema and write it out. One file, one provider |
+| `--fix` | Rewrite the schema and write it out. One file, every selected provider |
 | `--prune-unused-defs` | With `--fix`, also remove the definitions the input left unreferenced |
 | `-o, --out <file>` | With `--fix`, write there instead of stdout |
 
@@ -127,12 +130,12 @@ ticket.openai.json
     ...
 ```
 
-- One file and one provider at a time: providers disagree about what a schema should look like, so there is no single "fixed" schema.
+- One file at a time, and as many providers as you select. With no `--provider`, `--fix` rewrites for all of them at once and you get the most portable schema the rules can reach — the one every provider accepts. That costs the constraints only some of them support: a `minimum` OpenAI would have kept goes, because Anthropic does not take it. Name the providers you actually ship to and `--fix` keeps everything the rest of them would have rejected.
 - An `allOf` is merged into the schema that holds it, the way you would merge it by hand. Object branches contribute their properties, required keys, and descriptions; a branch that describes something else — a string with an `enum`, a number with a `minimum` — contributes its own constraint, narrowed to what every branch agrees on: the types and enum values they have in common, the larger of two lower bounds, the smaller of two upper bounds. A branch that is nothing but a local `$ref` — the `{ "allOf": [{ "$ref": "#/$defs/User" }], "description": "..." }` Pydantic emits for an annotated model field — is inlined first, as long as the definition it names does not refer back to itself. A definition the rest of the schema also references is copied rather than moved — the original stays under `$defs`, where the references the fix does not touch still find it, and the report says which definition was copied — because the alternative is an `allOf` the API rejects, and the extra copy only costs size, which the property and string-size limits still measure. Once nothing references a definition any more, the fix removes it, along with the `$defs` map it empties: an orphan still costs against those limits, which count definition names and every property below them. Branches that constrain the same thing differently are left alone, as are branches with no type or enum value in common, a branch carrying a `$ref` beside other keywords, and the composition keywords whose meaning cannot survive a rewrite (`not`, `if`/`then`/`else`).
 - A root that OpenAI will not take — a union, an array, a primitive, which is what a Zod discriminated union or `z.array()` compiles to — is wrapped in an object with one required property, `result`, and the report names that key. The model then answers `{ "result": ... }`, so unwrap it on the way out. Definitions stay at the root, where `#/$defs/...` references still find them.
 - A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, and neither provider accepts every string `format`, so `--fix` removes the keyword and writes what it required into `description` — `"format": "uri"` becomes "Must be an absolute URI, such as https://example.com/a." That is the same transformation the Anthropic SDKs apply. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
 - `--prune-unused-defs` widens that last step to the whole document: every `$defs` / `definitions` entry no `$ref` reaches goes, not only the ones `--fix` orphaned itself, and so does anything only those entries referenced. It is off by default because it is a different decision — a definition the author wrote and never used changes nothing about what the schema accepts, and another document may `$ref` into it — but a generator that emits one `$defs` map for a whole module leaves plenty of them, and each one spends property and string-size budget for nothing. Nothing is pruned from a schema whose references cannot all be followed: an anchor (`"$ref": "#user"`), a `$dynamicRef`, a URL, or a nested `$id` would make a definition that *is* referenced look unused. Every `$ref`, `$dynamicRef`, and `$recursiveRef` in the document counts, wherever it sits — a draft-07 `dependencies`, a `contentSchema` — so a reference outside the keywords the linter otherwise walks stops pruning rather than going unnoticed.
-- The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works.
+- The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works. The report ends with one line per selected provider, saying whether the rewritten schema fits it and what is left to change by hand.
 - The wrapper is preserved. Fix an Anthropic tool definition and you get the tool definition back, with its `name` and `description` intact.
 - Findings with no automatic rewrite are left alone and listed. The exit code still reflects them.
 
@@ -219,7 +222,7 @@ console.log(applied.map((item) => `${item.path}: ${item.title}`));
 console.log(`${findings.length} findings left to fix by hand`);
 ```
 
-Pass `pruneUnusedDefs: true` for what `--prune-unused-defs` does. The `applied` entry for a definition removed that way carries no `ruleId`, because no finding asked for it.
+List several providers to get the schema all of them accept, the same thing `--fix` does with no `--provider`. Pass `pruneUnusedDefs: true` for what `--prune-unused-defs` does. The `applied` entry for a definition removed that way carries no `ruleId`, because no finding asked for it.
 
 A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(subschema)`, so you can apply fixes selectively instead of all at once.
 
