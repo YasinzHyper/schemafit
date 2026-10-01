@@ -24,7 +24,7 @@ const HELP = `schemafit — lint JSON Schemas against LLM structured-output rule
 
 Usage
   schemafit [options] <file...>     Lint schema files ("-" reads stdin)
-  schemafit --fix -p <id> <file>    Rewrite one file for one provider
+  schemafit --fix [-p <ids>] <file> Rewrite one file for the selected providers
   schemafit rules [options]         List the rules
 
 Options
@@ -44,9 +44,11 @@ Options
 Files may hold a bare JSON Schema or a tool / response-format definition
 (OpenAI tools, Anthropic input_schema, MCP inputSchema); the schema is found automatically.
 
---fix takes one file and one provider, because providers disagree on what a schema
-should look like. It keeps the wrapper the schema came in, reports what it changed on
-stderr so stdout stays pipeable, and leaves findings that have no fix alone.
+--fix takes one file and rewrites it for every selected provider at once, so with no
+--provider it produces the most portable schema the rules can reach: the one all of them
+accept. Narrow it with --provider to keep the constraints the others do not support, which
+a portable rewrite has to give up. It keeps the wrapper the schema came in, reports what it
+changed on stderr so stdout stays pipeable, and leaves findings that have no fix alone.
 "schemafit rules" marks the rules it can fix.
 
 --prune-unused-defs drops every definition no $ref reaches, not only the ones --fix
@@ -107,19 +109,19 @@ async function readDocument(file: string, io: CliIo): Promise<{ label: string; d
 
 /** What `--fix` was asked to do, beyond the file it reads. */
 interface FixRequest {
-  provider: ProviderId;
+  providers: readonly ProviderId[];
   out: string | undefined;
   pruneUnusedDefs: boolean;
 }
 
-/** Rewrites one file for one provider and reports what changed on stderr. */
-async function runFix(file: string, { provider, out, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<number> {
+/** Rewrites one file for the selected providers and reports what changed on stderr. */
+async function runFix(file: string, { providers, out, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<number> {
   const { label, document } = await readDocument(file, io);
   const { schema, wrapper, keys } = unwrap(document);
 
   let result;
   try {
-    result = fix(schema, { providers: [provider], pruneUnusedDefs });
+    result = fix(schema, { providers, pruneUnusedDefs });
   } catch (error) {
     if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
     throw error;
@@ -194,11 +196,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       if (positionals.length !== 1 || file === undefined) {
         throw new UsageError("--fix takes exactly one file.");
       }
-      const [only] = selected;
-      if (selected.length !== 1 || only === undefined) {
-        throw new UsageError("--fix needs exactly one provider: pass --provider <id>.");
-      }
-      return await runFix(file, { provider: only, out: values.out, pruneUnusedDefs: values["prune-unused-defs"] }, io);
+      return await runFix(file, { providers: selected, out: values.out, pruneUnusedDefs: values["prune-unused-defs"] }, io);
     }
 
     if (positionals[0] === "rules") {
