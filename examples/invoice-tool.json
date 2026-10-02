@@ -1,0 +1,52 @@
+{
+  "type": "function",
+  "name": "create_invoice",
+  "description": "Create an invoice for a customer.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "billing_address": {
+        "allOf": [{ "$ref": "#/$defs/address" }],
+        "description": "Where the invoice is sent."
+      },
+      "shipping_address": { "$ref": "#/$defs/address" },
+      "currency": {
+        "allOf": [{ "$ref": "#/$defs/currency" }],
+        "description": "Currency of every amount on the invoice."
+      },
+      "items": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/line_item" },
+        "minItems": 1,
+        "maxItems": 50
+      },
+      "due_date": { "type": "string", "format": "date" },
+      "notes": { "type": "string" }
+    },
+    "required": ["billing_address", "currency", "items"],
+    "$defs": {
+      "address": {
+        "type": "object",
+        "properties": {
+          "line1": { "type": "string" },
+          "city": { "type": "string" },
+          "country": { "type": "string", "minLength": 2, "maxLength": 2 }
+        },
+        "required": ["line1", "city", "country"]
+      },
+      "currency": {
+        "type": "string",
+        "enum": ["USD", "EUR", "GBP"]
+      },
+      "line_item": {
+        "type": "object",
+        "properties": {
+          "description": { "type": "string" },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "unit_price": { "type": "number", "minimum": 0 }
+        },
+        "required": ["description", "quantity", "unit_price"]
+      }
+    }
+  }
+}

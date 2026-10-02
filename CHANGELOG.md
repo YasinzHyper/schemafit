@@ -27,6 +27,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `schemafit --fix` now rewrites for every provider it was given, not just one, and with no `--provider` for all of them: the output is the most portable schema the rules can reach, the one OpenAI, Anthropic, and Gemini all accept. Each provider's fixes land on the same schema and the schema is re-linted after every pass, so a rewrite that exposes another provider's finding is fixed in the next one. Portability is not free — the rewrite gives up the constraints only some providers support, such as the `minimum` OpenAI keeps and Anthropic does not — so naming the providers you ship to still keeps everything the others would have rejected. The `--fix` report ends with one line per selected provider, aligned the way the lint report aligns them.
 
+- `examples/invoice-tool.json`: an OpenAI tool whose schema reuses its definitions — one referenced twice, once through an `allOf` and once directly, and one annotated with a description that could not sit beside the reference. It is the shape a generator emits for a field typed as another model, and the one the `allOf` rewrites were built for: `--fix` with no `--provider` turns it into a tool OpenAI, Anthropic, and Gemini all accept.
+
+- A round-trip test over `examples/`: every example is rewritten for each provider on its own and for all of them at once, and what `--fix` leaves behind is recorded per example and per provider. Each run asserts that no finding carrying a fix survived, that fixing the output again changes nothing, that every local `$ref` still resolves after the inlining and pruning, that the compatibility verdict matches the errors left, and that the rewritten schema goes back into the wrapper it came from. An example added without its outcome recorded fails the test, and so does a provider added without being checked.
+
 ### Changed
 
 - `AppliedFix.ruleId` and `AppliedFix.provider` are now optional: a rewrite that no finding asked for, which today means a definition `--prune-unused-defs` removed, has no rule behind it. The `--fix` report names the flag where it would name the rule.
