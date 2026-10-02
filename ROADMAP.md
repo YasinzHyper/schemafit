@@ -21,7 +21,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Merge an `allOf` branch that describes something other than an object — a string with an `enum`, a number with a `minimum` — which is what Pydantic emits for an annotated enum field, by intersecting the types and enum values and keeping the tighter of two bounds
 - [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [x] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
-- [ ] Round-trip test: every example under `examples/` lints clean after `--fix`
+- [x] Round-trip test: every example under `examples/` is rewritten for every provider and for all of them at once, and what `--fix` leaves behind is recorded per example, so a rewrite that stops working or a fix that starts covering one shows up as a diff
+- [ ] Fix for `anthropic/allof-ref`: the merge attached to `openai/unsupported-composition` resolves exactly this `allOf` of a `$ref`, but the Anthropic rule carries no fix of its own, so `--fix --provider anthropic` leaves an error the tool can in fact rewrite. `examples/invoice-tool.json` is the case
 - [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
 
 ## 0.3: More ways in

@@ -141,6 +141,8 @@ ticket.openai.json
 
 `schemafit rules` marks the rules that `--fix` can resolve; [docs/rules.md](docs/rules.md) lists them as **Fixable**.
 
+The schemas under [`examples/`](examples/) are there to be run: `ticket.json` is the one above, `invoice-tool.json` an OpenAI tool whose schema reuses definitions, `anthropic-tool.json` an Anthropic tool, and `ticket.portable.json` the hand-written version that already fits everywhere. A test rewrites each of them for every provider and records exactly what is left over, so the list of things `--fix` cannot do stays honest.
+
 ### Generating the JSON from Zod or Pydantic
 
 ```ts
