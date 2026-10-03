@@ -22,7 +22,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fix for `openai/root-object`: wrap a non-object root in `{ "result": ... }` and report the wrapper key
 - [x] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [x] Round-trip test: every example under `examples/` is rewritten for every provider and for all of them at once, and what `--fix` leaves behind is recorded per example, so a rewrite that stops working or a fix that starts covering one shows up as a diff
-- [ ] Fix for `anthropic/allof-ref`: the merge attached to `openai/unsupported-composition` resolves exactly this `allOf` of a `$ref`, but the Anthropic rule carries no fix of its own, so `--fix --provider anthropic` leaves an error the tool can in fact rewrite. `examples/invoice-tool.json` is the case
+- [x] Fix for `anthropic/allof-ref`: the merge attached to `openai/unsupported-composition` resolves exactly this `allOf` of a `$ref`, but the Anthropic rule carries no fix of its own, so `--fix --provider anthropic` leaves an error the tool can in fact rewrite. `examples/invoice-tool.json` is the case
 - [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
 
 ## 0.3: More ways in
@@ -85,7 +85,7 @@ Refinements to the existing providers. Small, and good first contributions.
 - [ ] Fix for the `oneOf` finding inside `gemini/undocumented-keyword`: the same rename to `anyOf`, which the Gemini docs demonstrate. Needs a way to mark a rule as fixable for only some of its keywords
 - [ ] Fix for `gemini/undocumented-format`: the same rewrite as the other providers. Held back because the Gemini docs list their formats with "such as", so a format that is merely undocumented may work, and dropping it would give up a constraint for nothing **(needs evidence)**
 - [ ] `anthropic/property-order`: informational note that required properties are emitted before optional ones
-- [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**. Also blocks merging an `allOf` branch that carries a `$ref` beside other keywords, which the fix leaves alone today: the merged schema would put the reference next to those keywords, and the docs do not say whether that is read at all
+- [ ] `openai/ref-siblings`: keywords next to `$ref` **(needs evidence)**. Also blocks merging an `allOf` branch that carries a `$ref` beside other keywords, which the fix leaves alone today: the merged schema would put the reference next to those keywords, and the docs do not say whether that is read at all. The same unknown holds the `anthropic/allof-ref` inlining back from such a branch, where resolving the `$ref` and intersecting it with its siblings would be the fix
 - [ ] Merge two `allOf` branches that both describe an array, by merging their `items` the way the object branches merge their `properties`. Today two different `items` are a conflict and the `allOf` is left alone
 - [ ] `openai/root-ref`: root schema that is only a `$ref` **(needs evidence)**
 - [ ] `openai/nullable-enum`: an enum on a nullable type must include `null` **(needs evidence)**. The docs' own optional-parameter example is `{ "type": ["string", "null"], "enum": ["F", "C"] }`, which argues the enum does *not* have to list `null`; checked 2026-09-19

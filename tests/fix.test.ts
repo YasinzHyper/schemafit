@@ -707,6 +707,79 @@ describe("fix", () => {
     expect(applied.map((item) => item.title)).toEqual(['Remove "uniqueItems".']);
   });
 
+  it("inlines the $ref an Anthropic allOf branch names, and keeps the allOf", () => {
+    const { schema, applied } = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }], description: "Who filed it." } },
+        { $defs: { user: strictObject({ name: { type: "string" } }) } },
+      ),
+      { providers: ["anthropic"] },
+    );
+
+    // Anthropic supports "allOf"; only a "$ref" inside one is unsupported, so the keyword stays.
+    expect(schema.properties).toEqual({
+      reporter: {
+        allOf: [strictObject({ name: { type: "string" } })],
+        description: "Who filed it.",
+      },
+    });
+    // Nothing references the definition any more, so it goes, and the empty "$defs" with it.
+    expect(schema).not.toHaveProperty("$defs");
+    expect(applied.map((item) => item.title)).toEqual([
+      'Inline #/$defs/user into the "allOf" branch.',
+      "Remove #/$defs/user, which nothing references any more.",
+    ]);
+    expect(lint(schema, { providers: ["anthropic"] }).findings).toEqual([]);
+  });
+
+  it("copies a definition another subschema still references into the Anthropic allOf branch", () => {
+    const user = strictObject({ name: { type: "string" } });
+    const { schema, applied } = fix(
+      strictObject(
+        { reporter: { allOf: [{ $ref: "#/$defs/user" }] }, assignee: { $ref: "#/$defs/user" } },
+        { $defs: { user } },
+      ),
+      { providers: ["anthropic"] },
+    );
+
+    expect(schema.properties).toEqual({
+      reporter: { allOf: [user] },
+      assignee: { $ref: "#/$defs/user" },
+    });
+    expect(schema.$defs).toEqual({ user });
+    expect(applied.map((item) => item.title)).toEqual([
+      'Inline #/$defs/user into the "allOf" branch, as a copy, because the schema references it elsewhere too.',
+    ]);
+    expect(lint(schema, { providers: ["anthropic"] }).findings).toEqual([]);
+  });
+
+  it("leaves an Anthropic allOf branch that carries a $ref beside other keywords", () => {
+    // Inlining would have to intersect the definition with the keywords next to the reference.
+    const schema = strictObject(
+      { reporter: { allOf: [{ $ref: "#/$defs/user", description: "Who filed it." }] } },
+      { $defs: { user: strictObject({ name: { type: "string" } }) } },
+    );
+    const result = fix(schema, { providers: ["anthropic"] });
+
+    expect((result.schema.properties as Record<string, JsonSchema>).reporter).toEqual({
+      allOf: [{ $ref: "#/$defs/user", description: "Who filed it." }],
+    });
+    expect(result.findings.map((finding) => finding.ruleId)).toEqual(["anthropic/allof-ref"]);
+  });
+
+  it("leaves an Anthropic allOf branch naming a recursive definition alone", () => {
+    const result = fix(
+      strictObject(
+        { tree: { allOf: [{ $ref: "#/$defs/node" }] } },
+        { $defs: { node: strictObject({ child: { anyOf: [{ $ref: "#/$defs/node" }, { type: "null" }] } }) } },
+      ),
+      { providers: ["anthropic"] },
+    );
+
+    expect(result.schema.properties).toEqual({ tree: { allOf: [{ $ref: "#/$defs/node" }] } });
+    expect(result.findings.map((finding) => finding.ruleId)).toContain("anthropic/allof-ref");
+  });
+
   it("leaves a constraint it cannot put into words for a human", () => {
     // The draft-04 spelling, where exclusiveMinimum is a flag on minimum rather than a bound.
     const result = fix(strictObject({ n: { type: "number", exclusiveMinimum: true } }), {

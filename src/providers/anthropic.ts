@@ -1,4 +1,4 @@
-import { findRecursiveRefs, isLocalRef } from "../refs.js";
+import { findRecursiveRefs, inlinableRef, isLocalRef, refOnly } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta, SchemaFix } from "../types.js";
 import { isJsonSchema } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords, withNote } from "./shared.js";
@@ -8,7 +8,7 @@ const LIMITATIONS = `${DOCS}#json-schema-limitations`;
 const COMPLEXITY = `${DOCS}#schema-complexity-limits`;
 const INVALID_OUTPUTS = `${DOCS}#invalid-outputs`;
 const SDK_TRANSFORM = `${DOCS}#how-sdk-transformation-works`;
-const VERIFIED = "2026-09-20";
+const VERIFIED = "2026-10-03";
 
 const MAX_OPTIONAL_PARAMETERS = 24;
 const MAX_UNION_PARAMETERS = 16;
@@ -235,18 +235,57 @@ const arrayConstraints: Rule = {
   },
 };
 
+/**
+ * The definition a bare `$ref` branch names, put in the branch's place. The docs list `allOf`
+ * itself among the supported features and single out only an `allOf` that contains a `$ref`, so
+ * inlining is the whole fix: the `allOf` stays where it is, with one fewer reference in it.
+ * That is narrower than the merge `openai/unsupported-composition` attaches, which has to
+ * dissolve the `allOf` as well because OpenAI supports neither half.
+ *
+ * Returns null when there is nothing safe to inline: a branch carrying a `$ref` beside other
+ * keywords, where inlining would have to intersect the definition with those keywords; an
+ * external or unresolvable `$ref`; and a definition that refers back to itself, which cannot be
+ * inlined at all. `anthropic/no-external-ref` and `anthropic/no-recursive-schemas` report the
+ * last two in their own right.
+ */
+function inlineRefBranch(root: JsonSchema, branch: JsonSchema): SchemaFix | null {
+  const ref = refOnly(branch);
+  if (ref === null) return null;
+  const resolved = inlinableRef(root, ref);
+  if (!resolved) return null;
+
+  const copied = resolved.shared ? ", as a copy, because the schema references it elsewhere too" : "";
+  return {
+    title: `Inline ${ref} into the "allOf" branch${copied}.`,
+    // The branch may have been rewritten since the finding was reported.
+    rewrite: (schema) => (refOnly(schema) === ref ? (inlinableRef(root, ref)?.schema ?? schema) : schema),
+    prunes: [resolved.path],
+  };
+}
+
 const allOfRef: Rule = {
   ...meta("allof-ref", {
     severity: "error",
     summary: '"allOf" may not contain "$ref".',
+    fixable: true,
+    notes:
+      'The fix puts the definition in the branch\'s place, which is all this takes: "allOf" is a supported ' +
+      'keyword, and only a "$ref" inside one is not, so the "allOf" itself stays. A definition other subschemas ' +
+      'reference too is copied rather than moved, and the fix title says so; one the inlining leaves with no ' +
+      'references at all is removed, together with the "$defs" map it empties. A branch that carries a "$ref" ' +
+      'beside other keywords is reported without a fix, because inlining would have to intersect the definition ' +
+      'with those keywords, and so is a "$ref" that cannot be resolved or that names a definition referring back ' +
+      "to itself.",
   }),
   check(ctx) {
     for (const node of ctx.nodes) {
       if (node.parentKeyword === "allOf" && "$ref" in node.schema) {
+        const fix = inlineRefBranch(ctx.root, node.schema);
         ctx.report({
           path: node.path,
           message: '"allOf" combined with "$ref" is not supported.',
           hint: 'Inline the referenced schema into the "allOf" branch.',
+          ...(fix ? { fix } : {}),
         });
       }
     }
