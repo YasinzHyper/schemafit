@@ -39,12 +39,7 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "warn openai/undocumented-keyword /properties/billing_address/properties/country",
       "warn openai/undocumented-keyword /properties/billing_address/properties/country",
     ],
-    // The merge that resolves these two is attached to "openai/unsupported-composition", so
-    // Anthropic alone is left with an error the tool can in fact rewrite. See the roadmap.
-    anthropic: [
-      "error anthropic/allof-ref /properties/billing_address/allOf/0",
-      "error anthropic/allof-ref /properties/currency/allOf/0",
-    ],
+    anthropic: [],
     gemini: [
       "warn gemini/undocumented-keyword /$defs/address/properties/country",
       "warn gemini/undocumented-keyword /$defs/address/properties/country",
