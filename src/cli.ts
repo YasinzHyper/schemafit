@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
-import type { FileReport } from "./format/pretty.js";
+import type { FileReport, FixReport } from "./format/pretty.js";
 import { lint } from "./lint.js";
 import { rules } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
@@ -25,6 +25,7 @@ const HELP = `schemafit — lint JSON Schemas against LLM structured-output rule
 Usage
   schemafit [options] <file...>     Lint schema files ("-" reads stdin)
   schemafit --fix [-p <ids>] <file> Rewrite one file for the selected providers
+  schemafit --fix --write <file...> Rewrite files in place
   schemafit rules [options]         List the rules
 
 Options
@@ -38,6 +39,7 @@ Options
                           With --fix, also remove the definitions the input
                           left unreferenced
   -o, --out <file>        With --fix, write there instead of stdout
+  -w, --write             With --fix, rewrite each file in place
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -50,6 +52,10 @@ accept. Narrow it with --provider to keep the constraints the others do not supp
 a portable rewrite has to give up. It keeps the wrapper the schema came in, reports what it
 changed on stderr so stdout stays pipeable, and leaves findings that have no fix alone.
 "schemafit rules" marks the rules it can fix.
+
+--write rewrites every file given in place instead of writing one to stdout, so --fix
+can run over a directory of schemas or as a pre-commit hook. Every file is read and
+rewritten before any of them is written out, and a file no fix changed is left untouched.
 
 --prune-unused-defs drops every definition no $ref reaches, not only the ones --fix
 orphans itself. It changes nothing about what the schema accepts, and it frees the
@@ -107,15 +113,23 @@ async function readDocument(file: string, io: CliIo): Promise<{ label: string; d
   }
 }
 
-/** What `--fix` was asked to do, beyond the file it reads. */
+/** What `--fix` was asked to do, beyond the files it reads. */
 interface FixRequest {
   providers: readonly ProviderId[];
   out: string | undefined;
+  write: boolean;
   pruneUnusedDefs: boolean;
 }
 
-/** Rewrites one file for the selected providers and reports what changed on stderr. */
-async function runFix(file: string, { providers, out, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<number> {
+/** One file rewritten in memory: the document to write out, and the report to print. */
+interface PlannedFix {
+  file: string;
+  output: string;
+  report: FixReport;
+}
+
+/** Rewrites one file's schema for the selected providers, without writing anything. */
+async function planFix(file: string, { providers, out, write, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { label, document } = await readDocument(file, io);
   const { schema, wrapper, keys } = unwrap(document);
 
@@ -128,18 +142,45 @@ async function runFix(file: string, { providers, out, pruneUnusedDefs }: FixRequ
   }
 
   const output = `${JSON.stringify(rewrap(document, keys, result.schema), null, 2)}\n`;
-  if (out === undefined) {
-    io.stdout(output);
-  } else {
-    try {
-      await writeFile(out, output);
-    } catch (error) {
-      throw new UsageError(`Cannot write ${out}: ${(error as Error).message}`);
+  // The report names the file the schema ends up in, which --out renames and --write does not.
+  return { file, output, report: { file: write ? label : (out ?? label), wrapper, ...result } };
+}
+
+async function writeOut(file: string, output: string): Promise<void> {
+  try {
+    await writeFile(file, output);
+  } catch (error) {
+    throw new UsageError(`Cannot write ${file}: ${(error as Error).message}`);
+  }
+}
+
+/** Rewrites every given file for the selected providers and reports what changed on stderr. */
+async function runFix(files: readonly string[], request: FixRequest, io: CliIo): Promise<number> {
+  // Nothing is written until every file has been read and rewritten, so a file that cannot
+  // be read or parsed fails the run before --write has rewritten the files ahead of it.
+  const planned: PlannedFix[] = [];
+  for (const file of files) planned.push(await planFix(file, request, io));
+
+  let rewritten = 0;
+  for (const [index, { file, output, report }] of planned.entries()) {
+    if (request.write) {
+      // Only a file some fix actually changed is written, so a run over a tree of schemas
+      // leaves the ones that already fit as they are, formatting and mtime included.
+      if (report.applied.length > 0) {
+        await writeOut(file, output);
+        rewritten += 1;
+      }
+    } else if (request.out !== undefined) {
+      await writeOut(request.out, output);
+    } else {
+      io.stdout(output);
     }
+    // A blank line between reports, so a run over many files is readable.
+    io.stderr(index > 0 ? `\n${formatFixed(report, io)}` : formatFixed(report, io));
   }
 
-  io.stderr(formatFixed({ file: out ?? label, wrapper, ...result }, io));
-  return result.summary.some((summary) => summary.errors > 0) ? EXIT_FINDINGS : EXIT_OK;
+  if (request.write && planned.length > 1) io.stderr(`schemafit: rewrote ${rewritten} of ${planned.length} files.\n`);
+  return planned.some(({ report }) => report.summary.some((summary) => summary.errors > 0)) ? EXIT_FINDINGS : EXIT_OK;
 }
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
@@ -155,6 +196,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         fix: { type: "boolean", default: false },
         "prune-unused-defs": { type: "boolean", default: false },
         out: { type: "string", short: "o" },
+        write: { type: "boolean", short: "w", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "v", default: false },
       },
@@ -186,17 +228,34 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     if (values.out !== undefined && !values.fix) {
       throw new UsageError("--out only applies with --fix.");
     }
+    if (values.write && !values.fix) {
+      throw new UsageError("--write only applies with --fix.");
+    }
+    if (values.out !== undefined && values.write) {
+      throw new UsageError("--out and --write cannot be combined; --write rewrites each file in place.");
+    }
     if (values["prune-unused-defs"] && !values.fix) {
       throw new UsageError("--prune-unused-defs only applies with --fix.");
     }
 
     if (values.fix) {
-      const [file] = positionals;
-      if (file === "rules") throw new UsageError("--fix does not apply to the rules subcommand.");
-      if (positionals.length !== 1 || file === undefined) {
-        throw new UsageError("--fix takes exactly one file.");
+      if (positionals[0] === "rules") throw new UsageError("--fix does not apply to the rules subcommand.");
+      if (positionals.length === 0) {
+        throw new UsageError(values.write ? "--fix --write takes at least one file." : "--fix takes exactly one file.");
       }
-      return await runFix(file, { providers: selected, out: values.out, pruneUnusedDefs: values["prune-unused-defs"] }, io);
+      if (!values.write && positionals.length > 1) {
+        throw new UsageError("--fix takes exactly one file; add --write to rewrite several in place.");
+      }
+      if (values.write && positionals.includes("-")) {
+        throw new UsageError("--write cannot rewrite stdin; drop it to get the rewritten schema on stdout.");
+      }
+      const request = {
+        providers: selected,
+        out: values.out,
+        write: values.write,
+        pruneUnusedDefs: values["prune-unused-defs"],
+      };
+      return await runFix(positionals, request, io);
     }
 
     if (positionals[0] === "rules") {

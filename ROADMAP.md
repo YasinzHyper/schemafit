@@ -23,7 +23,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] `--fix --provider all`: produce the most portable schema (the intersection of all providers)
 - [x] Round-trip test: every example under `examples/` is rewritten for every provider and for all of them at once, and what `--fix` leaves behind is recorded per example, so a rewrite that stops working or a fix that starts covering one shows up as a diff
 - [ ] Fix for `anthropic/allof-ref`: the merge attached to `openai/unsupported-composition` resolves exactly this `allOf` of a `$ref`, but the Anthropic rule carries no fix of its own, so `--fix --provider anthropic` leaves an error the tool can in fact rewrite. `examples/invoice-tool.json` is the case
-- [ ] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook. Today `--fix` takes one file and writes to stdout or `--out`
+- [x] `--fix --write`: rewrite several files in place, so `--fix` can run as a pre-commit hook
 
 ## 0.3: More ways in
 
@@ -45,7 +45,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] `--format sarif` for code scanning
 - [ ] JSON source positions: report `file:line:column` for each finding, not only the JSON Pointer
 - [ ] Composite GitHub Action (`uses: YasinzHyper/schemafit@v0`) with a documented example workflow
-- [ ] pre-commit hook definition (`.pre-commit-hooks.yaml`)
+- [ ] pre-commit hook definition (`.pre-commit-hooks.yaml`), on top of `--fix --write`
+- [ ] `--fix --write` keeps the indentation of the file it rewrites instead of reformatting it with two spaces, so a repository that indents its schemas differently gets a diff of the fixes alone
 - [ ] `schemafit explain <rule-id>`: print the rule's summary, notes, source, and a before/after example
 - [ ] Vitest/Jest matcher: `expect(schema).toFitProvider("openai")`
 - [ ] Publish to npm with provenance from a release workflow

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -152,6 +152,42 @@ describe("cli", () => {
     expect(JSON.parse(await readFile(out, "utf8"))).toMatchObject({ additionalProperties: false });
   });
 
+  it("--fix --write rewrites each file in place and leaves the ones no fix touched alone", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const loose = join(dir, "loose.json");
+    const fitting = join(dir, "fitting.json");
+    // Written with its own formatting, so an untouched file is recognisable byte for byte.
+    const original = '{\n    "type": "object",\n    "properties": {},\n    "additionalProperties": false\n}';
+    await writeFile(loose, '{"type":"object","properties":{}}');
+    await writeFile(fitting, original);
+
+    const { code, stdout, stderr } = await cli(["--fix", "-p", "openai", "--write", loose, fitting]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(JSON.parse(await readFile(loose, "utf8"))).toEqual({
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    });
+    expect(await readFile(fitting, "utf8")).toBe(original);
+    expect(stderr).toContain("openai/additional-properties-false");
+    expect(stderr).toContain("Nothing to fix");
+    expect(stderr).toContain("rewrote 1 of 2 files");
+  });
+
+  it("--fix --write writes nothing when one of the files cannot be read", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const loose = join(dir, "loose.json");
+    const broken = join(dir, "broken.json");
+    await writeFile(loose, '{"type":"object","properties":{}}');
+    await writeFile(broken, "{nope");
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", loose, broken]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("not valid JSON");
+    expect(await readFile(loose, "utf8")).toBe('{"type":"object","properties":{}}');
+  });
+
   it("--fix --prune-unused-defs drops a definition nothing references", async () => {
     const schema = JSON.stringify({
       type: "object",
@@ -213,6 +249,10 @@ describe("cli", () => {
     [["--fix", "-p", "openai", "rules"], "rules subcommand"],
     [["--out", "x.json", "a.json"], "--out only applies"],
     [["--prune-unused-defs", "a.json"], "--prune-unused-defs only applies"],
+    [["--write", "a.json"], "--write only applies"],
+    [["--fix", "--write", "--out", "x.json", "a.json"], "cannot be combined"],
+    [["--fix", "--write", "-"], "cannot rewrite stdin"],
+    [["--fix", "--write"], "at least one file"],
   ])("exits 2 on bad --fix usage: %j", async (args, message) => {
     const { code, stderr } = await cli(args);
     expect(code).toBe(2);

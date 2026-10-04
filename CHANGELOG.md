@@ -31,6 +31,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - A round-trip test over `examples/`: every example is rewritten for each provider on its own and for all of them at once, and what `--fix` leaves behind is recorded per example and per provider. Each run asserts that no finding carrying a fix survived, that fixing the output again changes nothing, that every local `$ref` still resolves after the inlining and pruning, that the compatibility verdict matches the errors left, and that the rewritten schema goes back into the wrapper it came from. An example added without its outcome recorded fails the test, and so does a provider added without being checked.
 
+- `schemafit --fix --write <file...>`: rewrite every file given in place, so `--fix` can run over a directory of schemas or from a pre-commit hook rather than one file at a time into stdout or `--out`. Every file is read and rewritten before any of them is written out, so a file that cannot be read or is not JSON fails the run instead of leaving the files ahead of it rewritten and the rest untouched. A file no fix changed is not written at all, which keeps its formatting and its mtime as they were; the files that were rewritten come back with two-space indentation. The report of each file still goes to stderr, followed by a line counting how many of them changed. `--write` cannot be combined with `--out`, and it cannot rewrite stdin.
+
 ### Changed
 
 - `AppliedFix.ruleId` and `AppliedFix.provider` are now optional: a rewrite that no finding asked for, which today means a definition `--prune-unused-defs` removed, has no rule behind it. The `--fix` report names the flag where it would name the rule.
