@@ -1,7 +1,6 @@
-import { resolvePointer } from "../pointer.js";
-import { referenceSites, referenceTarget, resolveLocalRef } from "../refs.js";
+import { inlinableRef, refOnly, resolveLocalRef } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta } from "../types.js";
-import { children, isJsonSchema, isObjectSchema, typesOf, walk } from "../walk.js";
+import { children, isJsonSchema, isObjectSchema, typesOf } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords } from "./shared.js";
 
 const SOURCE = "https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas";
@@ -238,44 +237,6 @@ const TIGHTER_BOUND: Record<string, "larger" | "smaller"> = {
   maxItems: "smaller",
 };
 
-/** The `$ref` of a branch that is nothing but a reference, so inlining it loses nothing. */
-function refOnly(branch: JsonSchema): string | null {
-  const keywords = Object.keys(branch);
-  return keywords.length === 1 && keywords[0] === "$ref" && typeof branch.$ref === "string" ? branch.$ref : null;
-}
-
-/** True when the subschema at `path` refers back to itself, directly or through another definition. */
-function refersToItself(root: JsonSchema, path: string): boolean {
-  const seen = new Set<string>([path]);
-
-  const visit = (schema: JsonSchema, at: string): boolean => {
-    const reachable = [...children(schema, at)];
-    if (typeof schema.$ref === "string") {
-      const target = resolveLocalRef(root, schema.$ref);
-      if (target?.path === path) return true;
-      if (target) reachable.push({ schema: target.schema, path: target.path, parentKeyword: "$ref" });
-    }
-    for (const next of reachable) {
-      if (seen.has(next.path)) continue;
-      seen.add(next.path);
-      if (visit(next.schema, next.path)) return true;
-    }
-    return false;
-  };
-
-  const start = resolvePointer(root, path);
-  return isJsonSchema(start) ? visit(start, path) : false;
-}
-
-/**
- * How many references in the document point at `path`. Counted over every reference keyword
- * wherever it sits, so a definition a `$ref` under a keyword `walk()` does not visit still needs
- * is seen as shared and copied rather than moved out from under it.
- */
-function refCount(root: JsonSchema, path: string): number {
-  return referenceSites(root).filter((site) => referenceTarget(root, site)?.path === path).length;
-}
-
 /** A `$ref` branch the fix replaced with the definition it names. */
 interface InlinedRef {
   ref: string;
@@ -283,28 +244,6 @@ interface InlinedRef {
   path: string;
   /** True when other subschemas reference the definition too, so the original has to stay. */
   shared: boolean;
-}
-
-/**
- * The definition a bare `$ref` branch names, when putting it in the branch's place is safe:
- * the definition must not refer back to itself, which cannot be inlined at all. A definition
- * other subschemas also reference is copied rather than moved, and `shared` records that,
- * because the original has to stay for them. Copying is the better
- * trade: leaving the branch alone leaves an `allOf` the API rejects and no fix can resolve,
- * while a second copy only costs size, which the property, nesting, and string-size rules
- * measure again over the fixed schema. The copy is deep, so the merged object shares nothing
- * with the definition it came from. Either way the fix names the definition in `prunes`, and
- * the engine drops it once nothing references it any more.
- */
-function inlinableRef(root: JsonSchema, ref: string): { schema: JsonSchema; path: string; shared: boolean } | null {
-  const target = resolveLocalRef(root, ref);
-  if (!target || target.path === "") return null;
-  if (refersToItself(root, target.path)) return null;
-  return {
-    schema: structuredClone(target.schema),
-    path: target.path,
-    shared: refCount(root, target.path) > 1,
-  };
 }
 
 /**

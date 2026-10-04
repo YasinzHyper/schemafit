@@ -160,7 +160,7 @@ Every object must set "additionalProperties": false.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/no-recursive-schemas
 
@@ -168,7 +168,7 @@ Recursive schemas are not supported.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/no-external-ref
 
@@ -176,7 +176,7 @@ External "$ref"s are not supported.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/enum-primitives
 
@@ -184,7 +184,7 @@ Enum values must be strings, numbers, booleans, or null.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/no-numeric-constraints
 
@@ -195,7 +195,7 @@ Numerical constraints (minimum, maximum, multipleOf, ...) are not supported.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/no-string-length
 
@@ -206,7 +206,7 @@ String length constraints (minLength, maxLength) are not supported.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/array-constraints
 
@@ -217,7 +217,7 @@ The only supported array constraint is "minItems" of 0 or 1.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/unsupported-format
 
@@ -228,15 +228,18 @@ String "format" must be one of the documented formats.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/allof-ref
 
 "allOf" may not contain "$ref".
 
+> The fix puts the definition in the branch's place, which is all this takes: "allOf" is a supported keyword, and only a "$ref" inside one is not, so the "allOf" itself stays. A definition other subschemas reference too is copied rather than moved, and the fix title says so; one the inlining leaves with no references at all is removed, together with the "$defs" map it empties. A branch that carries a "$ref" beside other keywords is reported without a fix, because inlining would have to intersect the definition with those keywords, and so is a "$ref" that cannot be resolved or that names a definition referring back to itself.
+
 - Severity: **error**
+- Fixable: **yes**, with `--fix`
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/regex-features
 
@@ -244,7 +247,7 @@ Patterns may not use backreferences, lookahead/lookbehind, or word boundaries.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/optional-parameters-limit
 
@@ -254,7 +257,7 @@ At most 24 optional parameters across all strict schemas in a request.
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/union-parameters-limit
 
@@ -264,7 +267,7 @@ At most 16 parameters may use anyOf or type arrays across all strict schemas in 
 
 - Severity: **error**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ### anthropic/enum-casing
 
@@ -272,7 +275,7 @@ Enum values that differ only in capitalization can be returned with the wrong ca
 
 - Severity: **warn**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#invalid-outputs>
-- Last verified: 2026-09-20
+- Last verified: 2026-10-03
 
 ## Gemini
 
