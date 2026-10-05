@@ -2,12 +2,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
-import type { FileReport, FixReport } from "./format/pretty.js";
+import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint } from "./lint.js";
+import { displayPointer } from "./pointer.js";
 import { rules } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
-import { rewrap, unwrap } from "./unwrap.js";
+import { rewrap, unwrapAll } from "./unwrap.js";
+import type { UnwrappedSchema } from "./unwrap.js";
 
 export interface CliIo {
   stdout(text: string): void;
@@ -43,8 +45,9 @@ Options
   -h, --help              Show this help
   -v, --version           Show the version
 
-Files may hold a bare JSON Schema or a tool / response-format definition
-(OpenAI tools, Anthropic input_schema, MCP inputSchema); the schema is found automatically.
+Files may hold a bare JSON Schema, a tool / response-format definition
+(OpenAI tools, Anthropic input_schema, MCP inputSchema), or a whole request body
+or array of tool definitions, in which case every schema in it is reported on its own.
 
 --fix takes one file and rewrites it for every selected provider at once, so with no
 --provider it produces the most portable schema the rules can reach: the one all of them
@@ -113,6 +116,35 @@ async function readDocument(file: string, io: CliIo): Promise<{ label: string; d
   }
 }
 
+/** Names a schema inside a document, for an error about that schema alone. */
+function at(label: string, found: UnwrappedSchema): string {
+  return found.pointer ? `${label} at ${displayPointer(found.pointer)}` : label;
+}
+
+/**
+ * Where one schema of a document sits, for the report header and the JSON output. The pointer
+ * is what tells several reports on one file apart, so a document that holds a single schema
+ * is reported by its file name alone, exactly as it was before a document could hold several.
+ */
+function sourceOf(file: string, found: UnwrappedSchema, several: boolean): SchemaSource {
+  return {
+    file,
+    wrapper: found.wrapper,
+    ...(several && found.pointer ? { pointer: found.pointer } : {}),
+    ...(found.name ? { name: found.name } : {}),
+  };
+}
+
+/** Reads one file and finds every schema in it. A document with none is a usage error. */
+async function readSchemas(file: string, io: CliIo): Promise<{ label: string; document: unknown; schemas: UnwrappedSchema[] }> {
+  const { label, document } = await readDocument(file, io);
+  const schemas = unwrapAll(document);
+  if (schemas.length === 0) {
+    throw new UsageError(`${label} holds no schema to check; no tool or response format in it declares one.`);
+  }
+  return { label, document, schemas };
+}
+
 /** What `--fix` was asked to do, beyond the files it reads. */
 interface FixRequest {
   providers: readonly ProviderId[];
@@ -121,29 +153,35 @@ interface FixRequest {
   pruneUnusedDefs: boolean;
 }
 
-/** One file rewritten in memory: the document to write out, and the report to print. */
+/** One file rewritten in memory: the document to write out, and one report per schema in it. */
 interface PlannedFix {
   file: string;
   output: string;
-  report: FixReport;
+  reports: FixReport[];
 }
 
-/** Rewrites one file's schema for the selected providers, without writing anything. */
+/** Rewrites every schema of one file for the selected providers, without writing anything. */
 async function planFix(file: string, { providers, out, write, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<PlannedFix> {
-  const { label, document } = await readDocument(file, io);
-  const { schema, wrapper, keys } = unwrap(document);
+  const { label, document, schemas } = await readSchemas(file, io);
+  // The reports name the file the schemas end up in, which --out renames and --write does not.
+  const destination = write ? label : (out ?? label);
 
-  let result;
-  try {
-    result = fix(schema, { providers, pruneUnusedDefs });
-  } catch (error) {
-    if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
-    throw error;
+  const reports: FixReport[] = [];
+  let rewritten: unknown = document;
+  for (const found of schemas) {
+    let result;
+    try {
+      result = fix(found.schema, { providers, pruneUnusedDefs });
+    } catch (error) {
+      if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
+      throw error;
+    }
+    // Each rewrite goes back where it came from, so a request body comes out whole.
+    rewritten = rewrap(rewritten, found.keys, result.schema);
+    reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
 
-  const output = `${JSON.stringify(rewrap(document, keys, result.schema), null, 2)}\n`;
-  // The report names the file the schema ends up in, which --out renames and --write does not.
-  return { file, output, report: { file: write ? label : (out ?? label), wrapper, ...result } };
+  return { file, output: `${JSON.stringify(rewritten, null, 2)}\n`, reports };
 }
 
 async function writeOut(file: string, output: string): Promise<void> {
@@ -162,11 +200,12 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
   for (const file of files) planned.push(await planFix(file, request, io));
 
   let rewritten = 0;
-  for (const [index, { file, output, report }] of planned.entries()) {
+  let printed = 0;
+  for (const { file, output, reports } of planned) {
     if (request.write) {
       // Only a file some fix actually changed is written, so a run over a tree of schemas
       // leaves the ones that already fit as they are, formatting and mtime included.
-      if (report.applied.length > 0) {
+      if (reports.some((report) => report.applied.length > 0)) {
         await writeOut(file, output);
         rewritten += 1;
       }
@@ -175,12 +214,16 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
     } else {
       io.stdout(output);
     }
-    // A blank line between reports, so a run over many files is readable.
-    io.stderr(index > 0 ? `\n${formatFixed(report, io)}` : formatFixed(report, io));
+    // A blank line between reports, so a run over many files or schemas is readable.
+    for (const report of reports) {
+      io.stderr(printed > 0 ? `\n${formatFixed(report, io)}` : formatFixed(report, io));
+      printed += 1;
+    }
   }
 
   if (request.write && planned.length > 1) io.stderr(`schemafit: rewrote ${rewritten} of ${planned.length} files.\n`);
-  return planned.some(({ report }) => report.summary.some((summary) => summary.errors > 0)) ? EXIT_FINDINGS : EXIT_OK;
+  const reports = planned.flatMap(({ reports: own }) => own);
+  return reports.some((report) => report.summary.some((summary) => summary.errors > 0)) ? EXIT_FINDINGS : EXIT_OK;
 }
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
@@ -271,13 +314,14 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
 
     const reports: FileReport[] = [];
     for (const file of positionals) {
-      const { label, document } = await readDocument(file, io);
-      const { schema, wrapper } = unwrap(document);
-      try {
-        reports.push({ file: label, wrapper, result: lint(schema, { providers: selected }) });
-      } catch (error) {
-        if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
-        throw error;
+      const { label, schemas } = await readSchemas(file, io);
+      for (const found of schemas) {
+        try {
+          reports.push({ ...sourceOf(label, found, schemas.length > 1), result: lint(found.schema, { providers: selected }) });
+        } catch (error) {
+          if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
+          throw error;
+        }
       }
     }
 
@@ -289,7 +333,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     const shown = values.quiet ? reports.map((report) => ({ ...report, result: withoutWarnings(report.result) })) : reports;
 
     if (format === "json") {
-      const files = shown.map(({ file, wrapper, result }) => ({ file, wrapper, ...result }));
+      const files = shown.map(({ result, ...source }) => ({ ...source, ...result }));
       io.stdout(`${JSON.stringify({ version: await version(), files }, null, 2)}\n`);
     } else {
       io.stdout(formatPretty(shown, io));

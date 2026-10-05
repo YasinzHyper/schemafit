@@ -27,13 +27,15 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 
 ## 0.3: More ways in
 
-- [ ] Multiple schemas per file: accept an array of tools and a full request body (`tools: [...]`), report per tool
+- [x] Multiple schemas per file: accept an array of tools and a full request body (`tools: [...]`), report per tool
 - [ ] Request-level Anthropic limits across all tools in a file: 20 strict tools, 24 optional parameters, 16 union parameters
 - [ ] Only lint tools that opt into strictness (`strict: true`) when the file is a request body; `--all-tools` overrides
-- [ ] MCP `tools/list` response as input (`{ "tools": [{ "inputSchema": ... }] }`)
+- [x] MCP `tools/list` response as input (`{ "tools": [{ "inputSchema": ... }] }`), which is the `tools: [...]` request body with the MCP spelling of the schema key
+- [ ] The JSON-RPC envelope an MCP `tools/list` response arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured straight off the wire can be linted without unwrapping it by hand first
 - [ ] YAML input
 - [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
+- [ ] Report how many tools in a request body declared no schema and were skipped, so a file whose tools are all server tools says so rather than failing with "holds no schema to check"
 - [ ] `$ref` resolution for `$id`/`$anchor`-based local references
 - [ ] Draft-04/06 spellings: `id`, `definitions`, boolean `exclusiveMinimum`
 
@@ -44,6 +46,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] `--format github`: GitHub Actions annotations (`::error file=...`)
 - [ ] `--format sarif` for code scanning
 - [ ] JSON source positions: report `file:line:column` for each finding, not only the JSON Pointer
+- [ ] `--fix` a single schema of a document that holds several (`--only <pointer>`), which today is all or nothing
 - [ ] Composite GitHub Action (`uses: YasinzHyper/schemafit@v0`) with a documented example workflow
 - [ ] pre-commit hook definition (`.pre-commit-hooks.yaml`), on top of `--fix --write`
 - [ ] `--fix --write` keeps the indentation of the file it rewrites instead of reformatting it with two spaces, so a repository that indents its schemas differently gets a diff of the fixes alone
