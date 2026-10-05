@@ -74,6 +74,20 @@ describe("cli", () => {
     expect(new Set(files.map(({ file }) => file)).size).toBe(1);
   });
 
+  it("names a document that holds a single schema by its file alone", async () => {
+    // The pointer is only what tells several reports on one file apart, so a file holding one
+    // schema is reported exactly as it was before a document could hold several: no pointer,
+    // whether the schema sat in a wrapper or not. Only the tool's name is new beside it.
+    const { stdout } = await cli([example("anthropic-tool.json")]);
+    expect(stdout).toContain("anthropic-tool.json  get_weather  (Anthropic tool (input_schema))");
+    expect(stdout).not.toContain("anthropic-tool.json#");
+
+    const { stdout: json } = await cli(["-f", "json", example("anthropic-tool.json")]);
+    const [file] = JSON.parse(json).files as { name: string; pointer?: string }[];
+    expect(file?.name).toBe("get_weather");
+    expect(file).not.toHaveProperty("pointer");
+  });
+
   it("--fix rewrites every tool of a request body and leaves the rest of the body alone", async () => {
     const { code, stdout, stderr } = await cli(["--fix", example("messages-request.json")]);
     expect(code).toBe(0);
