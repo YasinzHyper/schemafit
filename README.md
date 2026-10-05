@@ -68,6 +68,9 @@ schemafit --provider openai,anthropic schema.json
 # Several files, machine-readable output
 schemafit --format json tools/*.json
 
+# A whole request body: every tool in it is reported on its own
+schemafit examples/messages-request.json
+
 # From stdin
 cat schema.json | schemafit -
 
@@ -88,6 +91,27 @@ schemafit --fix --write tools/*.json
 ```
 
 Files can hold a bare JSON Schema or a whole tool / response-format definition. `schemafit` finds the schema inside OpenAI tools (`function.parameters`), OpenAI `response_format`, Anthropic tools (`input_schema`), and MCP tools (`inputSchema`).
+
+They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus `response_format` — OpenAI's and Gemini's spellings alike — and the Responses API's `text.format`), an MCP `tools/list` response, or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
+
+```console
+$ schemafit examples/messages-request.json
+
+examples/messages-request.json#/tools/1/input_schema  create_ticket  (Anthropic tool (input_schema))
+
+  OpenAI     ✖ 2 errors
+    error  #  openai/all-required
+           Properties missing from "required": assignee.
+           fix: Add them to "required". To keep a field optional, make it nullable: "type": ["string", "null"].
+    ...
+
+examples/messages-request.json#/tools/2/input_schema  search_tickets  (Anthropic tool (input_schema))
+
+  OpenAI     ✔ compatible
+  ...
+```
+
+`--fix` rewrites every schema the document holds and puts each one back where it came from, so a fixed request body keeps its model, its messages, and the tools it had nothing to change in.
 
 | Option | |
 | --- | --- |
@@ -234,9 +258,24 @@ List several providers to get the schema all of them accept, the same thing `--f
 
 A finding that can be fixed carries a `fix` with a `title` and a pure `rewrite(subschema)`, so you can apply fixes selectively instead of all at once.
 
+`unwrapAll` is how the CLI finds the schemas in a document, and `rewrap` puts a rewritten one back:
+
+```ts
+import { fix, rewrap, unwrapAll } from "schemafit";
+
+let body = JSON.parse(await readFile("request.json", "utf8"));
+for (const { schema, keys, name } of unwrapAll(body)) {
+  const { schema: fixed } = fix(schema, { providers: ["openai"] });
+  console.log(name ?? "(bare schema)");
+  body = rewrap(body, keys, fixed);
+}
+```
+
+Each entry also carries `pointer`, the JSON Pointer from the document to the schema, and `wrapper`, the wrapper it was found in. `unwrap` is still there for a document that holds exactly one schema.
+
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across several tools, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across the tools of one request body, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

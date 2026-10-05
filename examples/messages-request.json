@@ -1,0 +1,39 @@
+{
+  "model": "claude-opus-5-5",
+  "max_tokens": 1024,
+  "tools": [
+    {
+      "type": "web_search_20260209",
+      "name": "web_search"
+    },
+    {
+      "name": "create_ticket",
+      "description": "File a support ticket on behalf of the user.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "description": "One-line summary of the problem." },
+          "category": { "type": "string", "enum": ["billing", "bug", "other"] },
+          "assignee": { "type": "string", "description": "Who to assign it to. Omit to leave it unassigned." }
+        },
+        "required": ["title", "category"]
+      }
+    },
+    {
+      "name": "search_tickets",
+      "description": "Find tickets whose title or body matches a query.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Free-text search over titles and bodies." },
+          "status": { "type": "string", "enum": ["open", "closed", "any"], "description": "Which tickets to include." }
+        },
+        "required": ["query", "status"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "messages": [
+    { "role": "user", "content": "File a bug about the broken invoice export, then show me similar tickets." }
+  ]
+}

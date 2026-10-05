@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { Finding, JsonSchema, ProviderId } from "../src/index.js";
-import { PROVIDER_IDS, fix, rewrap, unwrap } from "../src/index.js";
+import type { Finding, JsonSchema, ProviderId, UnwrappedSchema } from "../src/index.js";
+import { PROVIDER_IDS, fix, rewrap, unwrapAll } from "../src/index.js";
 import { isLocalRef, referenceSites, referenceTarget } from "../src/refs.js";
 
 const EXAMPLES = new URL("../examples/", import.meta.url);
@@ -18,6 +18,7 @@ type Selection = keyof typeof SELECTIONS;
 
 /**
  * What `--fix` leaves behind for each example, as `<severity> <rule id> <pointer>`, sorted.
+ * A document that holds several schemas contributes the residue of all of them.
  * Every entry is a finding whose rule attaches no fix, and the comments say why there is none:
  * this is the list of things the tool still asks a person to do by hand. An entry that goes
  * means a new fix covers it, and the roadmap item behind it can be ticked; an entry that
@@ -80,6 +81,14 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "warn gemini/undocumented-format /properties/reporter/properties/email",
     ],
   },
+  // An Anthropic request body: two tools whose schemas every fix resolves, and a server tool
+  // that declares no schema at all, which is why nothing here is reported against it.
+  "messages-request.json": {
+    openai: [],
+    anthropic: [],
+    gemini: [],
+    all: [],
+  },
   // Written by hand to fit everywhere, so there is nothing to rewrite and nothing to report.
   "ticket.portable.json": {
     openai: [],
@@ -97,6 +106,11 @@ function exampleFiles(): string[] {
 
 function readExample(name: string): unknown {
   return JSON.parse(readFileSync(new URL(name, EXAMPLES), "utf8"));
+}
+
+/** Every schema the example declares: one for a bare schema or a tool, several for a request body. */
+function exampleSchemas(name: string): UnwrappedSchema[] {
+  return unwrapAll(readExample(name));
 }
 
 /** `<severity> <rule id> <pointer>`, sorted, so the assertion is on the multiset. */
@@ -126,14 +140,18 @@ describe("examples round-trip through --fix", () => {
 
   for (const name of exampleFiles()) {
     describe(name, () => {
-      it("goes back into the wrapper it came from", () => {
-        const document = readExample(name);
-        const { schema, wrapper, keys } = unwrap(document);
-        const fixed = fix(schema, { providers: PROVIDER_IDS }).schema;
+      it("goes back into the wrappers it came from", () => {
+        const schemas = exampleSchemas(name);
+        const fixed = schemas.map(({ schema }) => fix(schema, { providers: PROVIDER_IDS }).schema);
 
-        const again = unwrap(rewrap(document, keys, fixed));
-        expect(again.wrapper).toBe(wrapper);
-        expect(again.schema).toEqual(fixed);
+        let document = readExample(name);
+        schemas.forEach(({ keys }, index) => void (document = rewrap(document, keys, fixed[index] as JsonSchema)));
+
+        const again = unwrapAll(document);
+        expect(again.map(({ wrapper, pointer }) => `${pointer || "#"} ${wrapper}`)).toEqual(
+          schemas.map(({ wrapper, pointer }) => `${pointer || "#"} ${wrapper}`),
+        );
+        expect(again.map(({ schema }) => schema)).toEqual(fixed);
       });
 
       for (const selection of Object.keys(SELECTIONS) as Selection[]) {
@@ -141,31 +159,35 @@ describe("examples round-trip through --fix", () => {
         const expected = [...(REMAINING[name]?.[selection] ?? [])].sort();
 
         describe(`--provider ${selection}`, () => {
-          const result = fix(unwrap(readExample(name)).schema, { providers });
+          const results = exampleSchemas(name).map(({ schema }) => fix(schema, { providers }));
 
           it("applies every fix the findings carry", () => {
-            const fixable = result.findings.filter((finding) => finding.fix);
+            const fixable = results.flatMap((result) => result.findings).filter((finding) => finding.fix);
             expect(fixable.map((finding) => `${finding.ruleId} ${finding.path || "#"}`)).toEqual([]);
           });
 
           it("leaves only what no rule can rewrite", () => {
-            expect(residue(result.findings)).toEqual(expected);
+            expect(residue(results.flatMap((result) => result.findings))).toEqual(expected);
           });
 
           it("reports a provider as incompatible only where an error has no fix", () => {
-            const incompatible = result.summary.filter((entry) => !entry.compatible).map((entry) => entry.provider);
+            const incompatible = providers.filter((id) =>
+              results.some((result) => result.summary.some((entry) => entry.provider === id && !entry.compatible)),
+            );
             const blocked = providers.filter((id) => expected.some((entry) => entry.startsWith(`error ${id}/`)));
             expect(incompatible).toEqual([...blocked]);
           });
 
           it("settles: fixing the output again changes nothing", () => {
-            const second = fix(result.schema, { providers });
-            expect(second.applied).toEqual([]);
-            expect(second.schema).toEqual(result.schema);
+            for (const result of results) {
+              const second = fix(result.schema, { providers });
+              expect(second.applied).toEqual([]);
+              expect(second.schema).toEqual(result.schema);
+            }
           });
 
           it("leaves every local reference resolvable", () => {
-            expect(danglingRefs(result.schema)).toEqual([]);
+            expect(results.flatMap((result) => danglingRefs(result.schema))).toEqual([]);
           });
         });
       }

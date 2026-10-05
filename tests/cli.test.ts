@@ -54,6 +54,56 @@ describe("cli", () => {
     expect(stdout).toContain("anthropic/no-numeric-constraints");
   });
 
+  it("reports every tool of a request body on its own", async () => {
+    const { code, stdout } = await cli([example("messages-request.json")]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("messages-request.json#/tools/1/input_schema  create_ticket");
+    expect(stdout).toContain("messages-request.json#/tools/2/input_schema  search_tickets");
+    // The server tool in the same array declares no schema, so it is not reported at all.
+    expect(stdout).not.toContain("web_search");
+    expect(stdout).toContain("openai/all-required");
+  });
+
+  it("names each schema of a request body in the JSON output", async () => {
+    const { stdout } = await cli(["-f", "json", example("messages-request.json")]);
+    const files = JSON.parse(stdout).files as { file: string; pointer: string; name: string }[];
+    expect(files.map(({ pointer, name }) => `${pointer} ${name}`)).toEqual([
+      "/tools/1/input_schema create_ticket",
+      "/tools/2/input_schema search_tickets",
+    ]);
+    expect(new Set(files.map(({ file }) => file)).size).toBe(1);
+  });
+
+  it("--fix rewrites every tool of a request body and leaves the rest of the body alone", async () => {
+    const { code, stdout, stderr } = await cli(["--fix", example("messages-request.json")]);
+    expect(code).toBe(0);
+    const body = JSON.parse(stdout);
+    expect(body.model).toBe("claude-opus-5-5");
+    expect(body.messages).toHaveLength(1);
+    expect(body.tools[0]).toEqual({ type: "web_search_20260209", name: "web_search" });
+    expect(body.tools[1].input_schema).toMatchObject({
+      additionalProperties: false,
+      required: ["title", "category", "assignee"],
+      properties: { assignee: { type: ["string", "null"], description: expect.any(String) } },
+    });
+    // One report per schema, the untouched one included.
+    expect(stderr.match(/create_ticket|search_tickets/g)).toEqual(["create_ticket", "search_tickets"]);
+    expect(stderr).toContain("Nothing to fix");
+  });
+
+  it("exits 2 when a document holds no schema at all", async () => {
+    const body = JSON.stringify({ tools: [{ type: "web_search_20260209", name: "web_search" }] });
+    const { code, stderr } = await cli(["-"], body);
+    expect(code).toBe(2);
+    expect(stderr).toContain("holds no schema to check");
+  });
+
+  it("names the schema a document holds several of when one is not an object", async () => {
+    const { code, stderr } = await cli(["-"], JSON.stringify({ tools: [{ name: "f", input_schema: true }] }));
+    expect(code).toBe(2);
+    expect(stderr).toContain("<stdin> at #/tools/0/input_schema: Schema must be a JSON object.");
+  });
+
   it("reads a schema from stdin", async () => {
     const { code, stdout } = await cli(["-", "--format", "json"], '{"type":"array"}');
     expect(code).toBe(1);
@@ -173,6 +223,24 @@ describe("cli", () => {
     expect(stderr).toContain("openai/additional-properties-false");
     expect(stderr).toContain("Nothing to fix");
     expect(stderr).toContain("rewrote 1 of 2 files");
+  });
+
+  it("--fix --write rewrites a request body in place and counts it once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const body = join(dir, "request.json");
+    await writeFile(body, await readFile(example("messages-request.json"), "utf8"));
+
+    const { code, stderr } = await cli(["--fix", "--write", body]);
+    expect(code).toBe(0);
+    const fixed = JSON.parse(await readFile(body, "utf8"));
+    expect(fixed.tools[1].input_schema.additionalProperties).toBe(false);
+    expect(fixed.tools[2].input_schema).toEqual(JSON.parse(await readFile(example("messages-request.json"), "utf8")).tools[2].input_schema);
+    // One file, two reports: the count is of files, not of schemas.
+    expect(stderr).not.toContain("rewrote");
+
+    // A second run has nothing left to change, so the file is not written again.
+    const again = await cli(["--fix", "--write", body]);
+    expect(again.stderr.match(/Nothing to fix/g)).toHaveLength(2);
   });
 
   it("--fix --write writes nothing when one of the files cannot be read", async () => {

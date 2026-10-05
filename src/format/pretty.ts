@@ -2,15 +2,21 @@ import { displayPointer } from "../pointer.js";
 import { providers } from "../providers/index.js";
 import type { AppliedFix, Finding, LintResult, ProviderSummary, RuleMeta } from "../types.js";
 
-export interface FileReport {
+/** Where a linted schema came from: the file, its place in it, and the wrapper it sat in. */
+export interface SchemaSource {
   file: string;
   wrapper: string | null;
+  /** JSON Pointer from the document to the schema. Empty when the document is the schema. */
+  pointer?: string;
+  /** The name of the tool or response-format definition the schema came from. */
+  name?: string;
+}
+
+export interface FileReport extends SchemaSource {
   result: LintResult;
 }
 
-export interface FixReport {
-  file: string;
-  wrapper: string | null;
+export interface FixReport extends SchemaSource {
   applied: readonly AppliedFix[];
   findings: readonly Finding[];
   summary: readonly ProviderSummary[];
@@ -22,6 +28,20 @@ type Paint = (style: keyof typeof CODES, text: string) => string;
 
 function painter(color: boolean): Paint {
   return (style, text) => (color ? `[${CODES[style]}m${text}[0m` : text);
+}
+
+/**
+ * The line a report opens with. A schema the document holds several of is named by where it
+ * sits (`request.json#/tools/1/input_schema`), which is what keeps several reports on one file
+ * apart, and every schema a named definition carries is named by that definition as well.
+ */
+function header(source: SchemaSource, paint: Paint): string {
+  const where = source.pointer ? `${source.file}${displayPointer(source.pointer)}` : source.file;
+  return (
+    paint("bold", where) +
+    (source.name ? `  ${source.name}` : "") +
+    (source.wrapper ? paint("dim", `  (${source.wrapper})`) : "")
+  );
 }
 
 function plural(count: number, noun: string): string {
@@ -49,8 +69,9 @@ export function formatPretty(reports: readonly FileReport[], options: { color: b
   const paint = painter(options.color);
   const lines: string[] = [];
 
-  for (const { file, wrapper, result } of reports) {
-    lines.push(paint("bold", file) + (wrapper ? paint("dim", `  (${wrapper})`) : ""));
+  for (const report of reports) {
+    const { result } = report;
+    lines.push(header(report, paint));
     lines.push("");
 
     const width = Math.max(...result.summary.map((summary) => providers[summary.provider].name.length));
@@ -69,7 +90,7 @@ export function formatPretty(reports: readonly FileReport[], options: { color: b
 /** The stderr report of `--fix`: what was rewritten, and what is left to do by hand. */
 export function formatFixed(report: FixReport, options: { color: boolean }): string {
   const paint = painter(options.color);
-  const lines = [paint("bold", report.file) + (report.wrapper ? paint("dim", `  (${report.wrapper})`) : ""), ""];
+  const lines = [header(report, paint), ""];
 
   if (report.applied.length === 0) {
     lines.push(`  ${paint("dim", "Nothing to fix; the schema is unchanged.")}`);
