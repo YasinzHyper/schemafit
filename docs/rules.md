@@ -9,6 +9,10 @@ Every rule is derived from the provider's official documentation and records the
 
 Rules marked **fixable** are rewritten automatically by `schemafit --fix --provider <id> <file>`.
 
+A rule whose scope is **the whole request** measures every schema a request body sends strictly, together,
+because the provider states the limit per request rather than per schema. A file that holds one schema is
+measured as a request that holds one.
+
 ## OpenAI
 
 Models: Structured Outputs (strict: true)
@@ -149,9 +153,10 @@ Models: Structured outputs (output_config.format and strict tool use)
 | [`anthropic/unsupported-format`](#anthropicunsupported-format) | error | String "format" must be one of the documented formats. |
 | [`anthropic/allof-ref`](#anthropicallof-ref) | error | "allOf" may not contain "$ref". |
 | [`anthropic/regex-features`](#anthropicregex-features) | error | Patterns may not use backreferences, lookahead/lookbehind, or word boundaries. |
-| [`anthropic/optional-parameters-limit`](#anthropicoptional-parameters-limit) | error | At most 24 optional parameters across all strict schemas in a request. |
-| [`anthropic/union-parameters-limit`](#anthropicunion-parameters-limit) | error | At most 16 parameters may use anyOf or type arrays across all strict schemas in a request. |
 | [`anthropic/enum-casing`](#anthropicenum-casing) | warn | Enum values that differ only in capitalization can be returned with the wrong casing. |
+| [`anthropic/strict-tools-limit`](#anthropicstrict-tools-limit) | error | At most 20 tools of a request may set "strict": true. |
+| [`anthropic/optional-parameters-limit`](#anthropicoptional-parameters-limit) | error | At most 24 optional parameters across all strict schemas of a request. |
+| [`anthropic/union-parameters-limit`](#anthropicunion-parameters-limit) | error | At most 16 parameters may use anyOf or type arrays across all strict schemas of a request. |
 
 ### anthropic/additional-properties-false
 
@@ -249,32 +254,45 @@ Patterns may not use backreferences, lookahead/lookbehind, or word boundaries.
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations>
 - Last verified: 2026-10-03
 
-### anthropic/optional-parameters-limit
-
-At most 24 optional parameters across all strict schemas in a request.
-
-> The limit is request-wide. schemafit checks one schema at a time, so this only fires when a single schema already exceeds it.
-
-- Severity: **error**
-- Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-10-03
-
-### anthropic/union-parameters-limit
-
-At most 16 parameters may use anyOf or type arrays across all strict schemas in a request.
-
-> The limit is request-wide. schemafit checks one schema at a time, so this only fires when a single schema already exceeds it.
-
-- Severity: **error**
-- Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
-- Last verified: 2026-10-03
-
 ### anthropic/enum-casing
 
 Enum values that differ only in capitalization can be returned with the wrong casing.
 
 - Severity: **warn**
 - Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#invalid-outputs>
+- Last verified: 2026-10-03
+
+### anthropic/strict-tools-limit
+
+At most 20 tools of a request may set "strict": true.
+
+> Only a tool that carries "strict": true is counted, because the docs say non-strict tools do not count toward this limit. A request whose tools say nothing about strictness therefore never trips it, however many of them it declares.
+
+- Severity: **error**
+- Scope: **the whole request**, every strict schema in it at once
+- Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
+- Last verified: 2026-10-03
+
+### anthropic/optional-parameters-limit
+
+At most 24 optional parameters across all strict schemas of a request.
+
+> The limit is a total across every strict tool schema and output schema of one request, so a file that holds a whole request body is measured as a whole. A tool that sets "strict": false is left out; one that says nothing is counted, as is a file that holds nothing but a schema.
+
+- Severity: **error**
+- Scope: **the whole request**, every strict schema in it at once
+- Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
+- Last verified: 2026-10-03
+
+### anthropic/union-parameters-limit
+
+At most 16 parameters may use anyOf or type arrays across all strict schemas of a request.
+
+> The limit is a total across every strict schema of one request, counted the same way as anthropic/optional-parameters-limit. The docs single these out as especially expensive, because they create exponential compilation cost.
+
+- Severity: **error**
+- Scope: **the whole request**, every strict schema in it at once
+- Source: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits>
 - Last verified: 2026-10-03
 
 ## Gemini

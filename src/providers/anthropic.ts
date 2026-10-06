@@ -1,5 +1,15 @@
+import { displayPointer } from "../pointer.js";
 import { findRecursiveRefs, inlinableRef, isLocalRef, refOnly } from "../refs.js";
-import type { JsonSchema, Provider, Rule, RuleMeta, SchemaFix } from "../types.js";
+import type {
+  JsonSchema,
+  Provider,
+  RequestRule,
+  RequestSchema,
+  Rule,
+  RuleMeta,
+  SchemaFix,
+  SchemaNode,
+} from "../types.js";
 import { isJsonSchema } from "../walk.js";
 import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords, withNote } from "./shared.js";
 
@@ -10,6 +20,7 @@ const INVALID_OUTPUTS = `${DOCS}#invalid-outputs`;
 const SDK_TRANSFORM = `${DOCS}#how-sdk-transformation-works`;
 const VERIFIED = "2026-10-03";
 
+const MAX_STRICT_TOOLS = 20;
 const MAX_OPTIONAL_PARAMETERS = 24;
 const MAX_UNION_PARAMETERS = 16;
 
@@ -340,51 +351,124 @@ const regexFeatures: Rule = {
   },
 };
 
-const optionalParametersLimit: Rule = {
-  ...meta("optional-parameters-limit", {
+/** Meta for a rule that measures the request rather than one schema. */
+function requestMeta(
+  name: string,
+  rest: Omit<RuleMeta, "id" | "provider" | "source" | "verified" | "scope"> & { source?: string },
+): RuleMeta & { scope: "request" } {
+  return { ...meta(name, rest), scope: "request" };
+}
+
+/** Properties a schema leaves out of "required", which is what the docs count as optional. */
+function optionalParameters(nodes: readonly SchemaNode[]): number {
+  let count = 0;
+  for (const { schema } of nodes) {
+    if (!isJsonSchema(schema.properties)) continue;
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    count += Object.keys(schema.properties).filter((key) => !required.has(key)).length;
+  }
+  return count;
+}
+
+/** Properties whose type is a union: an "anyOf", or a type array such as ["string", "null"]. */
+function unionParameters(nodes: readonly SchemaNode[]): number {
+  return nodes.filter(
+    ({ schema, parentKeyword }) => parentKeyword === "properties" && ("anyOf" in schema || Array.isArray(schema.type)),
+  ).length;
+}
+
+/** What each schema contributed to a total, for the message: `create_ticket 8, #/text/format 3`. */
+function contributions(counted: readonly { schema: RequestSchema; count: number }[]): string {
+  return counted
+    .filter(({ count }) => count > 0)
+    .map(({ schema, count }) => `${schema.name ?? displayPointer(schema.pointer)} ${count}`)
+    .join(", ");
+}
+
+/**
+ * A limit the docs give as a total across the strict schemas of one request. Each schema's count
+ * is added up and the message names what every one of them contributed, because no single schema
+ * has to look complex for the total to be over: "if you have 4 strict tools with 6 optional
+ * parameters each, you'll reach the 24-parameter limit even though no single tool seems complex".
+ */
+function requestTotal(options: {
+  name: string;
+  limit: number;
+  /** Plural noun for what is counted, as the message and the summary spell it. */
+  noun: string;
+  summary: string;
+  hint: string;
+  notes: string;
+  count(schema: RequestSchema): number;
+}): RequestRule {
+  const { name, limit, noun, summary, hint, notes, count } = options;
+  return {
+    ...requestMeta(name, { severity: "error", source: COMPLEXITY, summary, notes }),
+    check(ctx) {
+      const counted = ctx.schemas.map((schema) => ({ schema, count: count(schema) }));
+      const total = counted.reduce((sum, entry) => sum + entry.count, 0);
+      if (total <= limit) return;
+      // A request of one schema is what a schema file is, and it reads as it always has.
+      const one = counted.length === 1;
+      const subject = one ? "The schema has" : `The request's ${counted.length} strict schemas have`;
+      const breakdown = one ? "" : ` (${contributions(counted)})`;
+      ctx.report({
+        path: "",
+        message: `${subject} ${total} ${noun}; the request-wide limit is ${limit}${breakdown}.`,
+        hint,
+      });
+    },
+  };
+}
+
+const strictToolsLimit: RequestRule = {
+  ...requestMeta("strict-tools-limit", {
     severity: "error",
     source: COMPLEXITY,
-    summary: `At most ${MAX_OPTIONAL_PARAMETERS} optional parameters across all strict schemas in a request.`,
+    summary: `At most ${MAX_STRICT_TOOLS} tools of a request may set "strict": true.`,
     notes:
-      "The limit is request-wide. schemafit checks one schema at a time, so this only fires when a single schema already exceeds it.",
+      'Only a tool that carries "strict": true is counted, because the docs say non-strict tools do not count ' +
+      "toward this limit. A request whose tools say nothing about strictness therefore never trips it, however " +
+      "many of them it declares.",
   }),
   check(ctx) {
-    let optional = 0;
-    for (const { schema } of ctx.nodes) {
-      if (!isJsonSchema(schema.properties)) continue;
-      const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-      optional += Object.keys(schema.properties).filter((key) => !required.has(key)).length;
-    }
-    if (optional <= MAX_OPTIONAL_PARAMETERS) return;
+    const strict = ctx.schemas.filter(({ kind, strict: flag }) => kind === "tool" && flag === true);
+    if (strict.length <= MAX_STRICT_TOOLS) return;
     ctx.report({
       path: "",
-      message: `The schema has ${optional} optional parameters; the request-wide limit is ${MAX_OPTIONAL_PARAMETERS}.`,
-      hint: 'List more properties in "required". Each optional parameter roughly doubles part of the compiled grammar.',
+      message: `The request declares ${strict.length} tools with "strict": true; the limit is ${MAX_STRICT_TOOLS}.`,
+      hint:
+        "Set strict only on the tools where a schema violation causes real problems, or split the tools " +
+        "across requests.",
     });
   },
 };
 
-const unionParametersLimit: Rule = {
-  ...meta("union-parameters-limit", {
-    severity: "error",
-    source: COMPLEXITY,
-    summary: `At most ${MAX_UNION_PARAMETERS} parameters may use anyOf or type arrays across all strict schemas in a request.`,
-    notes:
-      "The limit is request-wide. schemafit checks one schema at a time, so this only fires when a single schema already exceeds it.",
-  }),
-  check(ctx) {
-    const unions = ctx.nodes.filter(
-      ({ schema, parentKeyword }) =>
-        parentKeyword === "properties" && ("anyOf" in schema || Array.isArray(schema.type)),
-    );
-    if (unions.length <= MAX_UNION_PARAMETERS) return;
-    ctx.report({
-      path: "",
-      message: `The schema has ${unions.length} parameters with union types; the request-wide limit is ${MAX_UNION_PARAMETERS}.`,
-      hint: "Replace nullable unions with required fields, or split the schema across requests.",
-    });
-  },
-};
+const optionalParametersLimit = requestTotal({
+  name: "optional-parameters-limit",
+  limit: MAX_OPTIONAL_PARAMETERS,
+  noun: "optional parameters",
+  summary: `At most ${MAX_OPTIONAL_PARAMETERS} optional parameters across all strict schemas of a request.`,
+  hint: 'List more properties in "required". Each optional parameter roughly doubles part of the compiled grammar.',
+  notes:
+    "The limit is a total across every strict tool schema and output schema of one request, so a file that holds " +
+    'a whole request body is measured as a whole. A tool that sets "strict": false is left out; one that says ' +
+    "nothing is counted, as is a file that holds nothing but a schema.",
+  count: ({ nodes }) => optionalParameters(nodes),
+});
+
+const unionParametersLimit = requestTotal({
+  name: "union-parameters-limit",
+  limit: MAX_UNION_PARAMETERS,
+  noun: "parameters with union types",
+  summary: `At most ${MAX_UNION_PARAMETERS} parameters may use anyOf or type arrays across all strict schemas of a request.`,
+  hint: "Replace nullable unions with required fields, or split the schemas across requests.",
+  notes:
+    "The limit is a total across every strict schema of one request, counted the same way as " +
+    "anthropic/optional-parameters-limit. The docs single these out as especially expensive, because they create " +
+    "exponential compilation cost.",
+  count: ({ nodes }) => unionParameters(nodes),
+});
 
 const enumCasing: Rule = {
   ...meta("enum-casing", {
@@ -449,8 +533,7 @@ export const anthropic: Provider = {
     ),
     allOfRef,
     regexFeatures,
-    optionalParametersLimit,
-    unionParametersLimit,
     enumCasing,
   ],
+  requestRules: [strictToolsLimit, optionalParametersLimit, unionParametersLimit],
 };

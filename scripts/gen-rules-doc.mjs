@@ -17,20 +17,26 @@ const lines = [
   "",
   "Rules marked **fixable** are rewritten automatically by `schemafit --fix --provider <id> <file>`.",
   "",
+  "A rule whose scope is **the whole request** measures every schema a request body sends strictly, together,",
+  "because the provider states the limit per request rather than per schema. A file that holds one schema is",
+  "measured as a request that holds one.",
+  "",
 ];
 
 for (const provider of Object.values(providers)) {
+  const rules = [...provider.rules, ...(provider.requestRules ?? [])];
   lines.push(`## ${provider.name}`, "", `Models: ${provider.mode}`, "");
   lines.push("| Rule | Severity | Summary |", "| --- | --- | --- |");
-  for (const rule of provider.rules) {
+  for (const rule of rules) {
     lines.push(`| [\`${rule.id}\`](#${rule.id.replace("/", "")}) | ${rule.severity} | ${rule.summary} |`);
   }
   lines.push("");
 
-  for (const rule of provider.rules) {
+  for (const rule of rules) {
     lines.push(`### ${rule.id}`, "", rule.summary, "");
     if (rule.notes) lines.push(`> ${rule.notes}`, "");
     lines.push(`- Severity: **${rule.severity}**`);
+    if (rule.scope === "request") lines.push("- Scope: **the whole request**, every strict schema in it at once");
     if (rule.fixable) lines.push("- Fixable: **yes**, with `--fix`");
     lines.push(`- Source: <${rule.source}>`, `- Last verified: ${rule.verified}`, "");
   }
