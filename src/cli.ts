@@ -3,9 +3,9 @@ import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
-import { lint } from "./lint.js";
+import { lint, lintRequest, lintSchema } from "./lint.js";
 import { displayPointer } from "./pointer.js";
-import { rules } from "./providers/index.js";
+import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
 import { rewrap, unwrapAll } from "./unwrap.js";
@@ -48,6 +48,11 @@ Options
 Files may hold a bare JSON Schema, a tool / response-format definition
 (OpenAI tools, Anthropic input_schema, MCP inputSchema), or a whole request body
 or array of tool definitions, in which case every schema in it is reported on its own.
+
+A limit a provider states per request rather than per schema — Anthropic allows 20 strict
+tools, 24 optional parameters, and 16 parameters with union types in one request — is
+measured over every schema the request sends strictly and reported for the request as a
+whole, after the reports on its schemas. A tool that sets "strict": false is left out.
 
 --fix takes one file and rewrites it for every selected provider at once, so with no
 --provider it produces the most portable schema the rules can reach: the one all of them
@@ -96,8 +101,18 @@ async function version(): Promise<string> {
   return pkg.version;
 }
 
-function ruleMeta({ id, provider, severity, summary, source, verified, fixable, notes }: RuleMeta): RuleMeta {
-  return { id, provider, severity, summary, source, verified, ...(fixable ? { fixable } : {}), ...(notes ? { notes } : {}) };
+function ruleMeta({ id, provider, severity, summary, source, verified, scope, fixable, notes }: RuleMeta): RuleMeta {
+  return {
+    id,
+    provider,
+    severity,
+    summary,
+    source,
+    verified,
+    ...(scope ? { scope } : {}),
+    ...(fixable ? { fixable } : {}),
+    ...(notes ? { notes } : {}),
+  };
 }
 
 async function readDocument(file: string, io: CliIo): Promise<{ label: string; document: unknown }> {
@@ -302,7 +317,9 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     }
 
     if (positionals[0] === "rules") {
-      const listed = rules.filter((rule) => selected.includes(rule.provider)).map(ruleMeta);
+      const listed = selected
+        .flatMap((id) => [...providers[id].rules, ...(providers[id].requestRules ?? [])])
+        .map(ruleMeta);
       io.stdout(format === "json" ? `${JSON.stringify(listed, null, 2)}\n` : `${formatRules(listed, io)}\n`);
       return EXIT_OK;
     }
@@ -314,14 +331,26 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
 
     const reports: FileReport[] = [];
     for (const file of positionals) {
-      const { label, schemas } = await readSchemas(file, io);
+      const { label, document, schemas } = await readSchemas(file, io);
+      // A document that holds one schema is that schema's whole request, so `lint` covers both
+      // what the schema says and what the request-wide limits make of it. Several schemas are
+      // measured together instead, in one report of their own, so neither is reported twice.
+      const several = schemas.length > 1;
       for (const found of schemas) {
         try {
-          reports.push({ ...sourceOf(label, found, schemas.length > 1), result: lint(found.schema, { providers: selected }) });
+          const result = several
+            ? lintSchema(found.schema, { providers: selected })
+            : lint(found.schema, { providers: selected });
+          reports.push({ ...sourceOf(label, found, several), result });
         } catch (error) {
           if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
           throw error;
         }
+      }
+      if (several) {
+        const result = lintRequest(document, { providers: selected });
+        // A request within every limit has nothing to add to the reports on its schemas.
+        if (result.findings.length > 0) reports.push({ file: label, wrapper: null, scope: "request", result });
       }
     }
 

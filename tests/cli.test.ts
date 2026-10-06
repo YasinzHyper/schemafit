@@ -143,6 +143,50 @@ describe("cli", () => {
     expect(code).toBe(0);
     expect(stdout).toContain("anthropic/no-recursive-schemas");
     expect(stdout).not.toContain("openai/");
+    expect(stdout).toMatch(/anthropic\/optional-parameters-limit.*\[request\]/);
+  });
+
+  it("reports the limits a request body exceeds together, not tool by tool", async () => {
+    // Four tools of seven optional parameters each: the docs' own case for the request-wide
+    // limit, where no single tool looks complex and the request is over it anyway.
+    const tool = (index: number): unknown => ({
+      name: `tool_${index}`,
+      strict: true,
+      input_schema: {
+        type: "object",
+        properties: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`p${i}`, { type: "string" }])),
+        required: [],
+        additionalProperties: false,
+      },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const body = join(dir, "request.json");
+    await writeFile(body, JSON.stringify({ model: "claude-opus-5-5", messages: [], tools: [0, 1, 2, 3].map(tool) }));
+
+    const { code, stdout } = await cli(["-p", "anthropic", body]);
+    expect(code).toBe(1);
+    // Every tool on its own fits; the request does not.
+    expect(stdout.match(/✔ compatible/g)).toHaveLength(4);
+    expect(stdout).toContain("request.json  (the request as a whole)");
+    expect(stdout).toContain("anthropic/optional-parameters-limit");
+    expect(stdout).toContain("28 optional parameters");
+
+    const json = JSON.parse((await cli(["-p", "anthropic", "-f", "json", body])).stdout);
+    expect(json.files.at(-1)).toMatchObject({ scope: "request", summary: [{ provider: "anthropic", errors: 1 }] });
+  });
+
+  it("reports a single schema's own limits in its own block", async () => {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`p${i}`, { type: "string" }])),
+      required: [],
+      additionalProperties: false,
+    };
+    const { code, stdout } = await cli(["-p", "anthropic", "-"], JSON.stringify(schema));
+    expect(code).toBe(1);
+    expect(stdout).toContain("anthropic/optional-parameters-limit");
+    expect(stdout).toContain("The schema has 25 optional parameters");
+    expect(stdout).not.toContain("the request as a whole");
   });
 
   it.each([

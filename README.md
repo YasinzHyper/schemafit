@@ -92,7 +92,7 @@ schemafit --fix --write tools/*.json
 
 Files can hold a bare JSON Schema or a whole tool / response-format definition. `schemafit` finds the schema inside OpenAI tools (`function.parameters`), OpenAI `response_format`, Anthropic tools (`input_schema`), and MCP tools (`inputSchema`).
 
-They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus `response_format` — OpenAI's and Gemini's spellings alike — and the Responses API's `text.format`), an MCP `tools/list` response, or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
+They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus the slot that asks for structured output — `response_format` in OpenAI's and Gemini's spellings, the Responses API's `text.format`, and Anthropic's `output_config.format`), an MCP `tools/list` response, or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
 
 ```console
 $ schemafit examples/messages-request.json
@@ -110,6 +110,21 @@ examples/messages-request.json#/tools/2/input_schema  search_tickets  (Anthropic
   OpenAI     ✔ compatible
   ...
 ```
+
+Some limits are stated per request rather than per schema, and those are measured over the request as a whole: Anthropic allows **20 tools with `strict: true`, 24 optional parameters, and 16 parameters with union types** in one request, counting every schema it sends strictly together. Four strict tools with six optional parameters each reach the limit of 24 though no single tool looks complex, which is exactly the case [the docs warn about](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits), so the finding is reported after the reports on the schemas and names what each one contributed:
+
+```console
+$ schemafit --provider anthropic request.json
+...
+request.json  (the request as a whole)
+
+  Anthropic  ✖ 1 error
+    error  #  anthropic/optional-parameters-limit
+           The request's 4 strict schemas have 28 optional parameters; the request-wide limit is 24 (tool_0 7, tool_1 7, tool_2 7, tool_3 7).
+           fix: List more properties in "required". Each optional parameter roughly doubles part of the compiled grammar.
+```
+
+A tool that sets `"strict": false` is left out of those totals, and only the tools that carry `"strict": true` count toward the limit of 20, because the documentation says non-strict tools do not count. A file that holds one schema is measured as a request that holds one.
 
 `--fix` rewrites every schema the document holds and puts each one back where it came from, so a fixed request body keeps its model, its messages, and the tools it had nothing to change in.
 
@@ -196,7 +211,7 @@ The short version of [the full rule list](docs/rules.md):
 | | OpenAI (strict) | Anthropic | Gemini |
 | --- | --- | --- | --- |
 | Root must be an object, no root `anyOf` | required | | |
-| Optional properties | ✖ all must be `required` | ✔ max 24 per request | ✔ |
+| Optional properties | ✖ all must be `required` | ✔ max 24 across the request | ✔ |
 | `additionalProperties: false` | required | required | optional |
 | Recursive schemas | ✔ | ✖ | ✔ |
 | `minimum` / `maximum` | ✔ | ✖ | ✔ |
@@ -206,7 +221,7 @@ The short version of [the full rule list](docs/rules.md):
 | `allOf` | ✖ | ✔ but not with `$ref` | undocumented |
 | `oneOf` | ✖ use `anyOf` | | undocumented |
 | `format: "uri"` | ✖ | ✔ | undocumented |
-| Size limits | 5000 properties, 10 levels, 1000 enum values | 24 optional and 16 union parameters | "very large" schemas rejected |
+| Size limits | 5000 properties, 10 levels, 1000 enum values | per request: 20 strict tools, 24 optional and 16 union parameters | "very large" schemas rejected |
 
 ### Errors and warnings
 
@@ -271,11 +286,23 @@ for (const { schema, keys, name } of unwrapAll(body)) {
 }
 ```
 
-Each entry also carries `pointer`, the JSON Pointer from the document to the schema, and `wrapper`, the wrapper it was found in. `unwrap` is still there for a document that holds exactly one schema.
+Each entry also carries `pointer`, the JSON Pointer from the document to the schema, `wrapper`, the wrapper it was found in, `kind` (`"tool"` or `"format"`), and `strict`, what the declaration says about strict decoding. `unwrap` is still there for a document that holds exactly one schema.
+
+`lintRequest` checks what a provider limits per request rather than per schema, over every schema the document sends strictly:
+
+```ts
+import { lintRequest, lintSchema, unwrapAll } from "schemafit";
+
+const body = JSON.parse(await readFile("request.json", "utf8"));
+for (const { schema } of unwrapAll(body)) lintSchema(schema, { providers: ["anthropic"] });
+const { findings } = lintRequest(body, { providers: ["anthropic"] });
+```
+
+Each of those findings has a `path` that points from the document, and `""` means the request as a whole. `lintSchema` is `lint` without them, which is what keeps a request body from being reported twice; `lint` on its own is both, measuring a request that holds one schema.
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), request-level checks across the tools of one request body, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), YAML and OpenAPI input, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

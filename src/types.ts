@@ -7,6 +7,12 @@ export type Severity = "error" | "warn";
 /** An object-form JSON Schema. Boolean schemas (`true` / `false`) are never walked. */
 export type JsonSchema = Record<string, unknown>;
 
+/**
+ * What a wrapper declares a schema as: a tool's input, or the format of the model's output.
+ * `null` for a document that is a bare schema, which says neither.
+ */
+export type SchemaKind = "tool" | "format" | null;
+
 export interface SchemaNode {
   schema: JsonSchema;
   /** JSON Pointer from the root schema. The root itself is `""`. */
@@ -63,6 +69,12 @@ export interface RuleMeta {
   /** ISO date the rule was last checked against `source`. */
   verified: string;
   /**
+   * What the rule measures. Absent for a rule that checks one schema; `"request"` for one that
+   * measures every schema a request sends strictly, together, because the provider states the
+   * limit per request rather than per schema.
+   */
+  scope?: "request";
+  /**
    * True when the rule attaches a `fix` to the findings it can rewrite safely.
    * A rule may still report a finding without one; `notes` says when.
    */
@@ -89,12 +101,49 @@ export interface Rule extends RuleMeta {
   check(ctx: RuleContext): void;
 }
 
+/** One schema a request holds, as the request-wide rules see it. */
+export interface RequestSchema {
+  /** JSON Pointer from the document to the schema. `""` when the document is the schema. */
+  pointer: string;
+  /** The name the tool or output-format definition carries, when it has one. */
+  name?: string;
+  schema: JsonSchema;
+  /** Every object-form subschema reachable from it, including itself. */
+  nodes: readonly SchemaNode[];
+  /** What declared it: a tool's input, an output format, or nothing (a bare schema). */
+  kind: SchemaKind;
+  /** What the declaration says about `strict`, when it says anything at all. */
+  strict?: boolean;
+}
+
+export interface RequestContext {
+  /**
+   * Every schema the request sends under strict decoding, in document order: the ones whose
+   * declaration does not turn `strict` off. A limit the provider states per request is measured
+   * over all of them together.
+   */
+  schemas: readonly RequestSchema[];
+  /** `path` is a JSON Pointer from the document; `""` is the request as a whole. */
+  report(report: Report): void;
+}
+
+/** A rule that measures the request as a whole rather than one schema. */
+export interface RequestRule extends RuleMeta {
+  scope: "request";
+  check(ctx: RequestContext): void;
+}
+
 export interface Provider {
   id: ProviderId;
   name: string;
   /** Which API feature these rules model. */
   mode: string;
   rules: readonly Rule[];
+  /**
+   * Rules that measure the request as a whole. Absent for a provider whose documentation
+   * states no limit per request.
+   */
+  requestRules?: readonly RequestRule[];
 }
 
 export interface ProviderSummary {

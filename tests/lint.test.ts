@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { PROVIDER_IDS, lint, providers, rules, unwrap } from "../src/index.js";
+import { PROVIDER_IDS, lint, providers, requestRules, rules, unwrap } from "../src/index.js";
 import { joinPointer, resolvePointer } from "../src/pointer.js";
 
 const example = (name: string): unknown =>
@@ -58,22 +58,27 @@ describe("unwrap", () => {
 
   it("leaves bare schemas alone, even ones with properties named like wrappers", () => {
     const bare = { type: "object", properties: { name: { type: "string" }, schema: { type: "string" } } };
-    expect(unwrap(bare)).toEqual({ schema: bare, wrapper: null, keys: [] });
+    expect(unwrap(bare)).toEqual({ schema: bare, wrapper: null, keys: [], kind: null });
   });
 });
 
 describe("rule metadata", () => {
   it("gives every rule a unique, provider-prefixed id", () => {
-    const ids = rules.map((rule) => rule.id);
+    const ids = [...rules, ...requestRules].map((rule) => rule.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const rule of rules) {
       expect(rule.id).toMatch(new RegExp(`^${rule.provider}/[a-z]+(-[a-z]+)*$`));
       expect(providers[rule.provider].rules).toContain(rule);
     }
+    for (const rule of requestRules) {
+      expect(rule.id).toMatch(new RegExp(`^${rule.provider}/[a-z]+(-[a-z]+)*$`));
+      expect(rule.scope).toBe("request");
+      expect(providers[rule.provider].requestRules).toContain(rule);
+    }
   });
 
   it("ties every rule to official documentation and a verification date", () => {
-    for (const rule of rules) {
+    for (const rule of [...rules, ...requestRules]) {
       expect(rule.source).toMatch(/^https:\/\/(developers\.openai\.com|platform\.claude\.com|ai\.google\.dev)\//);
       expect(rule.verified).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(rule.summary.length).toBeGreaterThan(10);

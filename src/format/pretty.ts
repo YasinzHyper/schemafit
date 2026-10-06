@@ -10,6 +10,8 @@ export interface SchemaSource {
   pointer?: string;
   /** The name of the tool or response-format definition the schema came from. */
   name?: string;
+  /** Set on the report that measures the request as a whole rather than one of its schemas. */
+  scope?: "request";
 }
 
 export interface FileReport extends SchemaSource {
@@ -33,10 +35,12 @@ function painter(color: boolean): Paint {
 /**
  * The line a report opens with. A schema the document holds several of is named by where it
  * sits (`request.json#/tools/1/input_schema`), which is what keeps several reports on one file
- * apart, and every schema a named definition carries is named by that definition as well.
+ * apart, and every schema a named definition carries is named by that definition as well. The
+ * report on the request itself is named by the file alone, because it belongs to no one schema.
  */
 function header(source: SchemaSource, paint: Paint): string {
   const where = source.pointer ? `${source.file}${displayPointer(source.pointer)}` : source.file;
+  if (source.scope === "request") return paint("bold", where) + paint("dim", "  (the request as a whole)");
   return (
     paint("bold", where) +
     (source.name ? `  ${source.name}` : "") +
@@ -124,7 +128,8 @@ export function formatRules(rules: readonly RuleMeta[], options: { color: boolea
     .map((rule) => {
       const label = rule.severity === "error" ? paint("red", "error") : paint("yellow", "warn ");
       const fixable = rule.fixable ? paint("green", " [--fix]") : "";
-      return `${rule.id.padEnd(width)}  ${label}  ${rule.summary}${fixable}`;
+      const scope = rule.scope === "request" ? paint("dim", " [request]") : "";
+      return `${rule.id.padEnd(width)}  ${label}  ${rule.summary}${fixable}${scope}`;
     })
     .join("\n");
 }

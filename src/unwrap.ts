@@ -1,5 +1,5 @@
 import { joinPointer, resolvePointer } from "./pointer.js";
-import type { JsonSchema } from "./types.js";
+import type { JsonSchema, SchemaKind } from "./types.js";
 import { isJsonSchema } from "./walk.js";
 
 export interface Unwrapped {
@@ -8,6 +8,8 @@ export interface Unwrapped {
   wrapper: string | null;
   /** The keys leading from the document to the schema. Empty for a bare schema. */
   keys: readonly string[];
+  /** What the wrapper declares the schema as. `null` when the document is a bare schema. */
+  kind: SchemaKind;
 }
 
 /**
@@ -15,7 +17,7 @@ export interface Unwrapped {
  * Finds the JSON Schema inside the common wrappers; returns bare schemas untouched.
  */
 export function unwrap(document: unknown): Unwrapped {
-  if (!isJsonSchema(document)) return { schema: document, wrapper: null, keys: [] };
+  if (!isJsonSchema(document)) return { schema: document, wrapper: null, keys: [], kind: null };
 
   const fn = document.function;
   if (document.type === "function" && isJsonSchema(fn) && "parameters" in fn) {
@@ -23,10 +25,16 @@ export function unwrap(document: unknown): Unwrapped {
       schema: fn.parameters,
       wrapper: "OpenAI Chat Completions tool (function.parameters)",
       keys: ["function", "parameters"],
+      kind: "tool",
     };
   }
   if (document.type === "function" && "parameters" in document) {
-    return { schema: document.parameters, wrapper: "OpenAI Responses tool (parameters)", keys: ["parameters"] };
+    return {
+      schema: document.parameters,
+      wrapper: "OpenAI Responses tool (parameters)",
+      keys: ["parameters"],
+      kind: "tool",
+    };
   }
 
   const jsonSchema = document.json_schema;
@@ -35,29 +43,42 @@ export function unwrap(document: unknown): Unwrapped {
       schema: jsonSchema.schema,
       wrapper: "OpenAI response_format (json_schema.schema)",
       keys: ["json_schema", "schema"],
+      kind: "format",
     };
   }
   if (document.type === "json_schema" && "schema" in document) {
-    return { schema: document.schema, wrapper: "output format (schema)", keys: ["schema"] };
+    return { schema: document.schema, wrapper: "output format (schema)", keys: ["schema"], kind: "format" };
   }
 
   if ("input_schema" in document) {
-    return { schema: document.input_schema, wrapper: "Anthropic tool (input_schema)", keys: ["input_schema"] };
+    return {
+      schema: document.input_schema,
+      wrapper: "Anthropic tool (input_schema)",
+      keys: ["input_schema"],
+      kind: "tool",
+    };
   }
   if ("inputSchema" in document) {
-    return { schema: document.inputSchema, wrapper: "MCP tool (inputSchema)", keys: ["inputSchema"] };
+    return { schema: document.inputSchema, wrapper: "MCP tool (inputSchema)", keys: ["inputSchema"], kind: "tool" };
   }
 
   // { name, schema } and { name, parameters } definitions. A bare schema never has a string "name"
   // alongside these keys, because neither is a JSON Schema keyword.
   if (typeof document.name === "string" && !("properties" in document)) {
-    if ("schema" in document) return { schema: document.schema, wrapper: "named schema (schema)", keys: ["schema"] };
+    if ("schema" in document) {
+      return { schema: document.schema, wrapper: "named schema (schema)", keys: ["schema"], kind: "format" };
+    }
     if ("parameters" in document) {
-      return { schema: document.parameters, wrapper: "function definition (parameters)", keys: ["parameters"] };
+      return {
+        schema: document.parameters,
+        wrapper: "function definition (parameters)",
+        keys: ["parameters"],
+        kind: "tool",
+      };
     }
   }
 
-  return { schema: document, wrapper: null, keys: [] };
+  return { schema: document, wrapper: null, keys: [], kind: null };
 }
 
 /**
@@ -80,6 +101,27 @@ export interface UnwrappedSchema extends Unwrapped {
   pointer: string;
   /** The name the tool or response-format definition carries, when it has one. */
   name?: string;
+  /**
+   * What the declaration says about `strict`, when it says anything at all: Anthropic's strict
+   * tool use and OpenAI's strict mode are both a `strict` beside the schema, and the limits a
+   * provider states per request count the schemas it is set on.
+   */
+  strict?: boolean;
+}
+
+/**
+ * What the definition says about `strict`. It sits on the object that holds the schema — the
+ * tool itself for Anthropic's `input_schema`, the `function` of a Chat Completions tool, the
+ * `json_schema` of a response format — so that is where it is read from.
+ */
+function strictFlag(definition: unknown, keys: readonly string[]): boolean | undefined {
+  let holder: unknown = definition;
+  for (const key of keys.slice(0, -1)) {
+    if (!isJsonSchema(holder)) return undefined;
+    holder = holder[key];
+  }
+  if (!isJsonSchema(holder) || typeof holder.strict !== "boolean") return undefined;
+  return holder.strict;
 }
 
 /** The name a tool or response-format definition carries, for the report. */
@@ -93,20 +135,39 @@ function definitionName(definition: unknown): string | undefined {
 
 /** `unwrap` of one entry of a request body, with its keys prefixed and its name attached. */
 function found(definition: unknown, prefix: readonly string[]): UnwrappedSchema {
-  const { schema, wrapper, keys } = unwrap(definition);
+  const { schema, wrapper, keys, kind } = unwrap(definition);
+  // A bare schema is its own document: it declares neither a name nor a strictness, and a
+  // keyword of its own named "strict" says nothing about how the request sends it.
   const name = wrapper === null ? undefined : definitionName(definition);
+  const strict = wrapper === null ? undefined : strictFlag(definition, keys);
   const all = [...prefix, ...keys];
-  return { schema, wrapper, keys: all, pointer: joinPointer("", ...all), ...(name ? { name } : {}) };
+  return {
+    schema,
+    wrapper,
+    keys: all,
+    kind,
+    pointer: joinPointer("", ...all),
+    ...(name ? { name } : {}),
+    ...(strict === undefined ? {} : { strict }),
+  };
 }
+
+/**
+ * The slots a request body declares the format of the model's output in: OpenAI's
+ * `response_format` (Gemini's spelling too), the Responses API's `text.format`, and Anthropic's
+ * `output_config.format`, together with the `output_format` it is deprecating.
+ */
+const FORMAT_SLOTS: readonly (readonly string[])[] = [
+  ["response_format"],
+  ["text", "format"],
+  ["output_config", "format"],
+  ["output_format"],
+];
 
 /** Whether `document` declares anything a request body declares a schema in. */
 function isRequestBody(document: JsonSchema): boolean {
-  const text = document.text;
-  return (
-    Array.isArray(document.tools) ||
-    isJsonSchema(document.response_format) ||
-    (isJsonSchema(text) && isJsonSchema(text.format))
-  );
+  if (Array.isArray(document.tools)) return true;
+  return FORMAT_SLOTS.some((keys) => isJsonSchema(resolvePointer(document, joinPointer("", ...keys))));
 }
 
 /**
@@ -125,10 +186,11 @@ function unwrapTools(tools: readonly unknown[], prefix: readonly string[]): Unwr
 }
 
 /**
- * The schema a `response_format` / `text.format` slot declares. `unwrap` knows the OpenAI
- * spellings; Gemini's is `{ "type": "text", "mime_type": "application/json", "schema": ... }`,
- * a schema under "schema" beside no key `unwrap` recognises on its own, so the slot falls back
- * to that key. A slot that asks for free-form JSON or plain text declares none and yields nothing.
+ * The schema an output-format slot declares. `unwrap` knows the OpenAI and Anthropic spellings,
+ * both of them a `{ "type": "json_schema", "schema": ... }`; Gemini's is
+ * `{ "type": "text", "mime_type": "application/json", "schema": ... }`, a schema under "schema"
+ * beside no key `unwrap` recognises on its own, so the slot falls back to that key. A slot that
+ * asks for free-form JSON or plain text declares none and yields nothing.
  */
 function unwrapFormat(definition: JsonSchema, keys: readonly string[]): UnwrappedSchema[] {
   const entry = found(definition, keys);
@@ -136,22 +198,26 @@ function unwrapFormat(definition: JsonSchema, keys: readonly string[]): Unwrappe
   if (!("schema" in definition)) return [];
 
   const name = definitionName(definition);
+  const strict = strictFlag(definition, ["schema"]);
   const all = [...keys, "schema"];
   return [
     {
       schema: definition.schema,
       wrapper: "output format (schema)",
       keys: all,
+      kind: "format",
       pointer: joinPointer("", ...all),
       ...(name ? { name } : {}),
+      ...(strict === undefined ? {} : { strict }),
     },
   ];
 }
 
 /**
  * Every schema a document holds. A request body declares several — `tools` for OpenAI and
- * Anthropic, `response_format` for Chat Completions, `text.format` for the Responses API —
- * and so does a bare array of tool definitions, whose entries may also be bare schemas.
+ * Anthropic, `response_format` for Chat Completions, `text.format` for the Responses API,
+ * `output_config.format` for Anthropic's JSON outputs — and so does a bare array of tool
+ * definitions, whose entries may also be bare schemas.
  * Any other document holds the one schema `unwrap` finds, so a single file keeps behaving
  * exactly as it did.
  */
@@ -161,7 +227,7 @@ export function unwrapAll(document: unknown): UnwrappedSchema[] {
   if (isJsonSchema(document) && isRequestBody(document)) {
     const schemas: UnwrappedSchema[] = [];
     if (Array.isArray(document.tools)) schemas.push(...unwrapTools(document.tools, ["tools"]));
-    for (const keys of [["response_format"], ["text", "format"]]) {
+    for (const keys of FORMAT_SLOTS) {
       const definition = resolvePointer(document, joinPointer("", ...keys));
       if (isJsonSchema(definition)) schemas.push(...unwrapFormat(definition, keys));
     }

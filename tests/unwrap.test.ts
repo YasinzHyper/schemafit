@@ -11,7 +11,7 @@ function found(document: unknown): string[] {
 
 describe("unwrapAll", () => {
   it("finds the one schema of a bare document, as unwrap does", () => {
-    expect(unwrapAll(SCHEMA)).toEqual([{ schema: SCHEMA, wrapper: null, keys: [], pointer: "" }]);
+    expect(unwrapAll(SCHEMA)).toEqual([{ schema: SCHEMA, wrapper: null, keys: [], kind: null, pointer: "" }]);
     expect(found({ name: "f", input_schema: SCHEMA })).toEqual(["/input_schema Anthropic tool (input_schema) f"]);
   });
 
@@ -63,6 +63,37 @@ describe("unwrapAll", () => {
 
     const responses = { input: "hi", text: { format: { type: "json_schema", name: "ticket", schema: SCHEMA } } };
     expect(found(responses)).toEqual(["/text/format/schema output format (schema) ticket"]);
+  });
+
+  it("finds the JSON output schema of an Anthropic request, and the deprecated spelling", () => {
+    const body = {
+      model: "claude-opus-5-5",
+      messages: [],
+      output_config: { format: { type: "json_schema", schema: SCHEMA } },
+    };
+    expect(found(body)).toEqual(["/output_config/format/schema output format (schema) -"]);
+    expect(found({ messages: [], output_format: { type: "json_schema", schema: SCHEMA } })).toEqual([
+      "/output_format/schema output format (schema) -",
+    ]);
+  });
+
+  it("reports what each declaration says about strict decoding", () => {
+    const body = {
+      tools: [
+        { name: "a", input_schema: SCHEMA, strict: true },
+        { name: "b", input_schema: SCHEMA, strict: false },
+        { name: "c", input_schema: SCHEMA },
+        { type: "function", function: { name: "d", strict: true, parameters: SCHEMA } },
+      ],
+      response_format: { type: "json_schema", json_schema: { name: "e", strict: true, schema: SCHEMA } },
+    };
+    expect(unwrapAll(body).map(({ name, strict }) => `${name} ${strict}`)).toEqual([
+      "a true",
+      "b false",
+      "c undefined",
+      "d true",
+      "e true",
+    ]);
   });
 
   it("finds the tools and the response format of one request body", () => {
