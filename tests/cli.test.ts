@@ -64,6 +64,61 @@ describe("cli", () => {
     expect(stdout).toContain("openai/all-required");
   });
 
+  it("leaves a tool the request does not send strictly out of the report", async () => {
+    const { code, stdout, stderr } = await cli([example("chat-request.json")]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("chat-request.json#/tools/0/function/parameters  create_ticket");
+    expect(stdout).not.toContain("log_event");
+    expect(stderr).toContain('skipped log_event — "strict": false');
+    expect(stderr).toContain("--all-tools");
+  });
+
+  it("--all-tools reports the non-strict tool too", async () => {
+    const { code, stdout, stderr } = await cli(["--all-tools", example("chat-request.json")]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("chat-request.json#/tools/1/function/parameters  log_event");
+    expect(stdout).toContain("openai/undocumented-keyword");
+    expect(stderr).not.toContain("skipped");
+  });
+
+  it("checks a tool that says nothing about strict, which the Responses API may normalize", async () => {
+    // Every tool of messages-request.json omits "strict"; omitting it is not opting out.
+    const { stdout, stderr } = await cli(["-f", "json", example("messages-request.json")]);
+    expect((JSON.parse(stdout).files as unknown[]).length).toBeGreaterThan(1);
+    expect(stderr).not.toContain("skipped");
+  });
+
+  it("says so and exits 0 when every schema of a document opts out of strictness", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const body = join(dir, "request.json");
+    const tool = { name: "log_event", strict: false, input_schema: { type: "object", properties: {} } };
+    await writeFile(body, JSON.stringify({ model: "claude-opus-5-5", messages: [], tools: [tool, tool] }));
+
+    const { code, stdout, stderr } = await cli([body]);
+    expect(code).toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("skipped every schema it declares");
+
+    const { code: all, stdout: reported } = await cli(["--all-tools", body]);
+    expect(all).toBe(1);
+    expect(reported).toContain("anthropic/additional-properties-false");
+  });
+
+  it("--fix leaves a non-strict tool's constraints alone, and --all-tools rewrites them", async () => {
+    const { code, stdout, stderr } = await cli(["--fix", "-p", "anthropic", example("chat-request.json")]);
+    expect(code).toBe(0);
+    const tools = (JSON.parse(stdout) as { tools: { function: { parameters: Record<string, unknown> } }[] }).tools;
+    // The audit log's message keeps the length Anthropic's strict subset would have dropped.
+    expect(tools[1]?.function.parameters.properties).toMatchObject({ message: { minLength: 1, maxLength: 200 } });
+    expect(tools[0]?.function.parameters).toMatchObject({ additionalProperties: false });
+    expect(stderr).toContain('skipped log_event — "strict": false');
+
+    const { stdout: all } = await cli(["--fix", "--all-tools", "-p", "anthropic", example("chat-request.json")]);
+    const rewritten = (JSON.parse(all) as { tools: { function: { parameters: { properties: Record<string, Record<string, unknown>> } } }[] }).tools;
+    expect(rewritten[1]?.function.parameters.properties.message).not.toHaveProperty("minLength");
+    expect(rewritten[1]?.function.parameters.properties.message?.description).toContain("at least 1");
+  });
+
   it("names each schema of a request body in the JSON output", async () => {
     const { stdout } = await cli(["-f", "json", example("messages-request.json")]);
     const files = JSON.parse(stdout).files as { file: string; pointer: string; name: string }[];
