@@ -81,6 +81,26 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "warn gemini/undocumented-format /properties/reporter/properties/email",
     ],
   },
+  // An OpenAI Chat Completions request body with one strict tool and one the author deliberately
+  // left non-strict. The round trip fixes both, because it goes straight at the schemas; what
+  // the CLI reports on by default is the strict one alone.
+  "chat-request.json": {
+    // "minLength", "maxLength", "uniqueItems" on the non-strict tool: undocumented rather than
+    // rejected, so no fix drops them — which is the whole reason that tool is not sent strictly.
+    openai: [
+      "warn openai/undocumented-keyword /properties/message",
+      "warn openai/undocumented-keyword /properties/message",
+      "warn openai/undocumented-keyword /properties/tags",
+    ],
+    anthropic: [],
+    gemini: [
+      "warn gemini/undocumented-keyword /properties/message",
+      "warn gemini/undocumented-keyword /properties/message",
+      "warn gemini/undocumented-keyword /properties/tags",
+    ],
+    // The Anthropic fixes already removed the keywords the other two only warn about.
+    all: [],
+  },
   // An Anthropic request body: two tools whose schemas every fix resolves, and a server tool
   // that declares no schema at all, which is why nothing here is reported against it.
   "messages-request.json": {

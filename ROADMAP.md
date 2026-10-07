@@ -29,12 +29,13 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 
 - [x] Multiple schemas per file: accept an array of tools and a full request body (`tools: [...]`), report per tool
 - [x] Request-level Anthropic limits across all tools in a file: 20 strict tools, 24 optional parameters, 16 union parameters
-- [ ] Only lint tools that opt into strictness (`strict: true`) when the file is a request body; `--all-tools` overrides
+- [x] Only lint the schemas a document sends strictly; `--all-tools` overrides. A declaration that sets `"strict": false` is left out, because the subset these rules describe is the one a provider accepts under strict decoding. One that says nothing about `strict` is still linted: OpenAI's Responses API normalizes such a tool into strict mode when the schema allows it, so the subset is what decides between strict and best-effort there, and only an explicit `"strict": false` is an opt-out
 - [x] MCP `tools/list` response as input (`{ "tools": [{ "inputSchema": ... }] }`), which is the `tools: [...]` request body with the MCP spelling of the schema key
 - [ ] The JSON-RPC envelope an MCP `tools/list` response arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured straight off the wire can be linted without unwrapping it by hand first
 - [ ] YAML input
 - [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
+- [ ] Mark a schema the request sends non-strictly in the report header under `--all-tools`, so a finding against a tool that opted out of strict decoding reads as advisory rather than as something the provider would reject
 - [ ] Report how many tools in a request body declared no schema and were skipped, so a file whose tools are all server tools says so rather than failing with "holds no schema to check"
 - [ ] `$ref` resolution for `$id`/`$anchor`-based local references
 - [ ] Draft-04/06 spellings: `id`, `definitions`, boolean `exclusiveMinimum`

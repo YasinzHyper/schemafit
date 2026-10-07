@@ -42,12 +42,21 @@ Options
                           left unreferenced
   -o, --out <file>        With --fix, write there instead of stdout
   -w, --write             With --fix, rewrite each file in place
+      --all-tools         Check every schema a document declares, including the
+                          ones it sends non-strictly ("strict": false)
   -h, --help              Show this help
   -v, --version           Show the version
 
 Files may hold a bare JSON Schema, a tool / response-format definition
 (OpenAI tools, Anthropic input_schema, MCP inputSchema), or a whole request body
 or array of tool definitions, in which case every schema in it is reported on its own.
+
+A declaration that sets "strict": false opts out of its provider's strict decoding, and
+with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
+Anthropic compiles a grammar only for the schemas it is sending strictly. So a schema
+declared "strict": false is reported on only with --all-tools. One that says nothing about
+strict is checked, because the Responses API normalizes such a tool into strict mode when
+the schema allows it.
 
 A limit a provider states per request rather than per schema — Anthropic allows 20 strict
 tools, 24 optional parameters, and 16 parameters with union types in one request — is
@@ -150,6 +159,47 @@ function sourceOf(file: string, found: UnwrappedSchema, several: boolean): Schem
   };
 }
 
+/**
+ * The schemas to check, and the ones the document declares but does not send strictly.
+ *
+ * A declaration that sets `"strict": false` opts out of the provider's strict decoding, and
+ * with it the schema subset these rules describe: OpenAI documents such a tool as "non-strict,
+ * best-effort function calling", and only "if you send `strict: true` and your schema does not
+ * meet the requirements" is the request rejected; Anthropic's limitations are the ones "JSON
+ * outputs and strict tool use share", and a non-strict tool's `input_schema` is never compiled
+ * into a grammar. Reporting the subset against such a schema is a false positive, so it is left
+ * out unless `--all-tools` asks for it.
+ *
+ * A declaration that says nothing about `strict` is checked: the Responses API "will attempt to
+ * normalize your schema into strict mode when possible", so whether the subset is met is what
+ * decides between strict and best-effort decoding there.
+ */
+function selectStrict(
+  schemas: readonly UnwrappedSchema[],
+  allTools: boolean,
+): { checked: UnwrappedSchema[]; skipped: UnwrappedSchema[] } {
+  if (allTools) return { checked: [...schemas], skipped: [] };
+  return {
+    checked: schemas.filter((found) => found.strict !== false),
+    skipped: schemas.filter((found) => found.strict === false),
+  };
+}
+
+/** How the note names one schema that was left out: its definition's name, or where it sits. */
+function labelOf(found: UnwrappedSchema): string {
+  return found.name ?? (found.pointer ? displayPointer(found.pointer) : "the schema");
+}
+
+/**
+ * The stderr note for the schemas a run left out, so a report that covers fewer says so rather
+ * than looking like a clean bill of health. Returns undefined when nothing was left out.
+ */
+function skippedNote(label: string, skipped: readonly UnwrappedSchema[], checked: number): string | undefined {
+  if (skipped.length === 0) return undefined;
+  const what = checked === 0 ? "every schema it declares" : skipped.map(labelOf).join(", ");
+  return `schemafit: ${label}: skipped ${what} — "strict": false, so the strict subset does not apply. Use --all-tools to check them too.\n`;
+}
+
 /** Reads one file and finds every schema in it. A document with none is a usage error. */
 async function readSchemas(file: string, io: CliIo): Promise<{ label: string; document: unknown; schemas: UnwrappedSchema[] }> {
   const { label, document } = await readDocument(file, io);
@@ -166,6 +216,7 @@ interface FixRequest {
   out: string | undefined;
   write: boolean;
   pruneUnusedDefs: boolean;
+  allTools: boolean;
 }
 
 /** One file rewritten in memory: the document to write out, and one report per schema in it. */
@@ -173,17 +224,24 @@ interface PlannedFix {
   file: string;
   output: string;
   reports: FixReport[];
+  /** What the run left out, when it left anything out. */
+  note: string | undefined;
 }
 
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
-async function planFix(file: string, { providers, out, write, pruneUnusedDefs }: FixRequest, io: CliIo): Promise<PlannedFix> {
+async function planFix(file: string, { providers, out, write, pruneUnusedDefs, allTools }: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { label, document, schemas } = await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
   const destination = write ? label : (out ?? label);
+  // A schema the request does not send strictly is left exactly as it was. The rewrites trade a
+  // constraint away for a subset rule — a "minimum" moved into "description", a dropped
+  // "format" — and a non-strict schema is bound by no such rule: the model is still shown the
+  // constraint, and your own validator still reads it, so the trade would be a loss for nothing.
+  const { checked, skipped } = selectStrict(schemas, allTools);
 
   const reports: FixReport[] = [];
   let rewritten: unknown = document;
-  for (const found of schemas) {
+  for (const found of checked) {
     let result;
     try {
       result = fix(found.schema, { providers, pruneUnusedDefs });
@@ -196,7 +254,8 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs }:
     reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
 
-  return { file, output: `${JSON.stringify(rewritten, null, 2)}\n`, reports };
+  const note = skippedNote(label, skipped, checked.length);
+  return { file, output: `${JSON.stringify(rewritten, null, 2)}\n`, reports, note };
 }
 
 async function writeOut(file: string, output: string): Promise<void> {
@@ -216,7 +275,8 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
 
   let rewritten = 0;
   let printed = 0;
-  for (const { file, output, reports } of planned) {
+  for (const { file, output, reports, note } of planned) {
+    if (note) io.stderr(note);
     if (request.write) {
       // Only a file some fix actually changed is written, so a run over a tree of schemas
       // leaves the ones that already fit as they are, formatting and mtime included.
@@ -255,6 +315,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         "prune-unused-defs": { type: "boolean", default: false },
         out: { type: "string", short: "o" },
         write: { type: "boolean", short: "w", default: false },
+        "all-tools": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "v", default: false },
       },
@@ -312,6 +373,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         out: values.out,
         write: values.write,
         pruneUnusedDefs: values["prune-unused-defs"],
+        allTools: values["all-tools"],
       };
       return await runFix(positionals, request, io);
     }
@@ -332,11 +394,16 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     const reports: FileReport[] = [];
     for (const file of positionals) {
       const { label, document, schemas } = await readSchemas(file, io);
+      const { checked, skipped } = selectStrict(schemas, values["all-tools"]);
+      const note = skippedNote(label, skipped, checked.length);
+      if (note) io.stderr(note);
       // A document that holds one schema is that schema's whole request, so `lint` covers both
       // what the schema says and what the request-wide limits make of it. Several schemas are
       // measured together instead, in one report of their own, so neither is reported twice.
+      // Which schemas are reported on does not change that: a request body is still a request,
+      // and `lintRequest` counts the ones it sends strictly whether or not they were reported.
       const several = schemas.length > 1;
-      for (const found of schemas) {
+      for (const found of checked) {
         try {
           const result = several
             ? lintSchema(found.schema, { providers: selected })

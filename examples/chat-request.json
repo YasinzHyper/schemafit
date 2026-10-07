@@ -1,0 +1,43 @@
+{
+  "model": "gpt-5",
+  "messages": [
+    { "role": "system", "content": "You triage incoming support requests." },
+    { "role": "user", "content": "The invoice export has been failing since this morning." }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_ticket",
+        "description": "File a support ticket on behalf of the user.",
+        "strict": true,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "One-line summary of the problem." },
+            "severity": { "type": "string", "enum": ["low", "normal", "urgent"] },
+            "assignee": { "type": "string", "description": "Who to assign it to. Omit to leave it unassigned." }
+          },
+          "required": ["title", "severity"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "log_event",
+        "description": "Append a line to the audit log.",
+        "strict": false,
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "message": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "at": { "type": "string", "format": "date-time", "description": "When it happened." },
+            "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+          },
+          "required": ["message"]
+        }
+      }
+    }
+  ]
+}

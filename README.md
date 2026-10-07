@@ -138,12 +138,31 @@ A tool that sets `"strict": false` is left out of those totals, and only the too
 | `--prune-unused-defs` | With `--fix`, also remove the definitions the input left unreferenced |
 | `-o, --out <file>` | With `--fix`, write there instead of stdout |
 | `-w, --write` | With `--fix`, rewrite each file in place. Takes several files |
+| `--all-tools` | Check every schema a document declares, including the ones it sends non-strictly |
 
 Exit codes: `0` compatible, `1` errors found, `2` bad usage or unreadable input. That makes it a one-line CI step:
 
 ```yaml
 - run: npx schemafit --provider openai,anthropic schemas/*.json
 ```
+
+### Only the schemas you send strictly
+
+These rules describe the subset a provider accepts **under strict decoding**, and a declaration that sets `"strict": false` opts out of it. OpenAI documents such a tool as ["non-strict, best-effort function calling"](https://developers.openai.com/api/docs/guides/function-calling#strict-mode) and rejects a schema only "if you send `strict: true` and your schema does not meet the requirements"; Anthropic's limitations are the ones ["JSON outputs and strict tool use share"](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#json-schema-limitations), and a non-strict tool's `input_schema` is never compiled into a grammar. So reporting the subset against a schema the request does not send strictly is a false positive, and `schemafit` leaves it out:
+
+```console
+$ schemafit examples/chat-request.json
+schemafit: examples/chat-request.json: skipped log_event — "strict": false, so the strict subset does not apply. Use --all-tools to check them too.
+
+examples/chat-request.json#/tools/0/function/parameters  create_ticket  (OpenAI Chat Completions tool (function.parameters))
+
+  OpenAI     ✖ 2 errors
+  ...
+```
+
+Pass `--all-tools` to check them anyway — useful when you are about to turn strictness on. `--fix` honours the same split: the `minLength` on the audit log's `message` survives a rewrite that would otherwise move it into `description`, because nothing asked for it to go.
+
+A declaration that says nothing about `strict` *is* checked. Omitting it is not opting out: a Responses request "will attempt to normalize your schema into strict mode when possible, and will fall back to non-strict, best-effort function calling if the schema cannot be made compatible", so whether the subset is met is what decides which of the two you get. Chat Completions stays non-strict by default, and the findings are what you need before you set `"strict": true` there.
 
 ### Fixing a schema
 
