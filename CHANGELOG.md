@@ -53,6 +53,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `examples/chat-request.json`: an OpenAI Chat Completions request body with one tool sent strictly and one deliberately left non-strict, which is the split `--all-tools` turns off. The non-strict tool carries the `minLength`, `maxLength`, and `uniqueItems` that strict mode would have cost it.
 
+- An MCP `tools/list` response is now accepted in the JSON-RPC envelope it arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured off the wire or saved from a client log can be linted and fixed as it is, without lifting `result.tools` out of it by hand first. Every MCP message follows JSON-RPC 2.0, and a result response carries its payload under `result`, so that is the only place in an envelope a schema is looked for: the tools are reported at `#/result/tools/0/inputSchema`, and `--fix` puts each rewritten schema back inside the envelope, which comes out whole down to its `id` and `nextCursor`. A JSON-RPC message that declares no schema — a request, a notification, an error response, or the result of a method that returns no tools — is reported as holding none instead of being linted as if the envelope itself were a schema.
+
+- `examples/mcp-tools-list.json`: a captured `tools/list` response from a notes server, inside its JSON-RPC envelope, with the pagination cursor a first page carries.
+
 ### Changed
 
 - `anthropic/optional-parameters-limit` and `anthropic/union-parameters-limit` moved from the rules that check one schema to the rules that measure a request, so a request body over the limit is now reported even when every tool in it fits. A file that holds one schema is measured as a request that holds one, which is what it was before.

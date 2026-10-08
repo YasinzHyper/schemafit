@@ -214,25 +214,61 @@ function unwrapFormat(definition: JsonSchema, keys: readonly string[]): Unwrappe
 }
 
 /**
+ * Whether `document` is a JSON-RPC message rather than a schema. Every MCP message "MUST follow
+ * the JSON-RPC 2.0 specification", whose `jsonrpc` member must be exactly `"2.0"`, so that
+ * member identifies a protocol message captured off the wire. A schema of its own can carry a
+ * property named `jsonrpc`, but then the value is a subschema, not the version string.
+ */
+function isJsonRpcMessage(document: JsonSchema): boolean {
+  return document.jsonrpc === "2.0";
+}
+
+/**
+ * The schemas inside a JSON-RPC envelope, which is how an MCP `tools/list` response arrives
+ * when it is read straight off the wire: `{ "jsonrpc": "2.0", "id": 1, "result": { "tools":
+ * [...] } }`. A result response carries its payload under `result` and nowhere else, so that is
+ * the only place in an envelope a schema can sit, and `result` holds the `tools` array the MCP
+ * spelling of a request body already declares. A request, a notification, an error response,
+ * and the result of a method that returns no tools declare no schema and yield nothing.
+ * Nothing in an envelope is read as a bare schema: a protocol payload is not one, so a result
+ * no wrapper is recognised in is reported as holding no schema instead of linted as a schema.
+ */
+function unwrapEnvelope(message: JsonSchema, prefix: readonly string[]): UnwrappedSchema[] {
+  const result = message.result;
+  if (!isJsonSchema(result)) return [];
+  return unwrapDocument(result, [...prefix, "result"]).filter((entry) => entry.wrapper !== null);
+}
+
+/** `unwrapAll` for a document that may sit inside a wrapper, with the keys leading to it. */
+function unwrapDocument(document: unknown, prefix: readonly string[]): UnwrappedSchema[] {
+  if (Array.isArray(document)) return document.map((entry, index) => found(entry, [...prefix, String(index)]));
+
+  if (isJsonSchema(document)) {
+    if (isJsonRpcMessage(document)) return unwrapEnvelope(document, prefix);
+
+    if (isRequestBody(document)) {
+      const schemas: UnwrappedSchema[] = [];
+      if (Array.isArray(document.tools)) schemas.push(...unwrapTools(document.tools, [...prefix, "tools"]));
+      for (const keys of FORMAT_SLOTS) {
+        const definition = resolvePointer(document, joinPointer("", ...keys));
+        if (isJsonSchema(definition)) schemas.push(...unwrapFormat(definition, [...prefix, ...keys]));
+      }
+      return schemas;
+    }
+  }
+
+  return [found(document, prefix)];
+}
+
+/**
  * Every schema a document holds. A request body declares several — `tools` for OpenAI and
  * Anthropic, `response_format` for Chat Completions, `text.format` for the Responses API,
  * `output_config.format` for Anthropic's JSON outputs — and so does a bare array of tool
- * definitions, whose entries may also be bare schemas.
+ * definitions, whose entries may also be bare schemas. An MCP `tools/list` response is that
+ * body one level down, inside the JSON-RPC envelope it arrives in.
  * Any other document holds the one schema `unwrap` finds, so a single file keeps behaving
  * exactly as it did.
  */
 export function unwrapAll(document: unknown): UnwrappedSchema[] {
-  if (Array.isArray(document)) return document.map((entry, index) => found(entry, [String(index)]));
-
-  if (isJsonSchema(document) && isRequestBody(document)) {
-    const schemas: UnwrappedSchema[] = [];
-    if (Array.isArray(document.tools)) schemas.push(...unwrapTools(document.tools, ["tools"]));
-    for (const keys of FORMAT_SLOTS) {
-      const definition = resolvePointer(document, joinPointer("", ...keys));
-      if (isJsonSchema(definition)) schemas.push(...unwrapFormat(definition, keys));
-    }
-    return schemas;
-  }
-
-  return [found(document, [])];
+  return unwrapDocument(document, []);
 }

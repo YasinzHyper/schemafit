@@ -129,6 +129,49 @@ describe("unwrapAll", () => {
     ]);
   });
 
+  it("finds every tool of an MCP tools/list response", () => {
+    const response = { jsonrpc: "2.0", id: 1, result: { tools: [{ name: "get_weather", inputSchema: SCHEMA }] } };
+    expect(found(response)).toEqual(["/result/tools/0/inputSchema MCP tool (inputSchema) get_weather"]);
+    expect(unwrapAll(response)[0]?.schema).toEqual(SCHEMA);
+
+    // Paginated, and alongside a tool that declares no schema of its own.
+    const page = {
+      jsonrpc: "2.0",
+      id: "req-7",
+      result: {
+        tools: [{ name: "ping" }, { name: "search", title: "Search", inputSchema: SCHEMA }],
+        nextCursor: "next-page-cursor",
+      },
+    };
+    expect(found(page)).toEqual(["/result/tools/1/inputSchema MCP tool (inputSchema) search"]);
+  });
+
+  it("finds no schema in a JSON-RPC message that declares none", () => {
+    // An error response, a request, and a notification: none of them carries a tool definition,
+    // and the envelope itself is not a schema to be linted.
+    expect(found({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } })).toEqual([]);
+    expect(found({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { cursor: "c" } })).toEqual([]);
+    expect(found({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })).toEqual([]);
+    // A result of some other method, which is a payload rather than a schema.
+    expect(found({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "72°F" }], isError: false } })).toEqual([]);
+  });
+
+  it("rewraps a schema found inside a JSON-RPC envelope, leaving the envelope whole", () => {
+    const response = { jsonrpc: "2.0", id: 1, result: { tools: [{ name: "f", inputSchema: { type: "object" } }] } };
+    const [entry] = unwrapAll(response);
+    expect(rewrap(response, entry?.keys ?? [], { type: "object", title: "fixed" })).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "f", inputSchema: { type: "object", title: "fixed" } }] },
+    });
+  });
+
+  it("leaves a schema that describes a JSON-RPC message alone", () => {
+    // "jsonrpc" here is a property of the schema; only the version string marks an envelope.
+    const schema = { type: "object", properties: { jsonrpc: { const: "2.0" }, result: { type: "object" } } };
+    expect(found(schema)).toEqual(["# null -"]);
+  });
+
   it("leaves a schema whose own properties are named like a request body alone", () => {
     // "tools" here is a property of the schema, not a list of tool definitions.
     const schema = { type: "object", properties: { tools: { type: "array" } }, required: ["tools"] };

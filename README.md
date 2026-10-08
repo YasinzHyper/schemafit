@@ -71,6 +71,9 @@ schemafit --format json tools/*.json
 # A whole request body: every tool in it is reported on its own
 schemafit examples/messages-request.json
 
+# An MCP tools/list response, straight off the wire
+schemafit examples/mcp-tools-list.json
+
 # From stdin
 cat schema.json | schemafit -
 
@@ -92,7 +95,7 @@ schemafit --fix --write tools/*.json
 
 Files can hold a bare JSON Schema or a whole tool / response-format definition. `schemafit` finds the schema inside OpenAI tools (`function.parameters`), OpenAI `response_format`, Anthropic tools (`input_schema`), and MCP tools (`inputSchema`).
 
-They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus the slot that asks for structured output — `response_format` in OpenAI's and Gemini's spellings, the Responses API's `text.format`, and Anthropic's `output_config.format`), an MCP `tools/list` response, or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
+They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus the slot that asks for structured output — `response_format` in OpenAI's and Gemini's spellings, the Responses API's `text.format`, and Anthropic's `output_config.format`), an MCP `tools/list` response — in the [JSON-RPC envelope](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) it arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`) or already unwrapped — or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
 
 ```console
 $ schemafit examples/messages-request.json
