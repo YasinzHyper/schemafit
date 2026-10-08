@@ -160,6 +160,39 @@ describe("cli", () => {
     expect(stderr).toContain("Nothing to fix");
   });
 
+  it("reports every tool of a captured MCP tools/list response", async () => {
+    const { code, stdout } = await cli([example("mcp-tools-list.json")]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("mcp-tools-list.json#/result/tools/0/inputSchema  create_note");
+    expect(stdout).toContain("mcp-tools-list.json#/result/tools/1/inputSchema  search_notes");
+    expect(stdout).toContain("MCP tool (inputSchema)");
+    expect(stdout).toContain("anthropic/no-numeric-constraints");
+  });
+
+  it("--fix rewrites a captured MCP response and leaves the envelope whole", async () => {
+    const response = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      result: { tools: [{ name: "f", inputSchema: { type: "object", properties: {} } }], nextCursor: "c" },
+    });
+    const { stdout } = await cli(["--fix", "-p", "anthropic", "-"], response);
+    expect(JSON.parse(stdout)).toEqual({
+      jsonrpc: "2.0",
+      id: 7,
+      result: {
+        tools: [{ name: "f", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+        nextCursor: "c",
+      },
+    });
+  });
+
+  it("exits 2 for a JSON-RPC message that declares no schema, rather than linting the envelope", async () => {
+    const error = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } });
+    const { code, stderr } = await cli(["-"], error);
+    expect(code).toBe(2);
+    expect(stderr).toContain("holds no schema to check");
+  });
+
   it("exits 2 when a document holds no schema at all", async () => {
     const body = JSON.stringify({ tools: [{ type: "web_search_20260209", name: "web_search" }] });
     const { code, stderr } = await cli(["-"], body);

@@ -1,0 +1,39 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "tools": [
+      {
+        "name": "create_note",
+        "title": "Create Note",
+        "description": "Write a new note into the user's notebook.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "One-line title of the note.", "maxLength": 120 },
+            "body": { "type": "string", "description": "The note itself, as Markdown." },
+            "notebook": { "type": "string", "enum": ["personal", "work"], "description": "Where to file it." },
+            "tags": { "type": "array", "items": { "type": "string" }, "description": "Labels to attach." }
+          },
+          "required": ["title", "body"]
+        }
+      },
+      {
+        "name": "search_notes",
+        "title": "Search Notes",
+        "description": "Find notes whose title or body matches a query.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "Free-text search over titles and bodies." },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "How many notes to return." },
+            "source": { "type": "string", "format": "uri", "description": "Only notes imported from this page." }
+          },
+          "required": ["query", "limit", "source"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "nextCursor": "eyJwYWdlIjoyfQ"
+  }
+}

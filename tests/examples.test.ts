@@ -109,6 +109,18 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
     gemini: [],
     all: [],
   },
+  // An MCP `tools/list` response as it arrives on the wire, inside its JSON-RPC envelope. The
+  // rewrites reach the tools through it and put them back in it, so the envelope round-trips.
+  "mcp-tools-list.json": {
+    // "maxLength" on the note title: undocumented rather than rejected, so no fix drops it.
+    openai: ["warn openai/undocumented-keyword /properties/title"],
+    anthropic: [],
+    // The Gemini rules carry no fixes, so both of its warnings stay.
+    gemini: ["warn gemini/undocumented-format /properties/source", "warn gemini/undocumented-keyword /properties/title"],
+    // The Anthropic fixes dropped "maxLength" and the OpenAI one dropped "format": "uri", so
+    // the keywords the other two only warn about are gone by the time Gemini's rules see them.
+    all: [],
+  },
   // Written by hand to fit everywhere, so there is nothing to rewrite and nothing to report.
   "ticket.portable.json": {
     openai: [],

@@ -31,7 +31,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Request-level Anthropic limits across all tools in a file: 20 strict tools, 24 optional parameters, 16 union parameters
 - [x] Only lint the schemas a document sends strictly; `--all-tools` overrides. A declaration that sets `"strict": false` is left out, because the subset these rules describe is the one a provider accepts under strict decoding. One that says nothing about `strict` is still linted: OpenAI's Responses API normalizes such a tool into strict mode when the schema allows it, so the subset is what decides between strict and best-effort there, and only an explicit `"strict": false` is an opt-out
 - [x] MCP `tools/list` response as input (`{ "tools": [{ "inputSchema": ... }] }`), which is the `tools: [...]` request body with the MCP spelling of the schema key
-- [ ] The JSON-RPC envelope an MCP `tools/list` response arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured straight off the wire can be linted without unwrapping it by hand first
+- [x] The JSON-RPC envelope an MCP `tools/list` response arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured straight off the wire can be linted without unwrapping it by hand first
+- [ ] Say what a JSON-RPC message that declares no schema is, instead of reporting it as a document that holds none: an error response names its `code` and `message`, a request or a notification names its `method`, so a captured call that failed reads as a failure rather than as an empty file
 - [ ] YAML input
 - [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`

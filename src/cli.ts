@@ -50,6 +50,11 @@ Options
 Files may hold a bare JSON Schema, a tool / response-format definition
 (OpenAI tools, Anthropic input_schema, MCP inputSchema), or a whole request body
 or array of tool definitions, in which case every schema in it is reported on its own.
+An MCP "tools/list" response may come in the JSON-RPC envelope it arrives in
+({"jsonrpc": "2.0", "id": 1, "result": {"tools": [...]}}), so a response captured
+off the wire needs no unwrapping by hand. A JSON-RPC message that declares no
+schema — a request, a notification, an error response — is reported as holding
+none rather than checked as if the envelope were a schema.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
