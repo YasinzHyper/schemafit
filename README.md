@@ -97,6 +97,13 @@ Files can hold a bare JSON Schema or a whole tool / response-format definition. 
 
 They can also hold **several** schemas, and then every one of them is reported, fixed, and named on its own: a whole request body (`tools: [...]`, including the nested `tools` of an [OpenAI namespace](https://developers.openai.com/api/docs/guides/function-calling#defining-namespaces), plus the slot that asks for structured output — `response_format` in OpenAI's and Gemini's spellings, the Responses API's `text.format`, and Anthropic's `output_config.format`), an MCP `tools/list` response — in the [JSON-RPC envelope](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) it arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`) or already unwrapped — or a bare array of tool definitions. A tool that declares no schema — a server tool such as Anthropic's `web_search`, or an OpenAI built-in — is skipped rather than mistaken for a schema.
 
+A [JSON-RPC](https://www.jsonrpc.org/specification) message that declares no schema is named for what it is, so a captured call that failed reads as a failure rather than as an empty file: an error response names the `code` and `message` of the call that failed, and a request or a notification names its `method`.
+
+```console
+$ schemafit tools-list.json
+schemafit: tools-list.json is a JSON-RPC error response: the call failed with error -32601: "Method not found". A failed call carries no result, and so no schema to check.
+```
+
 ```console
 $ schemafit examples/messages-request.json
 

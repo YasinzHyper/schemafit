@@ -8,7 +8,7 @@ import { displayPointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
-import { rewrap, unwrapAll } from "./unwrap.js";
+import { jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { UnwrappedSchema } from "./unwrap.js";
 
 export interface CliIo {
@@ -53,8 +53,9 @@ or array of tool definitions, in which case every schema in it is reported on it
 An MCP "tools/list" response may come in the JSON-RPC envelope it arrives in
 ({"jsonrpc": "2.0", "id": 1, "result": {"tools": [...]}}), so a response captured
 off the wire needs no unwrapping by hand. A JSON-RPC message that declares no
-schema — a request, a notification, an error response — is reported as holding
-none rather than checked as if the envelope were a schema.
+schema is named for what it is rather than reported as an empty document: an
+error response names the code and message of the call that failed, a request or
+a notification names its method.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -205,13 +206,40 @@ function skippedNote(label: string, skipped: readonly UnwrappedSchema[], checked
   return `schemafit: ${label}: skipped ${what} — "strict": false, so the strict subset does not apply. Use --all-tools to check them too.\n`;
 }
 
+/**
+ * Why a document holds no schema. A JSON-RPC message is named for what it is, because a call
+ * captured off the wire is a far more likely input than a file that happens to hold none, and
+ * a failed call read as an empty file sends you looking for the wrong mistake: the reason the
+ * response carries no tool is in its own error object.
+ */
+function noSchemaReason(label: string, document: unknown): string {
+  const message = jsonRpcMessage(document);
+  if (message === undefined) {
+    return `${label} holds no schema to check; no tool or response format in it declares one.`;
+  }
+  const { kind, method, code, message: text } = message;
+  switch (kind) {
+    case "error": {
+      const detail = code === undefined ? "" : ` ${code}`;
+      const quoted = text === undefined ? "" : `: ${JSON.stringify(text)}`;
+      return `${label} is a JSON-RPC error response: the call failed with error${detail}${quoted}. A failed call carries no result, and so no schema to check.`;
+    }
+    case "request":
+      return `${label} is a JSON-RPC request for ${JSON.stringify(method)}, not a response: a schema arrives in the result of a "tools/list" call, not in the call itself.`;
+    case "notification":
+      return `${label} is a JSON-RPC notification of ${JSON.stringify(method)}, which is answered by no response and so declares no schema.`;
+    case "result":
+      return `${label} is a JSON-RPC response, but its result declares no schema; a "tools/list" result declares one per tool, under "inputSchema".`;
+    default:
+      return `${label} is a JSON-RPC message with neither a result nor an error nor a method, so it declares no schema.`;
+  }
+}
+
 /** Reads one file and finds every schema in it. A document with none is a usage error. */
 async function readSchemas(file: string, io: CliIo): Promise<{ label: string; document: unknown; schemas: UnwrappedSchema[] }> {
   const { label, document } = await readDocument(file, io);
   const schemas = unwrapAll(document);
-  if (schemas.length === 0) {
-    throw new UsageError(`${label} holds no schema to check; no tool or response format in it declares one.`);
-  }
+  if (schemas.length === 0) throw new UsageError(noSchemaReason(label, document));
   return { label, document, schemas };
 }
 

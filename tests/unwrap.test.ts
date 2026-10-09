@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rewrap, unwrapAll } from "../src/index.js";
+import { jsonRpcMessage, rewrap, unwrapAll } from "../src/index.js";
 import type { JsonSchema } from "../src/index.js";
 
 const SCHEMA: JsonSchema = { type: "object", properties: {}, additionalProperties: false };
@@ -193,5 +193,52 @@ describe("unwrapAll", () => {
     });
     // The input is untouched, as rewrap promises.
     expect(body.tools.map((tool) => tool.input_schema)).toEqual([{ type: "object" }, { type: "object" }]);
+  });
+});
+
+describe("jsonRpcMessage", () => {
+  it("names the method a request calls", () => {
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { cursor: "c" } })).toEqual({
+      kind: "request",
+      method: "tools/list",
+    });
+  });
+
+  it("names a notification, which is a request without an id", () => {
+    expect(jsonRpcMessage({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })).toEqual({
+      kind: "notification",
+      method: "notifications/tools/list_changed",
+    });
+    // The same message with an id is a request, because a response is expected for it.
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: null, method: "tools/list" })?.kind).toBe("request");
+  });
+
+  it("names the code and message of an error response", () => {
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } })).toEqual({
+      kind: "error",
+      code: -32601,
+      message: "Method not found",
+    });
+    // An error object the server wrote loosely still reads as an error response.
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 1, error: { code: "-32603" } })).toEqual({ kind: "error" });
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 1, error: null })).toEqual({ kind: "error" });
+  });
+
+  it("separates a result from an error, which a response may not both carry", () => {
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 2, result: { content: [] } })).toEqual({ kind: "result" });
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 2, result: null })).toEqual({ kind: "result" });
+  });
+
+  it("calls a message that is none of those shapes what it is", () => {
+    expect(jsonRpcMessage({ jsonrpc: "2.0", id: 3 })).toEqual({ kind: "other" });
+    expect(jsonRpcMessage({ jsonrpc: "2.0", method: 7 })).toEqual({ kind: "other" });
+  });
+
+  it("finds no message in a document that is not one", () => {
+    expect(jsonRpcMessage(SCHEMA)).toBeUndefined();
+    expect(jsonRpcMessage({ jsonrpc: "1.0", method: "tools/list" })).toBeUndefined();
+    expect(jsonRpcMessage([{ jsonrpc: "2.0", method: "tools/list" }])).toBeUndefined();
+    // "jsonrpc" as a property of a schema is a subschema, not the version string.
+    expect(jsonRpcMessage({ type: "object", properties: { jsonrpc: { const: "2.0" } } })).toBeUndefined();
   });
 });
