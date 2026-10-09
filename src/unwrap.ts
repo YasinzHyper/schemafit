@@ -224,6 +224,55 @@ function isJsonRpcMessage(document: JsonSchema): boolean {
 }
 
 /**
+ * Which of the message shapes the JSON-RPC 2.0 specification defines a document is.
+ * `other` is a message that is none of them, which the specification makes invalid: a Response
+ * must include "either the result member or error member", and a Request must name a `method`.
+ */
+export type JsonRpcKind = "request" | "notification" | "result" | "error" | "other";
+
+/** A JSON-RPC message, as much of it as a report needs to say which message it is. */
+export interface JsonRpcMessage {
+  kind: JsonRpcKind;
+  /** The `method` a request or a notification names. */
+  method?: string;
+  /** The `code` an error response carries, "a Number that indicates the error type". */
+  code?: number;
+  /** The error's `message`, "a String providing a short description of the error". */
+  message?: string;
+}
+
+/**
+ * The JSON-RPC message a document is, or `undefined` when it is not one. A message that
+ * declares no schema is not an empty file, and this is what a report says it is instead: an
+ * error response names the `code` and `message` of the call that failed, a request and a
+ * notification name the `method` they call.
+ *
+ * The shapes come from the JSON-RPC 2.0 specification: `error` is "REQUIRED on error" and
+ * "MUST NOT exist if there was no error", `result` is the same on success and the two "MUST
+ * NOT" both appear, so either one identifies a response on its own; a request names a `method`,
+ * and one whose `id` "is not included ... is assumed to be a notification".
+ */
+export function jsonRpcMessage(document: unknown): JsonRpcMessage | undefined {
+  if (!isJsonSchema(document) || !isJsonRpcMessage(document)) return undefined;
+
+  const error = document.error;
+  if (isJsonSchema(error)) {
+    const { code, message } = error;
+    return {
+      kind: "error",
+      ...(typeof code === "number" ? { code } : {}),
+      ...(typeof message === "string" ? { message } : {}),
+    };
+  }
+  if ("error" in document) return { kind: "error" };
+  if ("result" in document) return { kind: "result" };
+  if (typeof document.method === "string") {
+    return { kind: "id" in document ? "request" : "notification", method: document.method };
+  }
+  return { kind: "other" };
+}
+
+/**
  * The schemas inside a JSON-RPC envelope, which is how an MCP `tools/list` response arrives
  * when it is read straight off the wire: `{ "jsonrpc": "2.0", "id": 1, "result": { "tools":
  * [...] } }`. A result response carries its payload under `result` and nowhere else, so that is

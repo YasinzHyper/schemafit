@@ -56,6 +56,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - An MCP `tools/list` response is now accepted in the JSON-RPC envelope it arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured off the wire or saved from a client log can be linted and fixed as it is, without lifting `result.tools` out of it by hand first. Every MCP message follows JSON-RPC 2.0, and a result response carries its payload under `result`, so that is the only place in an envelope a schema is looked for: the tools are reported at `#/result/tools/0/inputSchema`, and `--fix` puts each rewritten schema back inside the envelope, which comes out whole down to its `id` and `nextCursor`. A JSON-RPC message that declares no schema — a request, a notification, an error response, or the result of a method that returns no tools — is reported as holding none instead of being linted as if the envelope itself were a schema.
 
 - `examples/mcp-tools-list.json`: a captured `tools/list` response from a notes server, inside its JSON-RPC envelope, with the pagination cursor a first page carries.
+- A JSON-RPC message that declares no schema is now named for what it is instead of reported as a document that holds none: an error response names the `code` and `message` of the call that failed, a request and a notification name their `method`, and a result that is some other method's payload says so. `jsonRpcMessage(document)` returns the same reading for library callers.
 
 ### Changed
 

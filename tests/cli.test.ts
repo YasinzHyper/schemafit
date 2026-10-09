@@ -186,11 +186,40 @@ describe("cli", () => {
     });
   });
 
-  it("exits 2 for a JSON-RPC message that declares no schema, rather than linting the envelope", async () => {
+  it("names the failure of a JSON-RPC error response, rather than linting the envelope", async () => {
     const error = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } });
     const { code, stderr } = await cli(["-"], error);
     expect(code).toBe(2);
-    expect(stderr).toContain("holds no schema to check");
+    expect(stderr).toContain("<stdin> is a JSON-RPC error response");
+    expect(stderr).toContain('error -32601: "Method not found"');
+    expect(stderr).not.toContain("holds no schema to check");
+  });
+
+  it("names the method a JSON-RPC request or notification calls", async () => {
+    const request = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    const call = await cli(["-"], request);
+    expect(call.code).toBe(2);
+    expect(call.stderr).toContain('<stdin> is a JSON-RPC request for "tools/list"');
+
+    const notification = JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+    const notified = await cli(["-"], notification);
+    expect(notified.code).toBe(2);
+    expect(notified.stderr).toContain('is a JSON-RPC notification of "notifications/tools/list_changed"');
+  });
+
+  it("says a JSON-RPC result declares no schema when it is some other method's payload", async () => {
+    const result = JSON.stringify({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "72F" }] } });
+    const { code, stderr } = await cli(["-"], result);
+    expect(code).toBe(2);
+    expect(stderr).toContain("its result declares no schema");
+    expect(stderr).toContain('"inputSchema"');
+  });
+
+  it("names a JSON-RPC message under --fix too, which reads the same documents", async () => {
+    const error = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "Invalid params" } });
+    const { code, stderr } = await cli(["--fix", "-"], error);
+    expect(code).toBe(2);
+    expect(stderr).toContain('error -32602: "Invalid params"');
   });
 
   it("exits 2 when a document holds no schema at all", async () => {
