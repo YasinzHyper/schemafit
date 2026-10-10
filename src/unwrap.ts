@@ -227,8 +227,11 @@ function isJsonRpcMessage(document: JsonSchema): boolean {
  * Which of the message shapes the JSON-RPC 2.0 specification defines a document is.
  * `other` is a message that is none of them, which the specification makes invalid: a Response
  * must include "either the result member or error member", and a Request must name a `method`.
+ * `invalid` is an entry of a batch that is not a JSON-RPC message at all — the specification's
+ * own batch example holds a `{"foo": "boo"}`, answered with error -32600 "Invalid Request" —
+ * so only `jsonRpcBatch` reports it; a document on its own is simply not a message.
  */
-export type JsonRpcKind = "request" | "notification" | "result" | "error" | "other";
+export type JsonRpcKind = "request" | "notification" | "result" | "error" | "other" | "invalid";
 
 /** A JSON-RPC message, as much of it as a report needs to say which message it is. */
 export interface JsonRpcMessage {
@@ -288,9 +291,57 @@ function unwrapEnvelope(message: JsonSchema, prefix: readonly string[]): Unwrapp
   return unwrapDocument(result, [...prefix, "result"]).filter((entry) => entry.wrapper !== null);
 }
 
+/** Whether one entry of an array is a JSON-RPC envelope, which only a message can be. */
+function isEnvelope(entry: unknown): entry is JsonSchema {
+  return isJsonSchema(entry) && isJsonRpcMessage(entry);
+}
+
+/**
+ * Whether an array is a JSON-RPC batch rather than a list of schemas or tool definitions.
+ * "To send several Request objects at the same time, the Client MAY send an Array filled with
+ * Request objects", and the server "should respond with an Array containing the corresponding
+ * Response objects", so a batch is an array of messages in either direction. One message in it
+ * is enough to tell it apart: an array of tool definitions or bare schemas holds neither, since
+ * no schema declares a `jsonrpc` of `"2.0"` at its root. One is also all that can be required,
+ * because the batch the specification demonstrates mixes messages with an entry that is none.
+ */
+function isJsonRpcBatch(entries: readonly unknown[]): boolean {
+  return entries.some(isEnvelope);
+}
+
+/**
+ * The schemas a JSON-RPC batch holds: every envelope in it is read as the envelope it is, so a
+ * captured batch of `tools/list` responses reports one schema per tool per response, each
+ * pointed at through its index in the batch. The responses "MAY be returned in any order
+ * within the Array", so nothing is assumed about which entry answers which call.
+ * An entry that is not a message declares no schema and yields nothing, exactly as a request or
+ * an error response in the batch does: the specification answers such an entry with "Invalid
+ * Request", which makes it protocol junk rather than a schema that arrived without an envelope.
+ */
+function unwrapBatch(entries: readonly unknown[], prefix: readonly string[]): UnwrappedSchema[] {
+  return entries.flatMap((entry, index) =>
+    isEnvelope(entry) ? unwrapEnvelope(entry, [...prefix, String(index)]) : [],
+  );
+}
+
+/**
+ * The messages a JSON-RPC batch holds, or `undefined` when the document is not a batch. This is
+ * `jsonRpcMessage` for an array of messages, and what a report says a batch that declares no
+ * schema is: a batch of error responses names each failure rather than reading as an empty file.
+ * Every entry of the array is described, an entry that is no message as `invalid`, so the
+ * messages line up with the batch's own indices.
+ */
+export function jsonRpcBatch(document: unknown): JsonRpcMessage[] | undefined {
+  if (!Array.isArray(document) || !isJsonRpcBatch(document)) return undefined;
+  return document.map((entry) => jsonRpcMessage(entry) ?? { kind: "invalid" });
+}
+
 /** `unwrapAll` for a document that may sit inside a wrapper, with the keys leading to it. */
 function unwrapDocument(document: unknown, prefix: readonly string[]): UnwrappedSchema[] {
-  if (Array.isArray(document)) return document.map((entry, index) => found(entry, [...prefix, String(index)]));
+  if (Array.isArray(document)) {
+    if (isJsonRpcBatch(document)) return unwrapBatch(document, prefix);
+    return document.map((entry, index) => found(entry, [...prefix, String(index)]));
+  }
 
   if (isJsonSchema(document)) {
     if (isJsonRpcMessage(document)) return unwrapEnvelope(document, prefix);
@@ -314,7 +365,8 @@ function unwrapDocument(document: unknown, prefix: readonly string[]): Unwrapped
  * Anthropic, `response_format` for Chat Completions, `text.format` for the Responses API,
  * `output_config.format` for Anthropic's JSON outputs — and so does a bare array of tool
  * definitions, whose entries may also be bare schemas. An MCP `tools/list` response is that
- * body one level down, inside the JSON-RPC envelope it arrives in.
+ * body one level down, inside the JSON-RPC envelope it arrives in, and a JSON-RPC batch is an
+ * array of such envelopes rather than an array of tool definitions.
  * Any other document holds the one schema `unwrap` finds, so a single file keeps behaving
  * exactly as it did.
  */

@@ -33,10 +33,11 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] MCP `tools/list` response as input (`{ "tools": [{ "inputSchema": ... }] }`), which is the `tools: [...]` request body with the MCP spelling of the schema key
 - [x] The JSON-RPC envelope an MCP `tools/list` response arrives in (`{ "jsonrpc": "2.0", "id": 1, "result": { "tools": [...] } }`), so a response captured straight off the wire can be linted without unwrapping it by hand first
 - [x] Say what a JSON-RPC message that declares no schema is, instead of reporting it as a document that holds none: an error response names its `code` and `message`, a request or a notification names its `method`, so a captured call that failed reads as a failure rather than as an empty file
-- [ ] A JSON-RPC batch, which the specification defines as "an Array filled with Request objects" and which a response arrives in the same way, so a captured batch holding a `tools/list` response is read as an array of bare schemas today and each envelope in it is linted as if it were one
+- [x] A JSON-RPC batch, which the specification defines as "an Array filled with Request objects" and which a response arrives in the same way, so a captured batch holding a `tools/list` response is read as an array of bare schemas today and each envelope in it is linted as if it were one
 - [ ] YAML input
 - [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
+- [ ] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call
 - [ ] Mark a schema the request sends non-strictly in the report header under `--all-tools`, so a finding against a tool that opted out of strict decoding reads as advisory rather than as something the provider would reject
 - [ ] Report how many tools in a request body declared no schema and were skipped, so a file whose tools are all server tools says so rather than failing with "holds no schema to check"
 - [ ] `$ref` resolution for `$id`/`$anchor`-based local references

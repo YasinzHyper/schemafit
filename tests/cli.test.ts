@@ -186,6 +186,61 @@ describe("cli", () => {
     });
   });
 
+  it("reports every tool of every response in a captured JSON-RPC batch", async () => {
+    const batch = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { tools: [{ name: "create_note", inputSchema: { type: "object", properties: { title: { type: "string", maxLength: 120 } }, required: ["title"] } }] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "search_notes", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }] } },
+    ]);
+    const { code, stdout } = await cli(["-p", "anthropic", "-"], batch);
+    expect(code).toBe(1);
+    expect(stdout).toContain("<stdin>#/0/result/tools/0/inputSchema  create_note");
+    expect(stdout).toContain("<stdin>#/1/result/tools/0/inputSchema  search_notes");
+    expect(stdout).toContain("MCP tool (inputSchema)");
+    // The envelopes themselves are never linted: a message is not a schema that is missing
+    // "additionalProperties", and before batches were read as batches both were reported as one.
+    expect(stdout).not.toContain("#/0  ");
+    expect(stdout).not.toContain("#/1  ");
+  });
+
+  it("--fix rewrites every response of a batch and leaves the batch whole", async () => {
+    const batch = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "f", inputSchema: { type: "object", properties: {} } }] } },
+    ]);
+    const { stdout } = await cli(["--fix", "-p", "anthropic", "-"], batch);
+    expect(JSON.parse(stdout)).toEqual([
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        result: { tools: [{ name: "f", inputSchema: { type: "object", properties: {}, additionalProperties: false } }] },
+      },
+    ]);
+  });
+
+  it("names each message of a JSON-RPC batch that declares no schema", async () => {
+    const batch = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", method: "notifications/tools/list_changed" },
+    ]);
+    const { code, stderr } = await cli(["-"], batch);
+    expect(code).toBe(2);
+    expect(stderr).toContain("<stdin> is a JSON-RPC batch of 2 messages, none of which declares a schema");
+    expect(stderr).toContain('an error response (error -32601: "Method not found")');
+    expect(stderr).toContain('a notification of "notifications/tools/list_changed"');
+    expect(stderr).not.toContain("holds no schema to check");
+  });
+
+  it("counts the messages of a long batch it does not name one by one", async () => {
+    const batch = JSON.stringify(
+      Array.from({ length: 6 }, (_unused, index) => ({ jsonrpc: "2.0", id: index, method: "tools/call" })),
+    );
+    const { code, stderr } = await cli(["-"], batch);
+    expect(code).toBe(2);
+    expect(stderr).toContain("is a JSON-RPC batch of 6 messages");
+    expect(stderr).toContain("and 3 more");
+  });
+
   it("names the failure of a JSON-RPC error response, rather than linting the envelope", async () => {
     const error = JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } });
     const { code, stderr } = await cli(["-"], error);
