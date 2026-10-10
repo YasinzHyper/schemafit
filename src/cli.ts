@@ -8,8 +8,8 @@ import { displayPointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
-import { jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
-import type { UnwrappedSchema } from "./unwrap.js";
+import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
+import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 
 export interface CliIo {
   stdout(text: string): void;
@@ -52,10 +52,12 @@ Files may hold a bare JSON Schema, a tool / response-format definition
 or array of tool definitions, in which case every schema in it is reported on its own.
 An MCP "tools/list" response may come in the JSON-RPC envelope it arrives in
 ({"jsonrpc": "2.0", "id": 1, "result": {"tools": [...]}}), so a response captured
-off the wire needs no unwrapping by hand. A JSON-RPC message that declares no
+off the wire needs no unwrapping by hand. A JSON-RPC batch, which is an array of
+those envelopes, is read as one too, and every tool of every response in it is
+reported under the index of its own message. A JSON-RPC message that declares no
 schema is named for what it is rather than reported as an empty document: an
 error response names the code and message of the call that failed, a request or
-a notification names its method.
+a notification names its method, and a batch names each of its messages.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -206,6 +208,45 @@ function skippedNote(label: string, skipped: readonly UnwrappedSchema[], checked
   return `schemafit: ${label}: skipped ${what} — "strict": false, so the strict subset does not apply. Use --all-tools to check them too.\n`;
 }
 
+/** How many of a batch's messages a reason names one by one before it counts the rest. */
+const NAMED_BATCH_MESSAGES = 3;
+
+/** What one message of a batch is, as a phrase a sentence can list several of. */
+function messagePhrase({ kind, method, code, message }: JsonRpcMessage): string {
+  switch (kind) {
+    case "error": {
+      const detail = [code, message === undefined ? undefined : JSON.stringify(message)]
+        .filter((part) => part !== undefined)
+        .join(": ");
+      return detail ? `an error response (error ${detail})` : "an error response";
+    }
+    case "request":
+      return `a request for ${JSON.stringify(method)}`;
+    case "notification":
+      return `a notification of ${JSON.stringify(method)}`;
+    case "result":
+      return "a response whose result declares none";
+    case "invalid":
+      return "an entry that is not a JSON-RPC message";
+    default:
+      return "a message with neither a result nor an error nor a method";
+  }
+}
+
+/**
+ * Why a JSON-RPC batch holds no schema, which names every message in it the way a single
+ * message is named: a batch of failures reads as the failures it is rather than as an empty
+ * file. Long batches are named up to a few messages in and counted after that, so a capture of
+ * fifty notifications says what it is in one line.
+ */
+function noSchemaInBatch(label: string, messages: readonly JsonRpcMessage[]): string {
+  const named = messages.slice(0, NAMED_BATCH_MESSAGES).map(messagePhrase);
+  const rest = messages.length - named.length;
+  const listed = [...named, ...(rest > 0 ? [`and ${rest} more`] : [])].join("; ");
+  const count = `${messages.length} message${messages.length === 1 ? "" : "s"}`;
+  return `${label} is a JSON-RPC batch of ${count}, none of which declares a schema: ${listed}. A schema arrives in the result of a "tools/list" call, one per tool under "inputSchema".`;
+}
+
 /**
  * Why a document holds no schema. A JSON-RPC message is named for what it is, because a call
  * captured off the wire is a far more likely input than a file that happens to hold none, and
@@ -213,6 +254,9 @@ function skippedNote(label: string, skipped: readonly UnwrappedSchema[], checked
  * response carries no tool is in its own error object.
  */
 function noSchemaReason(label: string, document: unknown): string {
+  const batch = jsonRpcBatch(document);
+  if (batch !== undefined) return noSchemaInBatch(label, batch);
+
   const message = jsonRpcMessage(document);
   if (message === undefined) {
     return `${label} holds no schema to check; no tool or response format in it declares one.`;

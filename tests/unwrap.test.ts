@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonRpcMessage, rewrap, unwrapAll } from "../src/index.js";
+import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "../src/index.js";
 import type { JsonSchema } from "../src/index.js";
 
 const SCHEMA: JsonSchema = { type: "object", properties: {}, additionalProperties: false };
@@ -127,6 +127,9 @@ describe("unwrapAll", () => {
       "/0/input_schema Anthropic tool (input_schema) f",
       "/1 null -",
     ]);
+    // A schema that describes a JSON-RPC message is still a schema: "2.0" here is a subschema,
+    // so the array is not a batch and the entry is not an envelope.
+    expect(found([{ type: "object", properties: { jsonrpc: { const: "2.0" } } }])).toEqual(["/0 null -"]);
   });
 
   it("finds every tool of an MCP tools/list response", () => {
@@ -144,6 +147,46 @@ describe("unwrapAll", () => {
       },
     };
     expect(found(page)).toEqual(["/result/tools/1/inputSchema MCP tool (inputSchema) search"]);
+  });
+
+  it("finds every tool of every response in a JSON-RPC batch", () => {
+    const batch = [
+      { jsonrpc: "2.0", id: 1, result: { tools: [{ name: "get_weather", inputSchema: SCHEMA }] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "ping" }, { name: "search", inputSchema: SCHEMA }] } },
+    ];
+    expect(found(batch)).toEqual([
+      "/0/result/tools/0/inputSchema MCP tool (inputSchema) get_weather",
+      "/1/result/tools/1/inputSchema MCP tool (inputSchema) search",
+    ]);
+    expect(unwrapAll(batch)[1]?.schema).toEqual(SCHEMA);
+  });
+
+  it("reads a batch as envelopes, not as the bare schemas an array otherwise holds", () => {
+    // One message is enough to make the array a batch: no schema and no tool definition
+    // declares a "jsonrpc" of "2.0", so nothing that belongs in a plain array can look like one.
+    const batch = [
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "f", inputSchema: SCHEMA }] } },
+      // The specification's own batch example holds an entry that is no message at all.
+      { foo: "boo" },
+    ];
+    expect(found(batch)).toEqual(["/1/result/tools/0/inputSchema MCP tool (inputSchema) f"]);
+  });
+
+  it("finds no schema in a batch whose messages declare none", () => {
+    expect(found([{ jsonrpc: "2.0", id: 1, method: "tools/list" }, { jsonrpc: "2.0", method: "notifications/x" }])).toEqual([]);
+  });
+
+  it("rewraps a schema found inside a batch, leaving the other messages whole", () => {
+    const batch = [
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "f", inputSchema: { type: "object" } }] } },
+    ];
+    const [entry] = unwrapAll(batch);
+    expect(rewrap(batch, entry?.keys ?? [], { type: "object", title: "fixed" })).toEqual([
+      { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [{ name: "f", inputSchema: { type: "object", title: "fixed" } }] } },
+    ]);
   });
 
   it("finds no schema in a JSON-RPC message that declares none", () => {
@@ -240,5 +283,36 @@ describe("jsonRpcMessage", () => {
     expect(jsonRpcMessage([{ jsonrpc: "2.0", method: "tools/list" }])).toBeUndefined();
     // "jsonrpc" as a property of a schema is a subschema, not the version string.
     expect(jsonRpcMessage({ type: "object", properties: { jsonrpc: { const: "2.0" } } })).toBeUndefined();
+  });
+});
+
+describe("jsonRpcBatch", () => {
+  it("describes every message of a batch, in the batch's own order", () => {
+    expect(
+      jsonRpcBatch([
+        { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        { jsonrpc: "2.0", id: 2, error: { code: -32601, message: "Method not found" } },
+        { jsonrpc: "2.0", id: 3, result: { content: [] } },
+      ]),
+    ).toEqual([
+      { kind: "request", method: "tools/list" },
+      { kind: "error", code: -32601, message: "Method not found" },
+      { kind: "result" },
+    ]);
+  });
+
+  it("describes an entry that is no message, so the messages keep the batch's indices", () => {
+    // "[1]" is the specification's own example of an invalid batch that is not empty.
+    expect(jsonRpcBatch([1, { jsonrpc: "2.0", method: "notifications/x" }])).toEqual([
+      { kind: "invalid" },
+      { kind: "notification", method: "notifications/x" },
+    ]);
+  });
+
+  it("finds no batch in a document that is not one", () => {
+    expect(jsonRpcBatch({ jsonrpc: "2.0", id: 1, method: "tools/list" })).toBeUndefined();
+    expect(jsonRpcBatch([{ name: "f", input_schema: SCHEMA }, SCHEMA])).toBeUndefined();
+    expect(jsonRpcBatch([])).toBeUndefined();
+    expect(jsonRpcBatch(SCHEMA)).toBeUndefined();
   });
 });
