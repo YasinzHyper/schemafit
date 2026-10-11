@@ -74,6 +74,9 @@ schemafit examples/messages-request.json
 # An MCP tools/list response, straight off the wire
 schemafit examples/mcp-tools-list.json
 
+# Tool definitions kept in YAML
+schemafit examples/agent-tools.yaml
+
 # From stdin
 cat schema.json | schemafit -
 
@@ -122,6 +125,15 @@ examples/messages-request.json#/tools/2/input_schema  search_tickets  (Anthropic
   OpenAI     ✔ compatible
   ...
 ```
+
+A file whose name ends in `.yaml` or `.yml` is read as YAML, and so is stdin when what arrives there is not JSON — JSON is tried first, since every JSON document is YAML as well. Anything above can be written in it: a bare schema, a tool definition, a whole request body, a list of tools. The YAML `schemafit` reads is the plain kind a schema is written in — block mappings and sequences, flow collections (`type: [string, "null"]`), scalars resolved the way [YAML 1.2](https://yaml.org/spec/1.2.2/#103-core-schema) does, literal (`|`) and folded (`>`) block scalars for the descriptions, comments — and it reads them with no runtime dependency. What it does not cover it refuses by name rather than guessing at: an anchor, an alias, a tag, a merge key, a second document in one file, a tab in the indentation, a scalar continued on the next line. A linter that misreads its input reports findings against a schema nobody wrote, so an error naming the line is the only honest answer there:
+
+```console
+$ schemafit tools.yaml
+schemafit: tools.yaml is not YAML schemafit can read: line 2: an anchor ("&name") is not supported; write it out by hand, or convert the file to JSON
+```
+
+A rewrite comes out as JSON whichever format it went in as, so `--fix` of a YAML file writes to stdout or `--out` and says that it did; `--write`, which would leave a `.yaml` file holding JSON, points you at `--out` instead.
 
 Some limits are stated per request rather than per schema, and those are measured over the request as a whole: Anthropic allows **20 tools with `strict: true`, 24 optional parameters, and 16 parameters with union types** in one request, counting every schema it sends strictly together. Four strict tools with six optional parameters each reach the limit of 24 though no single tool looks complex, which is exactly the case [the docs warn about](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits), so the finding is reported after the reports on the schemas and names what each one contributed:
 
@@ -217,7 +229,7 @@ ticket.openai.json
 
 `schemafit rules` marks the rules that `--fix` can resolve; [docs/rules.md](docs/rules.md) lists them as **Fixable**.
 
-The schemas under [`examples/`](examples/) are there to be run: `ticket.json` is the one above, `invoice-tool.json` an OpenAI tool whose schema reuses definitions, `anthropic-tool.json` an Anthropic tool, and `ticket.portable.json` the hand-written version that already fits everywhere. A test rewrites each of them for every provider and records exactly what is left over, so the list of things `--fix` cannot do stays honest.
+The schemas under [`examples/`](examples/) are there to be run: `ticket.json` is the one above, `invoice-tool.json` an OpenAI tool whose schema reuses definitions, `anthropic-tool.json` an Anthropic tool, `agent-tools.yaml` a pair of tool definitions kept in YAML, and `ticket.portable.json` the hand-written version that already fits everywhere. A test rewrites each of them for every provider and records exactly what is left over, so the list of things `--fix` cannot do stays honest.
 
 ### Generating the JSON from Zod or Pydantic
 
@@ -317,6 +329,16 @@ for (const { schema, keys, name } of unwrapAll(body)) {
 }
 ```
 
+`parseYaml` is the reader behind a `.yaml` file, for a document you load yourself:
+
+```ts
+import { parseYaml, unwrapAll } from "schemafit";
+
+const tools = unwrapAll(parseYaml(await readFile("tools.yaml", "utf8")));
+```
+
+It returns what the document describes, and throws a `YamlError` — carrying the `line` it gave up on — for the YAML it does not cover.
+
 Each entry also carries `pointer`, the JSON Pointer from the document to the schema, `wrapper`, the wrapper it was found in, `kind` (`"tool"` or `"format"`), and `strict`, what the declaration says about strict decoding. `unwrap` is still there for a document that holds exactly one schema.
 
 `lintRequest` checks what a provider limits per request rather than per schema, over every schema the document sends strictly:
@@ -333,7 +355,7 @@ Each of those findings has a `path` that points from the document, and `""` mean
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), YAML and OpenAPI input, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), OpenAPI input, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 

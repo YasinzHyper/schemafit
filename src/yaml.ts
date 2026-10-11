@@ -1,0 +1,609 @@
+/**
+ * A reader for the YAML a JSON Schema is written in.
+ *
+ * It covers what schemas use — block mappings and sequences, flow collections, quoted and
+ * plain scalars, literal and folded block scalars, comments, the YAML 1.2 core resolution of
+ * `null`, `true`, numbers — and refuses the rest by name instead of guessing at it: an anchor,
+ * an alias, a tag, a merge key, a second document, a tab in the indentation, a scalar continued
+ * on the next line. A linter that misreads its input reports findings against a schema nobody
+ * wrote, so a construct this cannot read with certainty is an error naming the line it is on
+ * rather than a value that may or may not be what the file said.
+ */
+
+/** A YAML this reader declined to read, and the line it gave up on. */
+export class YamlError extends Error {
+  readonly line: number;
+
+  constructor(line: number, message: string) {
+    super(`line ${line}: ${message}`);
+    this.name = "YamlError";
+    this.line = line;
+  }
+}
+
+/** One line of the document, tokenized once so the parser can look ahead by line. */
+interface Line {
+  /** 1-based, for the errors. */
+  n: number;
+  /** The line as written, which a block scalar takes verbatim. */
+  raw: string;
+  indent: number;
+  /** The content, with the indentation, any trailing comment, and trailing spaces removed. */
+  text: string;
+}
+
+/** The lines, and how far through them the parser is. */
+interface State {
+  lines: Line[];
+  index: number;
+}
+
+/** One line being read left to right, for the scalars and flow collections written on it. */
+interface Scanner {
+  text: string;
+  pos: number;
+  line: Line;
+}
+
+const DOCUMENT_START = "---";
+const DOCUMENT_END = "...";
+
+/** What the YAML 1.2 core schema resolves a plain scalar to, where JSON has an equivalent. */
+const NULLS = new Set(["", "~", "null", "Null", "NULL"]);
+const TRUES = new Set(["true", "True", "TRUE"]);
+const FALSES = new Set(["false", "False", "FALSE"]);
+const INTEGER = /^[-+]?[0-9]+$/;
+const HEX = /^0x[0-9a-fA-F]+$/;
+const OCTAL = /^0o[0-7]+$/;
+const FLOAT = /^[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?$/;
+const SPECIAL_FLOAT = /^[-+]?\.(inf|Inf|INF|nan|NaN|NAN)$/;
+
+/** What a plain scalar cannot start with, and the YAML feature that character introduces. */
+const INDICATORS: ReadonlyArray<[RegExp, string]> = [
+  [/^&\S/, 'an anchor ("&name")'],
+  [/^\*\S/, 'an alias ("*name")'],
+  [/^!/, 'a tag ("!...")'],
+  [/^\?(\s|$)/, 'an explicit key ("? ")'],
+  [/^<<(\s*:|$)/, 'a merge key ("<<")'],
+  [/^%/, 'a directive ("%...")'],
+  [/^[@`]/, "a character YAML reserves"],
+];
+
+const ESCAPES: Record<string, string> = {
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+  "0": "\0",
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  " ": " ",
+  N: "\u0085",
+  _: " ",
+  L: " ",
+  P: " ",
+};
+
+/** The width of the hex escapes, by their letter. */
+const HEX_ESCAPES: Record<string, number> = { x: 2, u: 4, U: 8 };
+
+/**
+ * Reads a YAML document into the value it describes. Throws a `YamlError` for a YAML it does
+ * not cover, naming the construct and the line, and for one that is not valid YAML at all.
+ */
+export function parseYaml(text: string): unknown {
+  const state: State = { lines: tokenize(text), index: 0 };
+
+  const first = peek(state);
+  if (first === undefined) return null;
+  if (first.text === DOCUMENT_START) state.index += 1;
+  else if (first.text.startsWith(`${DOCUMENT_START} `)) {
+    throw new YamlError(first.n, `content on the same line as "${DOCUMENT_START}"; put it on the line below`);
+  }
+
+  const value = parseNode(state, 0);
+
+  const rest = peek(state);
+  if (rest === undefined) return value;
+  if (rest.text === DOCUMENT_END) {
+    state.index += 1;
+    const after = peek(state);
+    if (after === undefined) return value;
+    throw new YamlError(after.n, `content after the "${DOCUMENT_END}" end-of-document marker`);
+  }
+  throw new YamlError(rest.n, "a second YAML document; schemafit reads one document per file");
+}
+
+/** Splits the text into lines and strips what the parser never looks at. */
+function tokenize(text: string): Line[] {
+  return text.split("\n").map((written, index) => {
+    const n = index + 1;
+    const raw = written.endsWith("\r") ? written.slice(0, -1) : written;
+    const indent = raw.length - raw.trimStart().length;
+    if (raw.slice(0, indent).includes("\t")) {
+      throw new YamlError(n, "a tab in the indentation; YAML indents with spaces only");
+    }
+    return { n, raw, indent, text: stripComment(raw.slice(indent)) };
+  });
+}
+
+/**
+ * The content of a line without its trailing comment. A `#` counts as one where YAML says it
+ * does: at the start, or after a space, and outside a quoted scalar. A quote only opens a
+ * scalar where one can start — at the beginning, or after a space or a flow punctuation mark —
+ * so the apostrophe in `title: the user's name # a comment` is a character of the scalar and
+ * leaves the comment a comment. The `''` a single-quoted scalar spells a quote with closes and
+ * reopens it here, which leaves what sits inside it quoted either way.
+ */
+function stripComment(content: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < content.length; i += 1) {
+    const char = content[i];
+    if (quote !== undefined) {
+      if (char === "\\" && quote === '"') i += 1;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if ((char === '"' || char === "'") && (i === 0 || " ,[{".includes(content[i - 1] ?? ""))) quote = char;
+    else if (char === "#" && (i === 0 || content[i - 1] === " ")) return content.slice(0, i).trimEnd();
+  }
+  return content.trimEnd();
+}
+
+/** The next line that holds content, skipping the blank and comment-only ones. */
+function peek(state: State): Line | undefined {
+  while (state.index < state.lines.length && state.lines[state.index]?.text === "") state.index += 1;
+  return state.lines[state.index];
+}
+
+function isDocumentMarker(text: string): boolean {
+  return text === DOCUMENT_START || text === DOCUMENT_END || text.startsWith(`${DOCUMENT_START} `);
+}
+
+/** Whether a line starts a sequence item. A `-` not followed by a space is a plain scalar. */
+function isSequenceEntry(text: string): boolean {
+  return text === "-" || text.startsWith("- ");
+}
+
+/** Where a block mapping's line ends its key, or undefined when the line is not one. */
+function findKeyEnd(line: Line): number | undefined {
+  const { text } = line;
+  if (text.startsWith('"') || text.startsWith("'")) {
+    let end: number;
+    try {
+      const scanner: Scanner = { text, pos: 0, line };
+      readQuoted(scanner);
+      end = scanner.pos;
+    } catch {
+      return undefined;
+    }
+    const after = text.slice(end);
+    return after === ":" || after.startsWith(": ") ? end : undefined;
+  }
+  // A flow collection is a node of its own, not a key, and it is the only thing a `[` or `{`
+  // can start here. Anywhere else they are part of a plain scalar, which may be a key.
+  if (text.startsWith("[") || text.startsWith("{")) return undefined;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === ":" && (i === text.length - 1 || text[i + 1] === " ")) return i;
+  }
+  return undefined;
+}
+
+/** The node that starts on the next line, at `indent`. */
+function parseNode(state: State, indent: number): unknown {
+  const line = peek(state);
+  if (line === undefined || isDocumentMarker(line.text) || line.indent < indent) return null;
+  if (isSequenceEntry(line.text)) return parseSequence(state, line.indent);
+  if (findKeyEnd(line) === undefined) {
+    // Not a mapping entry, so the line is the whole node: a scalar, or a flow collection.
+    state.index += 1;
+    const value = parseInline(line.text, line);
+    rejectContinuation(state, indent);
+    return value;
+  }
+  return parseMapping(state, line.indent);
+}
+
+function parseMapping(state: State, indent: number): Record<string, unknown> {
+  const mapping: Record<string, unknown> = {};
+  for (;;) {
+    const line = peek(state);
+    if (line === undefined || isDocumentMarker(line.text) || line.indent < indent) return mapping;
+    if (line.indent > indent) {
+      throw new YamlError(line.n, "indented further than the mapping it belongs to");
+    }
+    if (isSequenceEntry(line.text)) {
+      throw new YamlError(line.n, 'a sequence item ("- ") where a mapping key was expected');
+    }
+    rejectIndicators(line, line.text);
+
+    const end = findKeyEnd(line);
+    if (end === undefined) {
+      throw new YamlError(line.n, 'expected "key: value"; a key ends at a colon followed by a space');
+    }
+    const key = parseKey(line, line.text.slice(0, end));
+    if (Object.prototype.hasOwnProperty.call(mapping, key)) {
+      throw new YamlError(line.n, `duplicate key ${JSON.stringify(key)}`);
+    }
+
+    const rest = line.text.slice(end + 1).trim();
+    state.index += 1;
+    mapping[key] = rest === "" ? parseNodeBelow(state, indent) : parseValueOnLine(state, line, rest, indent);
+  }
+}
+
+/**
+ * A mapping key, which JSON needs to be a string. A plain key YAML resolves to something else
+ * is an error rather than a key stringified behind your back: `1: x` and `null: x` are the kind
+ * of mistake a schema's author wants to hear about.
+ */
+function parseKey(line: Line, text: string): string {
+  const value = parseInline(text, line);
+  if (typeof value === "string") return value;
+  throw new YamlError(line.n, `the key ${JSON.stringify(text)} is not a string; quote it to use it as a property name`);
+}
+
+/**
+ * The value of a key with nothing after its colon, which is the block below it. A sequence may
+ * sit at the key's own indentation, which is how most YAML writes one; anything else has to be
+ * indented further, and a key followed by neither has an empty value.
+ */
+function parseNodeBelow(state: State, indent: number): unknown {
+  const next = peek(state);
+  if (next === undefined || isDocumentMarker(next.text)) return null;
+  if (next.indent > indent) return parseNode(state, next.indent);
+  if (next.indent === indent && isSequenceEntry(next.text)) return parseSequence(state, indent);
+  return null;
+}
+
+/** The value written after a key's colon, or after a sequence item's dash. */
+function parseValueOnLine(state: State, line: Line, rest: string, indent: number): unknown {
+  if (rest.startsWith("|") || rest.startsWith(">")) return parseBlockScalar(state, line, rest, indent);
+  rejectIndicators(line, rest);
+  const value = parseInline(rest, line);
+  rejectContinuation(state, indent);
+  return value;
+}
+
+/**
+ * A line indented further than the block it follows continues the scalar on it. Folding such a
+ * scalar is subtle enough that reading it wrong is a real risk, so it is refused and the hint
+ * names the two spellings that are unambiguous.
+ */
+function rejectContinuation(state: State, indent: number): void {
+  const next = peek(state);
+  if (next === undefined || isDocumentMarker(next.text) || next.indent <= indent) return;
+  throw new YamlError(
+    next.n,
+    'a scalar continued on the next line; quote it, or write it as a block scalar ("|" for the lines as they are, ">" to fold them into one)',
+  );
+}
+
+function parseSequence(state: State, indent: number): unknown[] {
+  const items: unknown[] = [];
+  for (;;) {
+    const line = peek(state);
+    if (line === undefined || isDocumentMarker(line.text) || line.indent < indent) return items;
+    if (line.indent > indent) {
+      throw new YamlError(line.n, "indented further than the sequence it belongs to");
+    }
+    if (!isSequenceEntry(line.text)) {
+      throw new YamlError(line.n, 'expected a sequence item ("- ")');
+    }
+
+    const after = line.text.slice(1);
+    const rest = after.trim();
+    if (rest === "") {
+      state.index += 1;
+      items.push(parseNodeBelow(state, indent));
+      continue;
+    }
+
+    const contentIndent = indent + 1 + (after.length - after.trimStart().length);
+    if (isSequenceEntry(rest) || findKeyEnd({ ...line, text: rest }) !== undefined) {
+      // Blanking the dash leaves the mapping entry or nested item it starts on the column it
+      // sits in, so the block that continues below it parses like any other.
+      state.lines[state.index] = { ...line, indent: contentIndent, text: rest };
+      items.push(parseNode(state, contentIndent));
+      continue;
+    }
+
+    state.index += 1;
+    items.push(parseValueOnLine(state, line, rest, indent));
+  }
+}
+
+/**
+ * A literal (`|`) or folded (`>`) block scalar: the lines below the key that are indented
+ * further than it. The default chomping keeps one trailing newline and `-` strips it; `+`,
+ * which keeps every trailing newline, and an explicit indentation indicator are refused rather
+ * than approximated. A folded scalar's more indented lines keep their own line breaks, which is
+ * refused for the same reason.
+ */
+function parseBlockScalar(state: State, line: Line, header: string, indent: number): string {
+  const match = /^([|>])([-+]?)$/.exec(header);
+  if (match === null) {
+    throw new YamlError(
+      line.n,
+      `the block scalar header ${JSON.stringify(header)} is not supported; use "|", "|-", ">", or ">-", and quote a scalar that starts with "|" or ">"`,
+    );
+  }
+  const [, style, chomping] = match;
+  if (chomping === "+") {
+    throw new YamlError(line.n, 'the "keep" chomping indicator ("+") is not supported; use "|" or "|-"');
+  }
+
+  const content: string[] = [];
+  let blockIndent: number | undefined;
+  while (state.index < state.lines.length) {
+    const next = state.lines[state.index];
+    if (next === undefined) break;
+    if (next.text !== "" && next.indent <= indent) break;
+    if (next.text !== "" && blockIndent === undefined) blockIndent = next.indent;
+    if (next.text !== "" && blockIndent !== undefined && next.indent < blockIndent) break;
+    if (next.text !== "" && style === ">" && blockIndent !== undefined && next.indent > blockIndent) {
+      throw new YamlError(next.n, 'a line indented further than the folded block scalar (">") it is in; use "|" to keep the lines as they are');
+    }
+    content.push(blockIndent === undefined ? "" : next.raw.slice(blockIndent));
+    state.index += 1;
+  }
+
+  while (content.length > 0 && content[content.length - 1]?.trim() === "") content.pop();
+  if (content.length === 0) return "";
+
+  const text = style === "|" ? content.join("\n") : fold(content);
+  return chomping === "-" ? text : `${text}\n`;
+}
+
+/**
+ * Folding, as `>` defines it: the single line break between two lines becomes a space, and a
+ * run of breaks becomes one fewer newline, so one blank line separates two paragraphs by one.
+ */
+function fold(content: readonly string[]): string {
+  let folded = "";
+  let breaks = 0;
+  for (const [index, current] of content.entries()) {
+    if (current.trim() === "") {
+      breaks += 1;
+      continue;
+    }
+    if (index > 0) folded += breaks > 0 ? "\n".repeat(breaks) : " ";
+    folded += current;
+    breaks = 0;
+  }
+  return folded;
+}
+
+/** Everything written on one line: a scalar, or a flow collection and what is nested in it. */
+function parseInline(text: string, line: Line): unknown {
+  const scanner: Scanner = { text, pos: 0, line };
+  const value = parseFlowNode(scanner, false);
+  skipSpaces(scanner);
+  if (scanner.pos < scanner.text.length) {
+    throw new YamlError(line.n, `unexpected ${JSON.stringify(scanner.text.slice(scanner.pos))} after the value`);
+  }
+  return value;
+}
+
+function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
+  skipSpaces(scanner);
+  switch (scanner.text[scanner.pos]) {
+    case undefined:
+      return null;
+    case "[":
+      return parseFlowSequence(scanner);
+    case "{":
+      return parseFlowMapping(scanner);
+    case '"':
+    case "'":
+      return readQuoted(scanner);
+    default:
+      return resolvePlain(readPlain(scanner, inFlow), scanner.line);
+  }
+}
+
+function parseFlowSequence(scanner: Scanner): unknown[] {
+  scanner.pos += 1;
+  const items: unknown[] = [];
+  skipSpaces(scanner);
+  if (scanner.text[scanner.pos] === "]") {
+    scanner.pos += 1;
+    return items;
+  }
+  for (;;) {
+    items.push(parseFlowNode(scanner, true));
+    skipSpaces(scanner);
+    const char = scanner.text[scanner.pos];
+    scanner.pos += 1;
+    if (char === "]") return items;
+    if (char !== ",") throw flowError(scanner, '"," or "]"', "]");
+    skipSpaces(scanner);
+    // A trailing comma, which YAML allows and JSON does not.
+    if (scanner.text[scanner.pos] === "]") {
+      scanner.pos += 1;
+      return items;
+    }
+  }
+}
+
+function parseFlowMapping(scanner: Scanner): Record<string, unknown> {
+  scanner.pos += 1;
+  const mapping: Record<string, unknown> = {};
+  skipSpaces(scanner);
+  if (scanner.text[scanner.pos] === "}") {
+    scanner.pos += 1;
+    return mapping;
+  }
+  for (;;) {
+    skipSpaces(scanner);
+    const key = parseFlowKey(scanner);
+    if (Object.prototype.hasOwnProperty.call(mapping, key)) {
+      throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
+    }
+    mapping[key] = parseFlowNode(scanner, true);
+    skipSpaces(scanner);
+    const char = scanner.text[scanner.pos];
+    scanner.pos += 1;
+    if (char === "}") return mapping;
+    if (char !== ",") throw flowError(scanner, '"," or "}"', "}");
+    skipSpaces(scanner);
+    if (scanner.text[scanner.pos] === "}") {
+      scanner.pos += 1;
+      return mapping;
+    }
+  }
+}
+
+/** A flow mapping's key, which ends at its colon. */
+function parseFlowKey(scanner: Scanner): string {
+  const start = scanner.pos;
+  const char = scanner.text[scanner.pos];
+  let key: unknown;
+  if (char === '"' || char === "'") key = readQuoted(scanner);
+  else {
+    let end = scanner.pos;
+    while (end < scanner.text.length && scanner.text[end] !== ":") end += 1;
+    key = resolvePlain(scanner.text.slice(scanner.pos, end).trim(), scanner.line);
+    scanner.pos = end;
+  }
+  skipSpaces(scanner);
+  if (scanner.text[scanner.pos] !== ":") {
+    throw new YamlError(scanner.line.n, `expected ":" after the key ${JSON.stringify(scanner.text.slice(start, scanner.pos))} of a flow mapping`);
+  }
+  scanner.pos += 1;
+  if (typeof key !== "string") {
+    throw new YamlError(scanner.line.n, `the key ${JSON.stringify(scanner.text.slice(start, scanner.pos - 1).trim())} is not a string; quote it to use it as a property name`);
+  }
+  return key;
+}
+
+/** Why a flow collection stopped making sense: unterminated, or something else where a comma was. */
+function flowError(scanner: Scanner, expected: string, close: string): YamlError {
+  if (scanner.pos > scanner.text.length) {
+    return new YamlError(scanner.line.n, `a flow collection with no closing "${close}"; schemafit reads one written on a single line`);
+  }
+  return new YamlError(scanner.line.n, `expected ${expected} in a flow collection, found ${JSON.stringify(scanner.text.slice(scanner.pos - 1))}`);
+}
+
+function skipSpaces(scanner: Scanner): void {
+  while (scanner.pos < scanner.text.length && /\s/.test(scanner.text[scanner.pos] ?? "")) scanner.pos += 1;
+}
+
+/**
+ * A plain scalar: everything up to what ends it, which inside a flow collection is more. A
+ * colon followed by a space does not belong to one — that is the mapping key the line already
+ * had its chance to be — so a scalar carrying one is a mapping written where YAML cannot read
+ * it as such, and it is refused rather than read as the text it is not.
+ */
+function readPlain(scanner: Scanner, inFlow: boolean): string {
+  let end = scanner.pos;
+  while (end < scanner.text.length) {
+    const char = scanner.text[end] ?? "";
+    if (inFlow && ",[]{}".includes(char)) break;
+    end += 1;
+  }
+  const text = scanner.text.slice(scanner.pos, end).trimEnd();
+  scanner.pos = end;
+  if (/:(\s|$)/.test(text)) {
+    throw new YamlError(
+      scanner.line.n,
+      `the plain scalar ${JSON.stringify(text)} holds a colon followed by a space; quote it if it is text, or put the nested mapping on its own indented line`,
+    );
+  }
+  return text;
+}
+
+/** What the YAML 1.2 core schema makes of a plain scalar, where JSON can hold it. */
+function resolvePlain(text: string, line: Line): unknown {
+  rejectIndicators(line, text);
+  if (NULLS.has(text)) return null;
+  if (TRUES.has(text)) return true;
+  if (FALSES.has(text)) return false;
+  if (SPECIAL_FLOAT.test(text)) {
+    throw new YamlError(line.n, `${JSON.stringify(text)} has no JSON equivalent; JSON has neither infinity nor NaN`);
+  }
+  if (INTEGER.test(text) || FLOAT.test(text)) return Number(text);
+  if (HEX.test(text)) return Number.parseInt(text.slice(2), 16);
+  if (OCTAL.test(text)) return Number.parseInt(text.slice(2), 8);
+  return text;
+}
+
+/** Refuses the YAML this reader does not cover, naming the feature the text starts with. */
+function rejectIndicators(line: Line, text: string): void {
+  for (const [pattern, what] of INDICATORS) {
+    if (pattern.test(text)) {
+      throw new YamlError(line.n, `${what} is not supported; write it out by hand, or convert the file to JSON`);
+    }
+  }
+}
+
+/** A quoted scalar, which has to start and end on the same line. */
+function readQuoted(scanner: Scanner): string {
+  return scanner.text[scanner.pos] === '"' ? readDoubleQuoted(scanner) : readSingleQuoted(scanner);
+}
+
+function readDoubleQuoted(scanner: Scanner): string {
+  const { text, line } = scanner;
+  let out = "";
+  let i = scanner.pos + 1;
+  while (i < text.length) {
+    const char = text[i] ?? "";
+    if (char === '"') {
+      scanner.pos = i + 1;
+      return out;
+    }
+    if (char !== "\\") {
+      out += char;
+      i += 1;
+      continue;
+    }
+    const escape = text[i + 1] ?? "";
+    const width = HEX_ESCAPES[escape];
+    if (width !== undefined) {
+      const digits = text.slice(i + 2, i + 2 + width);
+      if (!new RegExp(`^[0-9a-fA-F]{${width}}$`).test(digits)) {
+        throw new YamlError(line.n, `the escape "\\${escape}" needs ${width} hexadecimal digits`);
+      }
+      out += String.fromCodePoint(Number.parseInt(digits, 16));
+      i += 2 + width;
+      continue;
+    }
+    const literal = ESCAPES[escape];
+    if (literal === undefined) {
+      throw new YamlError(line.n, `unsupported escape "\\${escape}" in a double-quoted string`);
+    }
+    out += literal;
+    i += 2;
+  }
+  throw unterminatedQuote(line, '"');
+}
+
+function readSingleQuoted(scanner: Scanner): string {
+  const { text, line } = scanner;
+  let out = "";
+  let i = scanner.pos + 1;
+  while (i < text.length) {
+    if (text[i] === "'") {
+      // `''` is how a single-quoted scalar spells one quote.
+      if (text[i + 1] === "'") {
+        out += "'";
+        i += 2;
+        continue;
+      }
+      scanner.pos = i + 1;
+      return out;
+    }
+    out += text[i];
+    i += 1;
+  }
+  throw unterminatedQuote(line, "'");
+}
+
+function unterminatedQuote(line: Line, quote: string): YamlError {
+  return new YamlError(line.n, `a string with no closing ${quote}; schemafit reads a quoted scalar written on a single line`);
+}

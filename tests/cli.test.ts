@@ -541,6 +541,68 @@ describe("cli", () => {
     expect(stderr).toContain("Nothing to fix");
   });
 
+  it("reads a schema written in YAML", async () => {
+    const { code, stdout } = await cli([example("agent-tools.yaml")]);
+    expect(code).toBe(1);
+    expect(stdout).toContain("agent-tools.yaml#/0/input_schema  create_ticket");
+    expect(stdout).toContain("agent-tools.yaml#/1/input_schema  search_tickets");
+    expect(stdout).toContain("openai/all-required");
+    expect(stdout).toContain("anthropic/no-numeric-constraints");
+  });
+
+  it("reads YAML from stdin, which has no name to read the format off", async () => {
+    const yaml = "type: object\nproperties:\n  title:\n    type: string\nrequired: [title]\n";
+    const { code, stdout } = await cli(["-p", "openai", "-"], yaml);
+    expect(code).toBe(1);
+    expect(stdout).toContain("<stdin>");
+    expect(stdout).toContain("openai/additional-properties-false");
+  });
+
+  it("rewrites a YAML schema as JSON and says so", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const out = join(dir, "tools.json");
+
+    const { code, stderr } = await cli(["--fix", example("agent-tools.yaml"), "--out", out]);
+    expect(code).toBe(0);
+    expect(stderr).toContain("read as YAML, rewritten as JSON");
+    expect(stderr).toContain('Remove "minimum" and state it in "description"');
+
+    // The block scalar of the first tool's description survives the round trip as its text.
+    const tools = JSON.parse(await readFile(out, "utf8")) as Array<{ name: string; description: string }>;
+    expect(tools.map(({ name }) => name)).toEqual(["create_ticket", "search_tickets"]);
+    expect(tools[0]?.description).toBe(
+      "Open a support ticket for the customer.\nCall it once per issue, after the customer has confirmed the summary.\n",
+    );
+    expect(tools[1]?.description).toBe(
+      "Find tickets by text, so the agent can point at an existing one instead of opening a duplicate.",
+    );
+    expect((await cli([out])).code).toBe(0);
+  });
+
+  it("names the line of a YAML file it cannot read", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(file, "type: object\nproperties: &shared\n  title: { type: string }\n");
+
+    const { code, stderr } = await cli([file]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("is not YAML schemafit can read: line 2: an anchor");
+  });
+
+  it("reads the format off the file name, and reports what neither parser could read", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.json");
+    await writeFile(file, "type: object\n");
+
+    const { code, stderr } = await cli([file]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("is not valid JSON");
+
+    const broken = await cli(["-"], "type: object\n  oops: 1\n");
+    expect(broken.code).toBe(2);
+    expect(broken.stderr).toContain("<stdin> is neither valid JSON nor YAML schemafit can read: line 2:");
+  });
+
   it.each([
     [["--fix", "-p", "openai"], "exactly one file"],
     [["--fix", "-p", "openai", "a.json", "b.json"], "exactly one file"],
@@ -550,6 +612,7 @@ describe("cli", () => {
     [["--write", "a.json"], "--write only applies"],
     [["--fix", "--write", "--out", "x.json", "a.json"], "cannot be combined"],
     [["--fix", "--write", "-"], "cannot rewrite stdin"],
+    [["--fix", "--write", "tool.yaml"], "cannot rewrite tool.yaml in place"],
     [["--fix", "--write"], "at least one file"],
   ])("exits 2 on bad --fix usage: %j", async (args, message) => {
     const { code, stderr } = await cli(args);

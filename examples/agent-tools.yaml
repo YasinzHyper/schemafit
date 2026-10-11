@@ -1,0 +1,40 @@
+# The tools the support agent is given, kept in YAML so the descriptions stay readable and
+# reviewable. The file is handed to the API as the "tools" of a request.
+- name: create_ticket
+  description: |
+    Open a support ticket for the customer.
+    Call it once per issue, after the customer has confirmed the summary.
+  input_schema:
+    type: object
+    properties:
+      title:
+        type: string
+        description: One line, in the customer's words.
+      priority:
+        type: integer
+        description: 1 is a question, 5 is an outage.
+        minimum: 1
+        maximum: 5
+      assignee:
+        type: [string, "null"]
+        description: The agent to hand it to, or null to leave it in the queue.
+    required: [title, priority, assignee]
+    additionalProperties: false
+
+- name: search_tickets
+  description: >-
+    Find tickets by text, so the agent can point at an existing one
+    instead of opening a duplicate.
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+      status:
+        enum: [open, pending, closed]
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 50
+    required:
+      - query

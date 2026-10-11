@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { Finding, JsonSchema, ProviderId, UnwrappedSchema } from "../src/index.js";
-import { PROVIDER_IDS, fix, rewrap, unwrapAll } from "../src/index.js";
+import { PROVIDER_IDS, fix, parseYaml, rewrap, unwrapAll } from "../src/index.js";
 import { isLocalRef, referenceSites, referenceTarget } from "../src/refs.js";
 
 const EXAMPLES = new URL("../examples/", import.meta.url);
@@ -121,6 +121,15 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
     // the keywords the other two only warn about are gone by the time Gemini's rules see them.
     all: [],
   },
+  // Tool definitions kept in YAML, which is read exactly like the JSON ones. Anthropic's
+  // numeric constraints move into "description" and the second tool gains its required keys
+  // and "additionalProperties", which leaves a list every provider accepts.
+  "agent-tools.yaml": {
+    openai: [],
+    anthropic: [],
+    gemini: [],
+    all: [],
+  },
   // Written by hand to fit everywhere, so there is nothing to rewrite and nothing to report.
   "ticket.portable.json": {
     openai: [],
@@ -132,12 +141,13 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
 
 function exampleFiles(): string[] {
   return readdirSync(EXAMPLES)
-    .filter((name) => name.endsWith(".json"))
+    .filter((name) => /\.(json|ya?ml)$/.test(name))
     .sort();
 }
 
 function readExample(name: string): unknown {
-  return JSON.parse(readFileSync(new URL(name, EXAMPLES), "utf8"));
+  const text = readFileSync(new URL(name, EXAMPLES), "utf8");
+  return /\.ya?ml$/.test(name) ? parseYaml(text) : JSON.parse(text);
 }
 
 /** Every schema the example declares: one for a bare schema or a tool, several for a request body. */
