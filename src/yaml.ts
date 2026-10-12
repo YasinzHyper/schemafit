@@ -324,6 +324,13 @@ function parseSequence(state: State, indent: number): unknown[] {
  * which keeps every trailing newline, and an explicit indentation indicator are refused rather
  * than approximated. A folded scalar's more indented lines keep their own line breaks, which is
  * refused for the same reason.
+ *
+ * What a line is here is read off `raw`, not off the comment-stripped `text` the rest of the
+ * parser works from: a block scalar is scalar content, and YAML has no comments inside it
+ * (YAML 1.2 section 6.6, "Outside scalar content, comments may appear on a line of their
+ * own"), so a `#` in these lines is a character of the string. A line is empty for the block
+ * only when it holds nothing but spaces, and any other line sets the block's indentation or
+ * ends it, whatever it looks like.
  */
 function parseBlockScalar(state: State, line: Line, header: string, indent: number): string {
   const match = /^([|>])([-+]?)$/.exec(header);
@@ -340,24 +347,61 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
 
   const content: string[] = [];
   let blockIndent: number | undefined;
+  // The empty lines above the block's first line of content, held until that line fixes the
+  // indentation they are measured against.
+  const leadingEmpty: Line[] = [];
   while (state.index < state.lines.length) {
     const next = state.lines[state.index];
     if (next === undefined) break;
-    if (next.text !== "" && next.indent <= indent) break;
-    if (next.text !== "" && blockIndent === undefined) blockIndent = next.indent;
-    if (next.text !== "" && blockIndent !== undefined && next.indent < blockIndent) break;
-    if (next.text !== "" && style === ">" && blockIndent !== undefined && next.indent > blockIndent) {
+    // A line of nothing but spaces never ends the block, however little it is indented.
+    const blank = next.raw.trim() === "";
+    if (!blank && next.indent <= indent) break;
+    if (!blank && blockIndent === undefined) {
+      blockIndent = next.indent;
+      rejectDeepLeadingEmpty(leadingEmpty, blockIndent);
+    }
+    if (blockIndent === undefined) {
+      leadingEmpty.push(next);
+      content.push("");
+      state.index += 1;
+      continue;
+    }
+    if (!blank && next.indent < blockIndent) break;
+    // Whatever a line holds past the block's indentation is content, spaces included, so a
+    // line of nothing but spaces is a more indented line too where it has some to spare.
+    const deeper = blank ? next.raw.length > blockIndent : next.indent > blockIndent;
+    if (deeper && style === ">") {
       throw new YamlError(next.n, 'a line indented further than the folded block scalar (">") it is in; use "|" to keep the lines as they are');
     }
-    content.push(blockIndent === undefined ? "" : next.raw.slice(blockIndent));
+    content.push(next.raw.slice(blockIndent));
     state.index += 1;
   }
 
-  while (content.length > 0 && content[content.length - 1]?.trim() === "") content.pop();
+  // Chomping drops the trailing empty lines, and a line is empty only when nothing of it is
+  // left past the block's indentation: one that holds spaces beyond it holds them as content,
+  // which neither the clip nor the strip indicator takes away.
+  while (content.length > 0 && content[content.length - 1] === "") content.pop();
   if (content.length === 0) return "";
 
   const text = style === "|" ? content.join("\n") : fold(content);
   return chomping === "-" ? text : `${text}\n`;
+}
+
+/**
+ * A block scalar takes its indentation from its first line of content, and YAML 1.2 section
+ * 8.1.1.1 calls it "an error for any of the leading empty lines to contain more spaces than
+ * the first non-empty line". Such a line is ambiguous about where the content starts, so it is
+ * refused rather than read one of the two ways.
+ */
+function rejectDeepLeadingEmpty(leadingEmpty: readonly Line[], blockIndent: number): void {
+  for (const empty of leadingEmpty) {
+    if (empty.raw.length > blockIndent) {
+      throw new YamlError(
+        empty.n,
+        `a blank line inside a block scalar holding more spaces (${empty.raw.length}) than the block's first line of content is indented (${blockIndent}); leave it empty`,
+      );
+    }
+  }
 }
 
 /**

@@ -567,7 +567,8 @@ describe("cli", () => {
     expect(stderr).toContain("read as YAML, rewritten as JSON");
     expect(stderr).toContain('Remove "minimum" and state it in "description"');
 
-    // The block scalar of the first tool's description survives the round trip as its text.
+    // The block scalar of the first tool's description survives the round trip as its text,
+    // and the comment line that follows it stays a comment rather than joining the scalar.
     const tools = JSON.parse(await readFile(out, "utf8")) as Array<{ name: string; description: string }>;
     expect(tools.map(({ name }) => name)).toEqual(["create_ticket", "search_tickets"]);
     expect(tools[0]?.description).toBe(

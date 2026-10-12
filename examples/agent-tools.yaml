@@ -4,6 +4,7 @@
   description: |
     Open a support ticket for the customer.
     Call it once per issue, after the customer has confirmed the summary.
+  # Generated from the Pydantic model, so edit the model and not this.
   input_schema:
     type: object
     properties:

@@ -145,6 +145,46 @@ properties:
     expect(parseYaml("description: >-\n  One line\n  continued.\n")).toEqual({ description: "One line continued." });
   });
 
+  it("keeps what a block scalar's line holds past the block's indentation, spaces included", () => {
+    expect(parseYaml("d: |\n  a\n   \n")).toEqual({ d: "a\n \n" });
+    expect(parseYaml("d: |-\n  a\n   \n")).toEqual({ d: "a\n " });
+    expect(parseYaml("d: |\n  a\n  \n  b\n")).toEqual({ d: "a\n\nb\n" });
+    expect(parseYaml("d: |\n   \n")).toEqual({ d: "" });
+  });
+
+  it("reads a comment-shaped line inside a block scalar as the content it is", () => {
+    expect(parseYaml("description: |\n  # Usage\n  Open a ticket.\n")).toEqual({
+      description: "# Usage\nOpen a ticket.\n",
+    });
+    expect(parseYaml("description: >-\n  # not a comment\n  continued.\n")).toEqual({
+      description: "# not a comment continued.",
+    });
+    expect(parseYaml("a: |\n  one\n  # in the middle\n  two\nb: 1\n")).toEqual({
+      a: "one\n# in the middle\ntwo\n",
+      b: 1,
+    });
+    expect(parseYaml("d: |\n  # a\n  # b\n")).toEqual({ d: "# a\n# b\n" });
+  });
+
+  it("ends a block scalar at a comment line written at the key's own indentation", () => {
+    expect(
+      parseYaml(`- name: create_ticket
+  description: |
+    # Usage
+    Open a support ticket for the customer.
+  # the schema below is generated from the Pydantic model
+  input_schema:
+    type: object
+`),
+    ).toEqual([
+      {
+        name: "create_ticket",
+        description: "# Usage\nOpen a support ticket for the customer.\n",
+        input_schema: { type: "object" },
+      },
+    ]);
+  });
+
   it("reads an empty document as nothing at all", () => {
     expect(parseYaml("")).toBeNull();
     expect(parseYaml("# just a comment\n")).toBeNull();
@@ -181,6 +221,12 @@ properties:
     expect(refusal("description: |+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
     expect(refusal("description: |2\n  one\n")).toContain("line 1: the block scalar header");
     expect(refusal("description: >\n  one\n    deeper\n")).toContain('line 3: a line indented further than the folded block scalar');
+    expect(refusal("d: >\n  a\n   \n")).toContain(
+      'line 3: a line indented further than the folded block scalar',
+    );
+    expect(refusal("d: |\n   \n  one\n")).toBe(
+      "line 2: a blank line inside a block scalar holding more spaces (3) than the block's first line of content is indented (2); leave it empty",
+    );
     expect(refusal("a: 1\nnot a mapping entry\n")).toBe(
       'line 2: expected "key: value"; a key ends at a colon followed by a space',
     );
