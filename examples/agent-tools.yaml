@@ -19,7 +19,10 @@
       assignee:
         type: [string, "null"]
         description: The agent to hand it to, or null to leave it in the queue.
-    required: [title, priority, assignee]
+    required:
+    - title
+    - priority
+    - assignee
     additionalProperties: false
 
 - name: search_tickets

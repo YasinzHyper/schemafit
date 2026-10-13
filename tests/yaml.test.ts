@@ -34,6 +34,62 @@ additionalProperties: false
   it("reads a sequence indented under its key and one at the key's own indentation", () => {
     expect(parseYaml("required:\n  - title\n  - count\n")).toEqual({ required: ["title", "count"] });
     expect(parseYaml("required:\n- title\n- count\n")).toEqual({ required: ["title", "count"] });
+    expect(parseYaml("required:\n- title\n- count\ntype: object\n")).toEqual({
+      required: ["title", "count"],
+      type: "object",
+    });
+  });
+
+  it("ends a sequence at its key's own indentation when the mapping's next key follows", () => {
+    expect(
+      parseYaml(`name: create_ticket
+input_schema:
+  type: object
+  properties:
+    title:
+      type: string
+  required:
+  - title
+  additionalProperties: false
+`),
+    ).toEqual({
+      name: "create_ticket",
+      input_schema: {
+        type: "object",
+        properties: { title: { type: "string" } },
+        required: ["title"],
+        additionalProperties: false,
+      },
+    });
+    // Example 8.22 of the YAML 1.2.2 specification, without the tags this reader refuses.
+    expect(parseYaml("sequence:\n- entry\n- - nested\nmapping:\n  foo: bar\n")).toEqual({
+      sequence: ["entry", ["nested"]],
+      mapping: { foo: "bar" },
+    });
+  });
+
+  it("reads a sequence item with nothing after its dash as null, not as the items below it", () => {
+    expect(parseYaml("-\n- a\n")).toEqual([null, "a"]);
+    // Example 8.15 of the specification, which opens with an empty item.
+    expect(
+      parseYaml(`- # Empty
+- |
+ block node
+- - one # Compact
+  - two # sequence
+- one: two # Compact mapping
+`),
+    ).toEqual([null, "block node\n", ["one", "two"], { one: "two" }]);
+    // A list of tool definitions with one entry left blank: the rest keep their place in it.
+    expect(
+      parseYaml(`-
+- name: search_tickets
+  input_schema:
+    type: object
+`),
+    ).toEqual([null, { name: "search_tickets", input_schema: { type: "object" } }]);
+    // An item's own block still has to sit past the dash, and there it is the item's value.
+    expect(parseYaml("-\n  a: 1\n- b\n")).toEqual([{ a: 1 }, "b"]);
   });
 
   it("reads a mapping that starts on a sequence item's dash", () => {
@@ -113,6 +169,11 @@ m: schemafit
 
   it("spells a quote in a single-quoted scalar by doubling it", () => {
     expect(parseYaml("description: 'the user''s name'\n")).toEqual({ description: "the user's name" });
+    // The doubled quote leaves the scalar open, so what follows it is still inside the string.
+    expect(parseYaml("description: 'don''t # open a duplicate'\n")).toEqual({
+      description: "don't # open a duplicate",
+    });
+    expect(parseYaml("'don''t': 1\n")).toEqual({ "don't": 1 });
   });
 
   it("strips comments and blank lines, and keeps a # that is part of a scalar", () => {
@@ -232,6 +293,8 @@ properties:
     );
     expect(refusal("a: 1\n  b: 2\n")).toContain("line 2:");
     expect(refusal("- a\nb: 1\n")).toBe('line 2: expected a sequence item ("- ")');
+    expect(refusal("- 1\nb: 2\n")).toBe('line 2: expected a sequence item ("- ")');
+    expect(refusal("a:\n- - 1\n  b: 2\n")).toBe('line 3: expected a sequence item ("- ")');
     expect(refusal("a:\n  - 1\n  b: 2\n")).toBe('line 3: expected a sequence item ("- ")');
     expect(refusal('a: "x" y\n')).toBe('line 1: unexpected "y" after the value');
     expect(refusal('a: "\\q"\n')).toBe('line 1: unsupported escape "\\q" in a double-quoted string');

@@ -137,8 +137,9 @@ function tokenize(text: string): Line[] {
  * does: at the start, or after a space, and outside a quoted scalar. A quote only opens a
  * scalar where one can start — at the beginning, or after a space or a flow punctuation mark —
  * so the apostrophe in `title: the user's name # a comment` is a character of the scalar and
- * leaves the comment a comment. The `''` a single-quoted scalar spells a quote with closes and
- * reopens it here, which leaves what sits inside it quoted either way.
+ * leaves the comment a comment. The `''` a single-quoted scalar spells a quote with leaves that
+ * scalar open, the way `readSingleQuoted` reads it, so the `#` in `title: 'don''t # here'` is a
+ * character of the string rather than the start of a comment.
  */
 function stripComment(content: string): string {
   let quote: string | undefined;
@@ -146,6 +147,8 @@ function stripComment(content: string): string {
     const char = content[i];
     if (quote !== undefined) {
       if (char === "\\" && quote === '"') i += 1;
+      // `''` is one quote inside the scalar, not the end of it and the start of another.
+      else if (char === "'" && quote === "'" && content[i + 1] === "'") i += 1;
       else if (char === quote) quote = undefined;
       continue;
     }
@@ -198,7 +201,7 @@ function findKeyEnd(line: Line): number | undefined {
 function parseNode(state: State, indent: number): unknown {
   const line = peek(state);
   if (line === undefined || isDocumentMarker(line.text) || line.indent < indent) return null;
-  if (isSequenceEntry(line.text)) return parseSequence(state, line.indent);
+  if (isSequenceEntry(line.text)) return parseSequence(state, line.indent, false);
   if (findKeyEnd(line) === undefined) {
     // Not a mapping entry, so the line is the whole node: a scalar, or a flow collection.
     state.index += 1;
@@ -255,10 +258,23 @@ function parseKey(line: Line, text: string): string {
  */
 function parseNodeBelow(state: State, indent: number): unknown {
   const next = peek(state);
-  if (next === undefined || isDocumentMarker(next.text)) return null;
-  if (next.indent > indent) return parseNode(state, next.indent);
-  if (next.indent === indent && isSequenceEntry(next.text)) return parseSequence(state, indent);
-  return null;
+  if (next !== undefined && !isDocumentMarker(next.text) && next.indent === indent && isSequenceEntry(next.text)) {
+    return parseSequence(state, indent, true);
+  }
+  return parseBlockIndentedBelow(state, indent);
+}
+
+/**
+ * The block indented further than the line above it, and nothing else. This is all an empty
+ * sequence entry can take its value from: YAML 1.2 section 8.2.1 puts a collection nested in an
+ * entry past the dash (productions 183 and 186, at `n+1+m`), so a dash at the entry's own
+ * indentation starts the next entry rather than a sequence inside this one, and an entry left
+ * with nothing is the `e-node` of production 185, which section 7.2 resolves to null.
+ */
+function parseBlockIndentedBelow(state: State, indent: number): unknown {
+  const next = peek(state);
+  if (next === undefined || isDocumentMarker(next.text) || next.indent <= indent) return null;
+  return parseNode(state, next.indent);
 }
 
 /** The value written after a key's colon, or after a sequence item's dash. */
@@ -284,7 +300,17 @@ function rejectContinuation(state: State, indent: number): void {
   );
 }
 
-function parseSequence(state: State, indent: number): unknown[] {
+/**
+ * A block sequence. `atKeyIndent` says it sits at the indentation of the mapping key that opened
+ * it, which YAML 1.2 section 8.2.3 allows because people perceive the dash as indentation, so
+ * "nested block sequences may be indented by one less space to compensate" (production 201,
+ * `seq-space(n,BLOCK-OUT) ::= l+block-sequence(n-1)`). It is the spelling PyYAML's dumper writes.
+ * The next key of that mapping then sits at the sequence's own indentation, so a line there that
+ * is not an entry ends the sequence and the mapping reads it. The exception the
+ * same section names — "except, of course, if nested inside another block sequence" — is where
+ * `atKeyIndent` is false: no mapping can own such a line there, so it stays an error naming it.
+ */
+function parseSequence(state: State, indent: number, atKeyIndent: boolean): unknown[] {
   const items: unknown[] = [];
   for (;;) {
     const line = peek(state);
@@ -293,6 +319,7 @@ function parseSequence(state: State, indent: number): unknown[] {
       throw new YamlError(line.n, "indented further than the sequence it belongs to");
     }
     if (!isSequenceEntry(line.text)) {
+      if (atKeyIndent) return items;
       throw new YamlError(line.n, 'expected a sequence item ("- ")');
     }
 
@@ -300,7 +327,7 @@ function parseSequence(state: State, indent: number): unknown[] {
     const rest = after.trim();
     if (rest === "") {
       state.index += 1;
-      items.push(parseNodeBelow(state, indent));
+      items.push(parseBlockIndentedBelow(state, indent));
       continue;
     }
 
