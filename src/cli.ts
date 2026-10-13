@@ -10,6 +10,7 @@ import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
 import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
+import { parseYaml } from "./yaml.js";
 
 export interface CliIo {
   stdout(text: string): void;
@@ -58,6 +59,16 @@ reported under the index of its own message. A JSON-RPC message that declares no
 schema is named for what it is rather than reported as an empty document: an
 error response names the code and message of the call that failed, a request or
 a notification names its method, and a batch names each of its messages.
+
+A file whose name ends in .yaml or .yml is read as YAML, and stdin is read as
+JSON first and as YAML if that is not what it holds. Any of the above may be
+written in it. The YAML schemafit reads is the plain kind a schema is written in
+— block mappings and sequences, flow collections, quoted and plain scalars,
+block scalars, comments — and anything else is an error naming the line and the
+construct rather than a guess at what the file meant: an anchor, an alias, a
+tag, a second document in one file. A rewrite is written as JSON whichever
+format it was read from, so --fix --write cannot rewrite a YAML file in place;
+send it to --out instead.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -132,6 +143,20 @@ function ruleMeta({ id, provider, severity, summary, source, verified, scope, fi
   };
 }
 
+/** The file names schemafit reads as YAML rather than as JSON. */
+const YAML_EXTENSIONS = [".yaml", ".yml"];
+
+function isYamlFile(file: string): boolean {
+  const lower = file.toLowerCase();
+  return YAML_EXTENSIONS.some((extension) => lower.endsWith(extension));
+}
+
+/**
+ * Reads one file as the format its name declares: YAML for a `.yaml` or `.yml` file, JSON for
+ * everything else. Stdin has no name to read the format off, so it is parsed as JSON first and
+ * as YAML only if that fails — every JSON document is YAML too, so trying JSON first costs
+ * nothing and keeps its error for the far more common case of a JSON document with a typo.
+ */
 async function readDocument(file: string, io: CliIo): Promise<{ label: string; document: unknown }> {
   const label = file === "-" ? "<stdin>" : file;
   let text: string;
@@ -141,10 +166,23 @@ async function readDocument(file: string, io: CliIo): Promise<{ label: string; d
     throw new UsageError(`Cannot read ${label}: ${(error as Error).message}`);
   }
 
+  if (isYamlFile(file)) {
+    try {
+      return { label, document: parseYaml(text) };
+    } catch (error) {
+      throw new UsageError(`${label} is not YAML schemafit can read: ${(error as Error).message}`);
+    }
+  }
+
   try {
     return { label, document: JSON.parse(text) as unknown };
   } catch (error) {
-    throw new UsageError(`${label} is not valid JSON: ${(error as Error).message}`);
+    if (file !== "-") throw new UsageError(`${label} is not valid JSON: ${(error as Error).message}`);
+    try {
+      return { label, document: parseYaml(text) };
+    } catch (yamlError) {
+      throw new UsageError(`${label} is neither valid JSON nor YAML schemafit can read: ${(yamlError as Error).message}`);
+    }
   }
 }
 
@@ -301,8 +339,8 @@ interface PlannedFix {
   file: string;
   output: string;
   reports: FixReport[];
-  /** What the run left out, when it left anything out. */
-  note: string | undefined;
+  /** What the run left out, and what it did to the file's format, when there is anything to say. */
+  notes: string[];
 }
 
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
@@ -331,8 +369,11 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
     reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
 
-  const note = skippedNote(label, skipped, checked.length);
-  return { file, output: `${JSON.stringify(rewritten, null, 2)}\n`, reports, note };
+  // A rewrite is written as JSON whichever format it was read from, which the note says so
+  // that a YAML file rewritten into --out does not look like it kept its format.
+  const yamlNote = isYamlFile(file) ? `schemafit: ${label}: read as YAML, rewritten as JSON.\n` : undefined;
+  const notes = [yamlNote, skippedNote(label, skipped, checked.length)].filter((note) => note !== undefined);
+  return { file, output: `${JSON.stringify(rewritten, null, 2)}\n`, reports, notes };
 }
 
 async function writeOut(file: string, output: string): Promise<void> {
@@ -352,8 +393,8 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
 
   let rewritten = 0;
   let printed = 0;
-  for (const { file, output, reports, note } of planned) {
-    if (note) io.stderr(note);
+  for (const { file, output, reports, notes } of planned) {
+    for (const note of notes) io.stderr(note);
     if (request.write) {
       // Only a file some fix actually changed is written, so a run over a tree of schemas
       // leaves the ones that already fit as they are, formatting and mtime included.
@@ -444,6 +485,14 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       }
       if (values.write && positionals.includes("-")) {
         throw new UsageError("--write cannot rewrite stdin; drop it to get the rewritten schema on stdout.");
+      }
+      if (values.write) {
+        const [yaml] = positionals.filter(isYamlFile);
+        if (yaml !== undefined) {
+          throw new UsageError(
+            `--write cannot rewrite ${yaml} in place: schemafit writes JSON, and that would leave a .yaml file holding it. Use --fix --out <file.json>.`,
+          );
+        }
       }
       const request = {
         providers: selected,
