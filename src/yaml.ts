@@ -2,12 +2,13 @@
  * A reader for the YAML a JSON Schema is written in.
  *
  * It covers what schemas use — block mappings and sequences, flow collections, quoted and
- * plain scalars, literal and folded block scalars, comments, the YAML 1.2 core resolution of
- * `null`, `true`, numbers — and refuses the rest by name instead of guessing at it: an anchor,
- * an alias, a tag, a merge key, a second document, a tab in the indentation, a scalar continued
- * on the next line. A linter that misreads its input reports findings against a schema nobody
- * wrote, so a construct this cannot read with certainty is an error naming the line it is on
- * rather than a value that may or may not be what the file said.
+ * plain scalars spread over as many lines as they need, literal and folded block scalars,
+ * comments, the YAML 1.2 core resolution of `null`, `true`, numbers — and refuses the rest by
+ * name instead of guessing at it: an anchor, an alias, a tag, a merge key, a second document, a
+ * tab in the indentation, a quoted scalar or a flow collection continued on the next line. A
+ * linter that misreads its input reports findings against a schema nobody wrote, so a construct
+ * this cannot read with certainty is an error naming the line it is on rather than a value that
+ * may or may not be what the file said.
  */
 
 /** A YAML this reader declined to read, and the line it gave up on. */
@@ -30,6 +31,8 @@ interface Line {
   indent: number;
   /** The content, with the indentation, any trailing comment, and trailing spaces removed. */
   text: string;
+  /** Whether a trailing comment was taken off, which ends the plain scalar on the line. */
+  comment: boolean;
 }
 
 /** The lines, and how far through them the parser is. */
@@ -128,7 +131,9 @@ function tokenize(text: string): Line[] {
     if (raw.slice(0, indent).includes("\t")) {
       throw new YamlError(n, "a tab in the indentation; YAML indents with spaces only");
     }
-    return { n, raw, indent, text: stripComment(raw.slice(indent)) };
+    const content = raw.slice(indent);
+    const text = stripComment(content);
+    return { n, raw, indent, text, comment: text !== content.trimEnd() };
   });
 }
 
@@ -205,9 +210,10 @@ function parseNode(state: State, indent: number): unknown {
   if (findKeyEnd(line) === undefined) {
     // Not a mapping entry, so the line is the whole node: a scalar, or a flow collection.
     state.index += 1;
-    const value = parseInline(line.text, line);
-    rejectContinuation(state, indent);
-    return value;
+    // A continuation line clears the indentation of the line the scalar starts on, not one
+    // more: the `one` and `two` of a `key:` whose value is written below it line up, and the
+    // two of them are the one scalar.
+    return parseScalarOnLines(state, line, line.text, line.indent);
   }
   return parseMapping(state, line.indent);
 }
@@ -281,22 +287,116 @@ function parseBlockIndentedBelow(state: State, indent: number): unknown {
 function parseValueOnLine(state: State, line: Line, rest: string, indent: number): unknown {
   if (rest.startsWith("|") || rest.startsWith(">")) return parseBlockScalar(state, line, rest, indent);
   rejectIndicators(line, rest);
-  const value = parseInline(rest, line);
-  rejectContinuation(state, indent);
-  return value;
+  return parseScalarOnLines(state, line, rest, indent + 1);
 }
 
 /**
- * A line indented further than the block it follows continues the scalar on it. Folding such a
- * scalar is subtle enough that reading it wrong is a real risk, so it is refused and the hint
- * names the two spellings that are unambiguous.
+ * The value written on a line, together with the lines below that continue it. A plain scalar
+ * runs on over every line indented to at least `minIndent`, and they are folded into it, which
+ * is YAML 1.2 section 7.3.3 (production 135, `ns-plain-multi(n,c)`) and how a description long
+ * enough to wrap is written without a block scalar. A quoted scalar and a flow collection may
+ * span lines in YAML as well, but this reader takes each from the one line it is written on, so
+ * a line below either is refused by name rather than folded in.
  */
-function rejectContinuation(state: State, indent: number): void {
-  const next = peek(state);
-  if (next === undefined || isDocumentMarker(next.text) || next.indent <= indent) return;
+function parseScalarOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
+  const continuation = takeContinuation(state, minIndent);
+  const next = continuation[0];
+  if (next === undefined) return parseInline(text, line);
+  if (text.startsWith('"') || text.startsWith("'")) {
+    throw new YamlError(
+      next.n,
+      "a quoted scalar continued on the next line; schemafit reads a quoted scalar written on a single line",
+    );
+  }
+  if (text.startsWith("[") || text.startsWith("{")) {
+    throw new YamlError(
+      next.n,
+      "a flow collection continued on the next line; schemafit reads one written on a single line",
+    );
+  }
+  return resolvePlain(foldPlain(line, text, continuation), line);
+}
+
+/**
+ * The lines that continue a plain scalar: every line below it indented to at least `minIndent`,
+ * with the empty lines in between, which fold into the scalar as its line breaks. An empty line
+ * is held until a line of content follows it, so the blank line between a folded value and the
+ * next key of its mapping is left where it is rather than taken into the scalar.
+ */
+function takeContinuation(state: State, minIndent: number): Line[] {
+  const taken: Line[] = [];
+  const empty: Line[] = [];
+  let index = state.index;
+  let end = state.index;
+  while (index < state.lines.length) {
+    const next = state.lines[index];
+    if (next === undefined) break;
+    index += 1;
+    if (next.text === "") {
+      empty.push(next);
+      continue;
+    }
+    if (next.indent < minIndent || isDocumentMarker(next.text)) break;
+    taken.push(...empty, next);
+    empty.length = 0;
+    end = index;
+  }
+  state.index = end;
+  return taken;
+}
+
+/**
+ * A plain scalar and the lines continuing it, folded into one string the way `>` folds a block
+ * scalar: one line break becomes a space, and a run of them becomes one fewer newline. Every
+ * line gives up its indentation and its trailing spaces, which section 7.3.3 leaves out of the
+ * content, so a line of nothing but spaces counts as an empty one.
+ *
+ * A continuation line may hold what a plain scalar cannot start with — the `*` of `the
+ * *important* part` is a character of the string rather than an alias — because only the first
+ * character of the whole scalar is read as an indicator. The same goes for a `-`: a `- one`
+ * indented under a value that is already there continues it, so `things` over `- one` is the
+ * string "things - one" and not a sequence, which is what every YAML reader makes of it.
+ */
+function foldPlain(line: Line, first: string, continuation: readonly Line[]): string {
+  if (line.comment) throw commentInsidePlain(line);
+  rejectPlainColon(line, first);
+  const content: string[] = [first];
+  for (const [index, next] of continuation.entries()) {
+    if (next.raw.trim() === "") {
+      content.push("");
+      continue;
+    }
+    // A comment-only line, which is a comment between two lines of the scalar.
+    if (next.text === "") throw commentInsidePlain(next);
+    // A comment on the last line ends a scalar that was ending there anyway.
+    if (next.comment && index < continuation.length - 1) throw commentInsidePlain(next);
+    rejectPlainColon(next, next.text);
+    content.push(next.text);
+  }
+  return fold(content);
+}
+
+/**
+ * A comment ends the plain scalar on its line, so the line below it continues nothing: the
+ * folding of YAML 1.2 production 68 (`s-flow-folded`) takes the empty lines between two lines
+ * of a plain scalar and no comment at all.
+ */
+function commentInsidePlain(line: Line): YamlError {
+  return new YamlError(
+    line.n,
+    'a comment inside a plain scalar spread over lines; YAML folds no comment into a scalar, so move the comment above the scalar, or write the scalar as a block scalar ("|" for the lines as they are, ">" to fold them into one)',
+  );
+}
+
+/**
+ * A plain scalar cannot hold a colon followed by a space: that is the mapping key YAML reads
+ * there, and the line already had its chance to be one.
+ */
+function rejectPlainColon(line: Line, text: string): void {
+  if (!/:(\s|$)/.test(text)) return;
   throw new YamlError(
-    next.n,
-    'a scalar continued on the next line; quote it, or write it as a block scalar ("|" for the lines as they are, ">" to fold them into one)',
+    line.n,
+    `the plain scalar ${JSON.stringify(text)} holds a colon followed by a space; quote it if it is text, or put the nested mapping on its own indented line`,
   );
 }
 
@@ -432,8 +532,9 @@ function rejectDeepLeadingEmpty(leadingEmpty: readonly Line[], blockIndent: numb
 }
 
 /**
- * Folding, as `>` defines it: the single line break between two lines becomes a space, and a
- * run of breaks becomes one fewer newline, so one blank line separates two paragraphs by one.
+ * Folding, as `>` and a plain scalar spread over lines both define it: the single line break
+ * between two lines becomes a space, and a run of breaks becomes one fewer newline, so one
+ * blank line separates two paragraphs by one.
  */
 function fold(content: readonly string[]): string {
   let folded = "";
@@ -566,10 +667,9 @@ function skipSpaces(scanner: Scanner): void {
 }
 
 /**
- * A plain scalar: everything up to what ends it, which inside a flow collection is more. A
- * colon followed by a space does not belong to one — that is the mapping key the line already
- * had its chance to be — so a scalar carrying one is a mapping written where YAML cannot read
- * it as such, and it is refused rather than read as the text it is not.
+ * A plain scalar written on one line: everything up to what ends it, which inside a flow
+ * collection is more. A scalar carrying a colon followed by a space is a mapping written where
+ * YAML cannot read it as such, and it is refused rather than read as the text it is not.
  */
 function readPlain(scanner: Scanner, inFlow: boolean): string {
   let end = scanner.pos;
@@ -580,12 +680,7 @@ function readPlain(scanner: Scanner, inFlow: boolean): string {
   }
   const text = scanner.text.slice(scanner.pos, end).trimEnd();
   scanner.pos = end;
-  if (/:(\s|$)/.test(text)) {
-    throw new YamlError(
-      scanner.line.n,
-      `the plain scalar ${JSON.stringify(text)} holds a colon followed by a space; quote it if it is text, or put the nested mapping on its own indented line`,
-    );
-  }
+  rejectPlainColon(scanner.line, text);
   return text;
 }
 

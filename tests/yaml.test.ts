@@ -206,6 +206,61 @@ properties:
     expect(parseYaml("description: >-\n  One line\n  continued.\n")).toEqual({ description: "One line continued." });
   });
 
+  it("folds a plain scalar continued on the lines below it", () => {
+    expect(parseYaml("description: a name that is\n  long enough to wrap\n")).toEqual({
+      description: "a name that is long enough to wrap",
+    });
+    // The continuation clears the block the scalar sits in, so it folds at the key's own
+    // indentation and at any depth past it, and gives up the indentation either way.
+    expect(parseYaml("description:\n  a name that is\n  long enough to wrap\n")).toEqual({
+      description: "a name that is long enough to wrap",
+    });
+    expect(parseYaml("description: a name\n      that wrapped\n")).toEqual({ description: "a name that wrapped" });
+    expect(parseYaml("description: a name\n two\n")).toEqual({ description: "a name two" });
+    // A run of line breaks folds to one fewer newline, the way ">" folds one.
+    expect(parseYaml("a: one\n\n  two\n")).toEqual({ a: "one\ntwo" });
+    expect(parseYaml("a: one\n\n\n  two\n")).toEqual({ a: "one\n\ntwo" });
+    expect(parseYaml("a: one\n\n  two\n\n  three\n")).toEqual({ a: "one\ntwo\nthree" });
+    // A line of nothing but spaces is an empty line here, unlike inside a block scalar, where
+    // what it holds past the block's indentation is content.
+    expect(parseYaml("a: one\n   \n  two\n")).toEqual({ a: "one\ntwo" });
+    expect(parseYaml("a: one   \n  two   \n")).toEqual({ a: "one two" });
+  });
+
+  it("folds a plain scalar wherever one is written, and ends it where the block does", () => {
+    expect(parseYaml("- a long\n  sentence\n")).toEqual(["a long sentence"]);
+    expect(parseYaml("- one\n    two\n")).toEqual(["one two"]);
+    expect(parseYaml("-\n  foo\n  bar\n")).toEqual(["foo bar"]);
+    expect(parseYaml("- a: one\n    two\n")).toEqual([{ a: "one two" }]);
+    expect(parseYaml("a:\n  - one\n    two\n  - three\n")).toEqual({ a: ["one two", "three"] });
+    expect(parseYaml("hello\nworld\n")).toBe("hello world");
+    // The next key of the mapping ends the scalar, and so does the blank line before it.
+    expect(parseYaml("a: one\n  two\nb: 3\n")).toEqual({ a: "one two", b: 3 });
+    expect(parseYaml("a: one\n  two\n\nb: 3\n")).toEqual({ a: "one two", b: 3 });
+    expect(parseYaml("a:\n  b: one\n    two\nc: 3\n")).toEqual({ a: { b: "one two" }, c: 3 });
+    expect(parseYaml("a: one\n  two\n...\n")).toEqual({ a: "one two" });
+  });
+
+  it("reads a folded plain scalar as the one string it is", () => {
+    // Folding leaves a space in the scalar, so what the core schema would have resolved a line
+    // of it to on its own is beside the point: the whole scalar is one string.
+    expect(parseYaml("a: 1\n  2\n")).toEqual({ a: "1 2" });
+    expect(parseYaml("a: true\n  enough\n")).toEqual({ a: "true enough" });
+    expect(parseYaml("a: ~\n  tail\n")).toEqual({ a: "~ tail" });
+    // Only the first character of the whole scalar is read as an indicator, so a continuation
+    // line holds what a plain scalar cannot start with, a dash included.
+    expect(parseYaml("a: the\n  *important* part\n")).toEqual({ a: "the *important* part" });
+    expect(parseYaml("a: see\n  [the docs]\n")).toEqual({ a: "see [the docs]" });
+    expect(parseYaml("description: things\n  - one\n  - two\n")).toEqual({ description: "things - one - two" });
+    expect(parseYaml("- foo\n  - bar\n")).toEqual(["foo - bar"]);
+  });
+
+  it("ends a folded plain scalar at a comment, and keeps one that follows it", () => {
+    expect(parseYaml("a: one\n  two # the comment ends a scalar that was ending anyway\n")).toEqual({ a: "one two" });
+    expect(parseYaml("a: one\n  two\n  # a comment below the scalar\nb: 3\n")).toEqual({ a: "one two", b: 3 });
+    expect(parseYaml("a: one\n# at the mapping's own indentation\nb: 3\n")).toEqual({ a: "one", b: 3 });
+  });
+
   it("keeps what a block scalar's line holds past the block's indentation, spaces included", () => {
     expect(parseYaml("d: |\n  a\n   \n")).toEqual({ d: "a\n \n" });
     expect(parseYaml("d: |-\n  a\n   \n")).toEqual({ d: "a\n " });
@@ -276,8 +331,27 @@ properties:
     expect(refusal("{ a: 1, a: 2 }\n")).toBe('line 1: duplicate key "a"');
     expect(refusal("1: a\n")).toBe('line 1: the key "1" is not a string; quote it to use it as a property name');
     expect(refusal("a: .inf\n")).toBe('line 1: ".inf" has no JSON equivalent; JSON has neither infinity nor NaN');
-    expect(refusal("description: a scalar\n  spread over lines\n")).toContain("line 2: a scalar continued on the next line");
-    expect(refusal("type: [string,\n  integer]\n")).toContain('line 1: a flow collection with no closing "]"');
+    expect(refusal("a: one\n  two: three\n")).toBe(
+      'line 2: the plain scalar "two: three" holds a colon followed by a space; quote it if it is text, or put the nested mapping on its own indented line',
+    );
+    expect(refusal("a: one\n  two:\n")).toContain('line 2: the plain scalar "two:" holds a colon followed by a space');
+    expect(refusal("a:\n  one\n  b: two\n")).toContain('line 3: the plain scalar "b: two" holds a colon');
+    expect(refusal("a: one\n  # note\n  two\n")).toBe(
+      'line 2: a comment inside a plain scalar spread over lines; YAML folds no comment into a scalar, so move the comment above the scalar, or write the scalar as a block scalar ("|" for the lines as they are, ">" to fold them into one)',
+    );
+    expect(refusal("a: one # note\n  two\n")).toContain("line 1: a comment inside a plain scalar spread over lines");
+    expect(refusal("a: one\n  two # note\n  three\n")).toContain(
+      "line 2: a comment inside a plain scalar spread over lines",
+    );
+    expect(refusal("a: 'one'\n  two\n")).toBe(
+      "line 2: a quoted scalar continued on the next line; schemafit reads a quoted scalar written on a single line",
+    );
+    expect(refusal('a: "one"\n  two\n')).toContain("line 2: a quoted scalar continued on the next line");
+    expect(refusal("type: [string,\n  integer]\n")).toBe(
+      "line 2: a flow collection continued on the next line; schemafit reads one written on a single line",
+    );
+    expect(refusal("a: { b: 1,\n  c: 2 }\n")).toContain("line 2: a flow collection continued on the next line");
+    expect(refusal("type: [string,\n")).toContain('line 1: a flow collection with no closing "]"');
     expect(refusal('a: "unterminated\n')).toContain('line 1: a string with no closing "');
     expect(refusal("description: |+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
     expect(refusal("description: |2\n  one\n")).toContain("line 1: the block scalar header");
@@ -291,7 +365,7 @@ properties:
     expect(refusal("a: 1\nnot a mapping entry\n")).toBe(
       'line 2: expected "key: value"; a key ends at a colon followed by a space',
     );
-    expect(refusal("a: 1\n  b: 2\n")).toContain("line 2:");
+    expect(refusal("a: 1\n  b: 2\n")).toContain('line 2: the plain scalar "b: 2" holds a colon followed by a space');
     expect(refusal("- a\nb: 1\n")).toBe('line 2: expected a sequence item ("- ")');
     expect(refusal("- 1\nb: 2\n")).toBe('line 2: expected a sequence item ("- ")');
     expect(refusal("a:\n- - 1\n  b: 2\n")).toBe('line 3: expected a sequence item ("- ")');

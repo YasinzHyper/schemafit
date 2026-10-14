@@ -34,6 +34,8 @@
     properties:
       query:
         type: string
+        description: Words to look for in the title and the body, which
+          the server matches case-insensitively.
       status:
         enum: [open, pending, closed]
       limit:
