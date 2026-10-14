@@ -293,10 +293,10 @@ function parseValueOnLine(state: State, line: Line, rest: string, indent: number
 /**
  * The value written on a line, together with the lines below that continue it. A plain scalar
  * runs on over every line indented to at least `minIndent`, and they are folded into it, which
- * is YAML 1.2 section 7.3.3 (production 135, `ns-plain-multi(n,c)`) and how a description long
- * enough to wrap is written without a block scalar. A quoted scalar and a flow collection may
- * span lines in YAML as well, but this reader takes each from the one line it is written on, so
- * a line below either is refused by name rather than folded in.
+ * is YAML 1.2 section 7.3.3 (production 135, `ns-plain-multi-line(n,c)`) and how a description
+ * long enough to wrap is written without a block scalar. A quoted scalar and a flow collection
+ * may span lines in YAML as well, but this reader takes each from the one line it is written
+ * on, so a line below either is refused by name rather than folded in.
  */
 function parseScalarOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   const continuation = takeContinuation(state, minIndent);
@@ -378,7 +378,7 @@ function foldPlain(line: Line, first: string, continuation: readonly Line[]): st
 
 /**
  * A comment ends the plain scalar on its line, so the line below it continues nothing: the
- * folding of YAML 1.2 production 68 (`s-flow-folded`) takes the empty lines between two lines
+ * folding of YAML 1.2 production 74 (`s-flow-folded`) takes the empty lines between two lines
  * of a plain scalar and no comment at all.
  */
 function commentInsidePlain(line: Line): YamlError {
