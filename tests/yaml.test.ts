@@ -206,6 +206,29 @@ properties:
     expect(parseYaml("description: >-\n  One line\n  continued.\n")).toEqual({ description: "One line continued." });
   });
 
+  it("keeps the more indented lines of a folded block scalar as their own lines", () => {
+    // YAML 1.2 section 8.1.3: folding does not apply to the line breaks around a line that
+    // still begins with a space once the block's indentation is off.
+    expect(parseYaml("d: >\n  one\n    two\n  three\n")).toEqual({ d: "one\n  two\nthree\n" });
+    expect(parseYaml("d: >\n  a\n    b\n    c\n  d\n")).toEqual({ d: "a\n  b\n  c\nd\n" });
+    expect(parseYaml("d: >-\n  a\n    b\n  c\n")).toEqual({ d: "a\n  b\nc" });
+    // A blank line beside a more indented one adds its break to the one the line already keeps.
+    expect(parseYaml("d: >\n  a\n    b\n\n    c\n")).toEqual({ d: "a\n  b\n\n  c\n" });
+    expect(parseYaml("d: >\n  a\n    b\n\n  c\n")).toEqual({ d: "a\n  b\n\nc\n" });
+    expect(parseYaml("d: >\n  a\n    b\n\n\n    c\n")).toEqual({ d: "a\n  b\n\n\n  c\n" });
+    // A line of nothing but spaces is a more indented line where it has some past the block's
+    // indentation, and an empty one where it does not.
+    expect(parseYaml("d: >\n  a\n     \n  b\n")).toEqual({ d: "a\n   \nb\n" });
+    expect(parseYaml("d: >\n  a\n  \n  b\n")).toEqual({ d: "a\nb\n" });
+    // Clip keeps the trailing newline after a more indented last line, and strip takes it off.
+    expect(parseYaml("d: >\n  a\n    b\n")).toEqual({ d: "a\n  b\n" });
+    expect(parseYaml("d: >\n  a\n     \n")).toEqual({ d: "a\n   \n" });
+    // The whole of YAML 1.2's own folded-scalar example, section 8.1.3.
+    expect(parseYaml("d: >\n folded\n line\n\n next\n line\n   * bullet\n\n   * list\n   * lines\n\n last\n line\n")).toEqual({
+      d: "folded line\nnext line\n  * bullet\n\n  * list\n  * lines\n\nlast line\n",
+    });
+  });
+
   it("folds a plain scalar continued on the lines below it", () => {
     expect(parseYaml("description: a name that is\n  long enough to wrap\n")).toEqual({
       description: "a name that is long enough to wrap",
@@ -355,10 +378,6 @@ properties:
     expect(refusal('a: "unterminated\n')).toContain('line 1: a string with no closing "');
     expect(refusal("description: |+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
     expect(refusal("description: |2\n  one\n")).toContain("line 1: the block scalar header");
-    expect(refusal("description: >\n  one\n    deeper\n")).toContain('line 3: a line indented further than the folded block scalar');
-    expect(refusal("d: >\n  a\n   \n")).toContain(
-      'line 3: a line indented further than the folded block scalar',
-    );
     expect(refusal("d: |\n   \n  one\n")).toBe(
       "line 2: a blank line inside a block scalar holding more spaces (3) than the block's first line of content is indented (2); leave it empty",
     );
