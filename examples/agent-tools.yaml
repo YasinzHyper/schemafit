@@ -28,7 +28,13 @@
 - name: search_tickets
   description: >-
     Find tickets by text, so the agent can point at an existing one
-    instead of opening a duplicate.
+    instead of opening a duplicate. Two words beat one:
+
+      billing refund      good
+      refund              too broad
+
+    The more indented lines above keep their own line breaks, which is
+    what ">" does with them.
   input_schema:
     type: object
     properties:
