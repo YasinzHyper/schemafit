@@ -40,7 +40,10 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Fold a quoted scalar continued on the next line, which YAML folds exactly as it folds a plain one and the reader refuses by name today, now that the folding is there to reuse
 - [ ] Read a flow collection written over more than one line (`type: [string,` / `  "null"]`), which the reader refuses by name today and which a formatter produces for a list long enough to wrap
 - [ ] Write YAML back out, so `--fix --write` can rewrite a `.yaml` file in place instead of pointing at `--out`. Needs an emitter, and a decision about the comments a rewrite cannot keep
-- [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
+- [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
+- [ ] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
+- [ ] Translate OpenAPI 3.0's `nullable: true` into the `type` array or `anyOf` with `null` that JSON Schema spells it as, under `--openapi`, which reads it as the keyword it is today
+- [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
 - [ ] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call
 - [ ] Mark a schema the request sends non-strictly in the report header under `--all-tools`, so a finding against a tool that opted out of strict decoding reads as advisory rather than as something the provider would reject

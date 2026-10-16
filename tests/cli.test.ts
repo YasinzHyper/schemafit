@@ -632,4 +632,98 @@ describe("cli", () => {
     expect((await cli(["--version"])).stdout).toMatch(/^\d+\.\d+\.\d+/);
     expect((await cli([])).code).toBe(2);
   });
+  describe("--openapi", () => {
+    const tag = {
+      type: "object",
+      properties: { name: { type: "string", minLength: 1 } },
+      required: ["name"],
+      additionalProperties: false,
+    };
+    const pet = {
+      type: "object",
+      properties: { tag: { $ref: "#/components/schemas/Tag" } },
+      required: ["tag"],
+      additionalProperties: false,
+    };
+
+    async function openApiFile(schemas: Record<string, unknown>, name = "openapi.json"): Promise<string> {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, name);
+      await writeFile(file, JSON.stringify({ openapi: "3.1.1", info: { title: "Pets", version: "1" }, components: { schemas } }));
+      return file;
+    }
+
+    it("reports every component under its name", async () => {
+      const file = await openApiFile({ Tag: tag, Pet: pet });
+      const { code, stdout } = await cli(["--openapi", "-p", "anthropic", file]);
+      expect(code).toBe(1);
+      expect(stdout).toContain(`${file}#/components/schemas/Tag  Tag  (OpenAPI component)`);
+      expect(stdout).toContain(
+        `${file}#/components/schemas/Pet  Pet  (OpenAPI component, with the components it references under $defs)`,
+      );
+    });
+
+    it("reports a finding in a shared component once", async () => {
+      const file = await openApiFile({ Tag: tag, Pet: pet });
+      const { stdout } = await cli(["--openapi", "-p", "anthropic", file]);
+      expect(stdout.match(/anthropic\/no-string-length/g)).toHaveLength(1);
+      expect(stdout).not.toContain("#/$defs/Tag");
+    });
+
+    it("prints one entry per component in JSON", async () => {
+      const file = await openApiFile({ Tag: tag, Pet: pet });
+      const { stdout } = await cli(["--openapi", "-p", "anthropic", "-f", "json", file]);
+      const { files } = JSON.parse(stdout) as { files: Array<{ name: string; pointer: string; findings: unknown[] }> };
+      expect(files.map(({ name, pointer, findings }) => [name, pointer, findings.length])).toEqual([
+        ["Tag", "/components/schemas/Tag", 1],
+        ["Pet", "/components/schemas/Pet", 0],
+      ]);
+    });
+
+    it("reads an OpenAPI document written in YAML", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.1.1",
+          "components:",
+          "  schemas:",
+          "    Tag:",
+          "      type: object",
+          "      properties:",
+          "        name: { type: string }",
+          "      required: [name]",
+          "      additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code, stdout } = await cli(["--openapi", file]);
+      expect(code).toBe(0);
+      expect(stdout).toContain(`${file}#/components/schemas/Tag  Tag`);
+    });
+
+    it("names a document that declares no schema components", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.json");
+      await writeFile(file, JSON.stringify({ openapi: "3.1.1", paths: {} }));
+      const { code, stderr } = await cli(["--openapi", file]);
+      expect(code).toBe(2);
+      expect(stderr).toContain("declares no schema under components.schemas");
+    });
+
+    it("names the component whose definitions cannot take a copy", async () => {
+      const file = await openApiFile({ Tag: tag, Pet: { ...pet, $defs: { Tag: { type: "string" } } } });
+      const { code, stderr } = await cli(["--openapi", file]);
+      expect(code).toBe(2);
+      expect(stderr).toContain('Component "Pet": "$defs" already defines "Tag"');
+    });
+
+    it("refuses --fix", async () => {
+      const file = await openApiFile({ Tag: tag });
+      const { code, stderr } = await cli(["--openapi", "--fix", file]);
+      expect(code).toBe(2);
+      expect(stderr).toContain("--fix does not take --openapi yet");
+    });
+  });
 });

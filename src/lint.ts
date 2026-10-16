@@ -20,7 +20,8 @@ function finding(rule: RuleMeta, report: Report): Finding {
   return { ruleId: rule.id, provider: rule.provider, severity: rule.severity, source: rule.source, ...report };
 }
 
-function summarize(findings: readonly Finding[], selected: readonly ProviderId[]): ProviderSummary[] {
+/** Each selected provider's error and warning counts over `findings`. */
+export function summarize(findings: readonly Finding[], selected: readonly ProviderId[]): ProviderSummary[] {
   return selected.map((id) => {
     const own = findings.filter((item) => item.provider === id);
     const errors = own.filter((item) => item.severity === "error").length;

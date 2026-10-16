@@ -65,6 +65,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `parseYaml(text)`: that reader, for a document a library caller loads itself. It throws a `YamlError` carrying the `line` it gave up on.
 
+- `schemafit --openapi <file>`: checks every schema an OpenAPI document keeps under `components.schemas`, in JSON or YAML, each reported under its component name. A component is checked as the schema it would be on its own: the components it references are copied under `$defs` and its `#/components/schemas/<name>` references are pointed at them, so a reference resolves the way it does once sent. A finding inside a copied component is reported on that component alone rather than once per component that uses it. `--fix` refuses `--openapi` for now. `openApiSchemas(document)` is the same reading for a library caller.
+
 - `examples/agent-tools.yaml`: two tool definitions kept in YAML the way a repository keeps them, with a literal and a folded block scalar for their descriptions. `--fix` with no `--provider` turns them into a list every provider accepts, and the round-trip test over `examples/` reads the YAML ones too, so a YAML example cannot ship unchecked either.
 
 ### Changed

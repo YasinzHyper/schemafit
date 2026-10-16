@@ -77,6 +77,9 @@ schemafit examples/mcp-tools-list.json
 # Tool definitions kept in YAML
 schemafit examples/agent-tools.yaml
 
+# Every schema an OpenAPI document keeps under components.schemas
+schemafit --openapi openapi.yaml
+
 # From stdin
 cat schema.json | schemafit -
 
@@ -169,6 +172,18 @@ Exit codes: `0` compatible, `1` errors found, `2` bad usage or unreadable input.
 ```yaml
 - run: npx schemafit --provider openai,anthropic schemas/*.json
 ```
+
+### OpenAPI documents
+
+`--openapi` reads each file as an [OpenAPI](https://spec.openapis.org/oas/v3.1.1.html#components-object) document and checks every schema under `components.schemas`, the map the specification keeps "reusable Schema Objects" in. Each component is reported under its name, as the schema it would be if you sent it on its own: the components it references are copied under `$defs`, and every `#/components/schemas/<name>` reference is rewritten to `#/$defs/<name>`, because a provider resolves a reference inside the schema it was sent and nowhere else. A `Pet` that refers to a `Tag` is checked with the `Tag` it needs, so a recursion through a reference or an `allOf` of one is found exactly as it would be in a hand-bundled schema.
+
+A shared component would then be reported once for every component that uses it, so a finding inside a copy is left out when the component's own report already has it. One that only the bundle shows is kept.
+
+```text
+openapi.yaml#/components/schemas/Pet  Pet  (OpenAPI component, with the components it references under $defs)
+```
+
+A component that is only ever part of another, a string `enum` say, is still checked as the root of a schema, so expect `openai/root-object` on it, and narrow `--provider` if you will never send it alone. The schemas are checked as they are written: OpenAPI 3.0's `nullable` is read as the keyword it is, not translated to a `type` array. `--fix` does not take `--openapi` yet.
 
 ### Only the schemas you send strictly
 
@@ -339,6 +354,14 @@ const tools = unwrapAll(parseYaml(await readFile("tools.yaml", "utf8")));
 
 It returns what the document describes, and throws a `YamlError` — carrying the `line` it gave up on — for the YAML it does not cover.
 
+`openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, and the components it `copied` under `$defs`:
+
+```ts
+import { lint, openApiSchemas } from "schemafit";
+
+for (const { name, schema } of openApiSchemas(document)) console.log(name, lint(schema).summary);
+```
+
 Each entry also carries `pointer`, the JSON Pointer from the document to the schema, `wrapper`, the wrapper it was found in, `kind` (`"tool"` or `"format"`), and `strict`, what the declaration says about strict decoding. `unwrap` is still there for a document that holds exactly one schema.
 
 `lintRequest` checks what a provider limits per request rather than per schema, over every schema the document sends strictly:
@@ -355,7 +378,7 @@ Each of those findings has a `path` that points from the document, and `""` mean
 
 ## Roadmap
 
-More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), OpenAPI input, SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
+More fixes (`--fix` currently rewrites `additionalProperties`, `required`, `oneOf`, `allOf`, a root OpenAI will not take, unsupported string formats, and Anthropic's unsupported numeric, string, and array constraints), more providers (Mistral, Bedrock, Ollama, vLLM), SARIF output, and a GitHub Action. See [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
 
