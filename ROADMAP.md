@@ -36,9 +36,10 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] A JSON-RPC batch, which the specification defines as "an Array filled with Request objects" and which a response arrives in the same way, so a captured batch holding a `tools/list` response is read as an array of bare schemas today and each envelope in it is linted as if it were one
 - [x] YAML input: a `.yaml` / `.yml` file, and stdin that is not JSON, read by a reader of our own, since a runtime dependency is not an option. The subset is the plain YAML a schema is written in, and anything outside it is refused by name and by line rather than guessed at
 - [x] Fold a plain scalar continued on the next line, which the reader refuses today because folding it wrong is a misread rather than an error
-- [ ] Keep the more indented lines of a folded block scalar (`>`) as their own lines, which is what the specification says they are and what the reader refuses today, a line of nothing but spaces past the block's indentation among them
+- [x] Keep the more indented lines of a folded block scalar (`>`) as their own lines, which is what the specification says they are and what the reader refuses today, a line of nothing but spaces past the block's indentation among them
 - [ ] Fold a quoted scalar continued on the next line, which YAML folds exactly as it folds a plain one and the reader refuses by name today, now that the folding is there to reuse
 - [ ] Read a flow collection written over more than one line (`type: [string,` / `  "null"]`), which the reader refuses by name today and which a formatter produces for a list long enough to wrap
+- [ ] Read a block scalar with an explicit indentation indicator (`|2`, `>2`), which the reader refuses by name today. It is the only way to write a block whose first line of content is itself indented, which auto-detection reads as the block's indentation instead, and now that the more indented lines of a `>` block are kept, that is the one shape of them left out
 - [ ] Write YAML back out, so `--fix --write` can rewrite a `.yaml` file in place instead of pointing at `--out`. Needs an emitter, and a decision about the comments a rewrite cannot keep
 - [ ] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`

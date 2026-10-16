@@ -449,8 +449,7 @@ function parseSequence(state: State, indent: number, atKeyIndent: boolean): unkn
  * A literal (`|`) or folded (`>`) block scalar: the lines below the key that are indented
  * further than it. The default chomping keeps one trailing newline and `-` strips it; `+`,
  * which keeps every trailing newline, and an explicit indentation indicator are refused rather
- * than approximated. A folded scalar's more indented lines keep their own line breaks, which is
- * refused for the same reason.
+ * than approximated.
  *
  * What a line is here is read off `raw`, not off the comment-stripped `text` the rest of the
  * parser works from: a block scalar is scalar content, and YAML has no comments inside it
@@ -496,10 +495,6 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
     if (!blank && next.indent < blockIndent) break;
     // Whatever a line holds past the block's indentation is content, spaces included, so a
     // line of nothing but spaces is a more indented line too where it has some to spare.
-    const deeper = blank ? next.raw.length > blockIndent : next.indent > blockIndent;
-    if (deeper && style === ">") {
-      throw new YamlError(next.n, 'a line indented further than the folded block scalar (">") it is in; use "|" to keep the lines as they are');
-    }
     content.push(next.raw.slice(blockIndent));
     state.index += 1;
   }
@@ -535,18 +530,33 @@ function rejectDeepLeadingEmpty(leadingEmpty: readonly Line[], blockIndent: numb
  * Folding, as `>` and a plain scalar spread over lines both define it: the single line break
  * between two lines becomes a space, and a run of breaks becomes one fewer newline, so one
  * blank line separates two paragraphs by one.
+ *
+ * A line that still begins with a space once the block's indentation is off is a *more
+ * indented* line, which YAML 1.2 section 8.1.3 leaves unfolded: "folding does not apply to
+ * line breaks surrounding text lines that contain leading white space", so the break on either
+ * side of one is kept as a newline and the blank lines beside it each add one more. That is
+ * how a list or an indented example written inside a `>` description survives folding. A plain
+ * scalar has no such line, because every line of one gives up its indentation, so the rule
+ * costs it nothing.
  */
 function fold(content: readonly string[]): string {
   let folded = "";
   let breaks = 0;
-  for (const [index, current] of content.entries()) {
-    if (current.trim() === "") {
+  let started = false;
+  let previousIndented = false;
+  for (const current of content) {
+    if (current === "") {
       breaks += 1;
       continue;
     }
-    if (index > 0) folded += breaks > 0 ? "\n".repeat(breaks) : " ";
+    const indented = current.startsWith(" ");
+    if (!started) folded += "\n".repeat(breaks);
+    else if (indented || previousIndented) folded += "\n".repeat(breaks + 1);
+    else folded += breaks > 0 ? "\n".repeat(breaks) : " ";
     folded += current;
     breaks = 0;
+    started = true;
+    previousIndented = indented;
   }
   return folded;
 }
