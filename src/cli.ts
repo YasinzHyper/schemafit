@@ -3,13 +3,15 @@ import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
-import { lint, lintRequest, lintSchema } from "./lint.js";
+import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
+import { openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
 import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
+import type { OpenApiSchema } from "./openapi.js";
 import { parseYaml } from "./yaml.js";
 
 export interface CliIo {
@@ -45,6 +47,8 @@ Options
   -w, --write             With --fix, rewrite each file in place
       --all-tools         Check every schema a document declares, including the
                           ones it sends non-strictly ("strict": false)
+      --openapi           Read each file as an OpenAPI document and check every
+                          schema under components.schemas
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -69,6 +73,17 @@ construct rather than a guess at what the file meant: an anchor, an alias, a
 tag, a second document in one file. A rewrite is written as JSON whichever
 format it was read from, so --fix --write cannot rewrite a YAML file in place;
 send it to --out instead.
+
+--openapi checks every schema an OpenAPI document keeps under components.schemas,
+each reported under its component name as the schema it would be on its own: the
+components it references are copied under $defs, and every
+"#/components/schemas/<name>" reference is rewritten to "#/$defs/<name>", which is
+how the schema has to be sent for its references to resolve. A finding inside a
+copied component is reported once, on that component's own report, unless only the
+schema around it shows it. A component that is only ever part of another, an enum
+say, is still checked as a root, so expect openai/root-object on it; the schemas are
+checked as written, so an OpenAPI 3.0 "nullable" is read as the keyword it is.
+--fix does not take --openapi yet.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -317,6 +332,44 @@ function noSchemaReason(label: string, document: unknown): string {
   }
 }
 
+/**
+ * Reads one file as an OpenAPI document and finds every schema component in it. A document
+ * with none is a usage error, and so is a component whose `$defs` cannot take the components
+ * it references.
+ */
+async function readOpenApi(file: string, io: CliIo): Promise<{ label: string; schemas: OpenApiSchema[] }> {
+  const { label, document } = await readDocument(file, io);
+  let schemas: OpenApiSchema[];
+  try {
+    schemas = openApiSchemas(document);
+  } catch (error) {
+    if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
+    throw error;
+  }
+  if (schemas.length === 0) {
+    throw new UsageError(`${label} declares no schema under components.schemas, which is where --openapi looks.`);
+  }
+  return { label, schemas };
+}
+
+/** Lints every schema component of an OpenAPI document, each as its own request. */
+async function lintOpenApi(file: string, selected: readonly ProviderId[], io: CliIo): Promise<FileReport[]> {
+  const { label, schemas } = await readOpenApi(file, io);
+  const results = schemas.map((found) => {
+    try {
+      return lint(found.schema, { providers: selected });
+    } catch (error) {
+      if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
+      throw error;
+    }
+  });
+  const deduplicated = withoutCopiedFindings(schemas, results, (findings) => summarize(findings, selected));
+  return schemas.map((found, index) => ({
+    ...sourceOf(label, found, true),
+    result: deduplicated[index] as LintResult,
+  }));
+}
+
 /** Reads one file and finds every schema in it. A document with none is a usage error. */
 async function readSchemas(file: string, io: CliIo): Promise<{ label: string; document: unknown; schemas: UnwrappedSchema[] }> {
   const { label, document } = await readDocument(file, io);
@@ -434,6 +487,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         out: { type: "string", short: "o" },
         write: { type: "boolean", short: "w", default: false },
         "all-tools": { type: "boolean", default: false },
+        openapi: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "v", default: false },
       },
@@ -473,6 +527,10 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     }
     if (values["prune-unused-defs"] && !values.fix) {
       throw new UsageError("--prune-unused-defs only applies with --fix.");
+    }
+
+    if (values.openapi && values.fix) {
+      throw new UsageError("--fix does not take --openapi yet; lint the document with --openapi alone.");
     }
 
     if (values.fix) {
@@ -519,6 +577,12 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
 
     const reports: FileReport[] = [];
     for (const file of positionals) {
+      // A component is a schema of its own, not one tool of a request, so each one is measured
+      // as the whole request it would be when sent, and there is no request around them to report.
+      if (values.openapi) {
+        reports.push(...(await lintOpenApi(file, selected, io)));
+        continue;
+      }
       const { label, document, schemas } = await readSchemas(file, io);
       const { checked, skipped } = selectStrict(schemas, values["all-tools"]);
       const note = skippedNote(label, skipped, checked.length);
