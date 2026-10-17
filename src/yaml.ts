@@ -5,7 +5,7 @@
  * plain scalars spread over as many lines as they need, literal and folded block scalars,
  * comments, the YAML 1.2 core resolution of `null`, `true`, numbers — and refuses the rest by
  * name instead of guessing at it: an anchor, an alias, a tag, a merge key, a second document, a
- * tab in the indentation, a quoted scalar or a flow collection continued on the next line. A
+ * tab in the indentation, a flow collection continued on the next line. A
  * linter that misreads its input reports findings against a schema nobody wrote, so a construct
  * this cannot read with certainty is an error naming the line it is on rather than a value that
  * may or may not be what the file said.
@@ -46,6 +46,18 @@ interface Scanner {
   text: string;
   pos: number;
   line: Line;
+}
+
+/**
+ * Where a quoted scalar written in block context finds the lines it runs on over. A quoted
+ * scalar anywhere else — a key, or inside a flow collection — has to close on its own line.
+ */
+interface QuotedContinuation {
+  state: State;
+  /** The indentation a line of the scalar below its first has to clear. */
+  minIndent: number;
+  /** The line the scalar opens on, which an unclosed quote is reported against. */
+  opened: Line;
 }
 
 const DOCUMENT_START = "---";
@@ -294,20 +306,16 @@ function parseValueOnLine(state: State, line: Line, rest: string, indent: number
  * The value written on a line, together with the lines below that continue it. A plain scalar
  * runs on over every line indented to at least `minIndent`, and they are folded into it, which
  * is YAML 1.2 section 7.3.3 (production 135, `ns-plain-multi-line(n,c)`) and how a description
- * long enough to wrap is written without a block scalar. A quoted scalar and a flow collection
- * may span lines in YAML as well, but this reader takes each from the one line it is written
- * on, so a line below either is refused by name rather than folded in.
+ * long enough to wrap is written without a block scalar. A quoted scalar runs on to its closing
+ * quote instead, over lines held to the same indentation. A flow collection may span lines in
+ * YAML as well, but this reader takes it from the one line it is written on, so a line below
+ * one is refused by name rather than folded in.
  */
 function parseScalarOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
+  if (text.startsWith('"') || text.startsWith("'")) return parseQuotedOnLines(state, line, text, minIndent);
   const continuation = takeContinuation(state, minIndent);
   const next = continuation[0];
   if (next === undefined) return parseInline(text, line);
-  if (text.startsWith('"') || text.startsWith("'")) {
-    throw new YamlError(
-      next.n,
-      "a quoted scalar continued on the next line; schemafit reads a quoted scalar written on a single line",
-    );
-  }
   if (text.startsWith("[") || text.startsWith("{")) {
     throw new YamlError(
       next.n,
@@ -315,6 +323,46 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
     );
   }
   return resolvePlain(foldPlain(line, text, continuation), line);
+}
+
+/**
+ * A quoted scalar written as a block value, which YAML 1.2 lets run on over as many lines as it
+ * needs before its closing quote (productions 116 and 125, `nb-double-multi-line(n)` and
+ * `nb-single-multi-line(n)`), folded the way a plain scalar is. What follows the closing quote
+ * on its line can only be a comment, and the scalar is over there: a line indented under it
+ * continues nothing.
+ *
+ * The scalar is read off `raw`, because the comment-stripped `text` of a line inside it was cut
+ * at a `#` that is a character of the string. A trailing comment on the first line means the
+ * quote closed before it, so that line is read as it always was.
+ */
+function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: number): string {
+  let value: string;
+  if (line.comment) value = parseInline(text, line) as string;
+  else {
+    // The value with the trailing spaces `text` gave up, which an escape before them may need.
+    const written = line.raw.slice(line.raw.trimEnd().length - text.length);
+    const scanner: Scanner = { text: written, pos: 0, line };
+    value = readQuoted(scanner, { state, minIndent, opened: line });
+    const after = scanner.text.slice(scanner.pos);
+    if (!/^([ \t]*|[ \t]+#.*)$/.test(after)) {
+      if (scanner.line !== line && after.trimStart().startsWith(":")) {
+        throw new YamlError(
+          scanner.line.n,
+          `a quoted key spread over lines, from line ${line.n}; YAML holds an implicit key to a single line, so write the key on one`,
+        );
+      }
+      throw new YamlError(scanner.line.n, `unexpected ${JSON.stringify(after.trim())} after the value`);
+    }
+  }
+  const below = takeContinuation(state, minIndent)[0];
+  if (below !== undefined) {
+    throw new YamlError(
+      below.n,
+      `${JSON.stringify(below.text)} is indented under a quoted scalar that already ended at its closing quote; move the text inside the quotes, or indent the line less`,
+    );
+  }
+  return value;
 }
 
 /**
@@ -718,35 +766,59 @@ function rejectIndicators(line: Line, text: string): void {
   }
 }
 
-/** A quoted scalar, which has to start and end on the same line. */
-function readQuoted(scanner: Scanner): string {
-  return scanner.text[scanner.pos] === '"' ? readDoubleQuoted(scanner) : readSingleQuoted(scanner);
+/**
+ * A quoted scalar. Without `more` it has to close on the line it opens on; with it, it runs on
+ * over the lines below, which fold into it the way YAML 1.2 section 7.3.1 and 7.3.2 say: the
+ * white space at either end of a line is not content, a single line break becomes a space, and
+ * the empty lines after a break become one newline each. The white space just inside the quotes
+ * is content, so `" one` keeps its leading space.
+ */
+function readQuoted(scanner: Scanner, more?: QuotedContinuation): string {
+  return scanner.text[scanner.pos] === '"' ? readDoubleQuoted(scanner, more) : readSingleQuoted(scanner, more);
 }
 
-function readDoubleQuoted(scanner: Scanner): string {
-  const { text, line } = scanner;
+function readDoubleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
   let out = "";
-  let i = scanner.pos + 1;
-  while (i < text.length) {
-    const char = text[i] ?? "";
+  // How much of `out` is safe from the trailing white space a line break discards: an escaped
+  // tab or space is content wherever it sits.
+  let kept = 0;
+  scanner.pos += 1;
+  for (;;) {
+    const { text, line } = scanner;
+    if (scanner.pos >= text.length) {
+      if (more === undefined) throw unterminatedQuote(line, '"');
+      out = out.slice(0, kept) + nextQuotedLine(scanner, more, '"', " ");
+      kept = out.length;
+      continue;
+    }
+    const char = text[scanner.pos] ?? "";
     if (char === '"') {
-      scanner.pos = i + 1;
+      scanner.pos += 1;
       return out;
     }
     if (char !== "\\") {
       out += char;
-      i += 1;
+      scanner.pos += 1;
+      if (char !== " " && char !== "\t") kept = out.length;
       continue;
     }
-    const escape = text[i + 1] ?? "";
+    const escape = text[scanner.pos + 1] ?? "";
+    if (escape === "" && more !== undefined) {
+      // An escaped line break (production 112, `s-double-escaped(n)`) is no content at all, and
+      // the white space before it stays, which is how a line is broken inside a word.
+      out += nextQuotedLine(scanner, more, '"', "");
+      kept = out.length;
+      continue;
+    }
     const width = HEX_ESCAPES[escape];
     if (width !== undefined) {
-      const digits = text.slice(i + 2, i + 2 + width);
+      const digits = text.slice(scanner.pos + 2, scanner.pos + 2 + width);
       if (!new RegExp(`^[0-9a-fA-F]{${width}}$`).test(digits)) {
         throw new YamlError(line.n, `the escape "\\${escape}" needs ${width} hexadecimal digits`);
       }
       out += String.fromCodePoint(Number.parseInt(digits, 16));
-      i += 2 + width;
+      scanner.pos += 2 + width;
+      kept = out.length;
       continue;
     }
     const literal = ESCAPES[escape];
@@ -754,32 +826,71 @@ function readDoubleQuoted(scanner: Scanner): string {
       throw new YamlError(line.n, `unsupported escape "\\${escape}" in a double-quoted string`);
     }
     out += literal;
-    i += 2;
+    scanner.pos += 2;
+    kept = out.length;
   }
-  throw unterminatedQuote(line, '"');
 }
 
-function readSingleQuoted(scanner: Scanner): string {
-  const { text, line } = scanner;
+function readSingleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
   let out = "";
-  let i = scanner.pos + 1;
-  while (i < text.length) {
-    if (text[i] === "'") {
-      // `''` is how a single-quoted scalar spells one quote.
-      if (text[i + 1] === "'") {
-        out += "'";
-        i += 2;
-        continue;
-      }
-      scanner.pos = i + 1;
-      return out;
+  let kept = 0;
+  scanner.pos += 1;
+  for (;;) {
+    const { text, line } = scanner;
+    if (scanner.pos >= text.length) {
+      if (more === undefined) throw unterminatedQuote(line, "'");
+      out = out.slice(0, kept) + nextQuotedLine(scanner, more, "'", " ");
+      kept = out.length;
+      continue;
     }
-    out += text[i];
-    i += 1;
+    const char = text[scanner.pos] ?? "";
+    if (char === "'") {
+      // `''` is how a single-quoted scalar spells one quote.
+      if (text[scanner.pos + 1] !== "'") {
+        scanner.pos += 1;
+        return out;
+      }
+      scanner.pos += 1;
+    }
+    out += char;
+    scanner.pos += 1;
+    if (char !== " " && char !== "\t") kept = out.length;
   }
-  throw unterminatedQuote(line, "'");
+}
+
+/**
+ * Moves the scanner to the next line of a quoted scalar that holds anything, past its leading
+ * white space, and returns what the line break folds into: `single` when no empty line came
+ * between, and a newline for each one that did. A line indented less than the scalar's block
+ * is an error rather than the end of the scalar, because only the closing quote ends one, and
+ * the likeliest reason for such a line is a quote left open on a line above it.
+ */
+function nextQuotedLine(scanner: Scanner, more: QuotedContinuation, quote: string, single: string): string {
+  const { state, minIndent, opened } = more;
+  let empty = 0;
+  while (state.index < state.lines.length) {
+    const next = state.lines[state.index];
+    if (next === undefined) break;
+    state.index += 1;
+    if (/^[ \t]*$/.test(next.raw)) {
+      empty += 1;
+      continue;
+    }
+    const spaces = /^ */.exec(next.raw)?.[0].length ?? 0;
+    if (spaces < minIndent || (spaces === 0 && isDocumentMarker(next.text))) {
+      throw new YamlError(
+        next.n,
+        `a line inside the quoted scalar opened on line ${opened.n} indented less than the scalar's block; close the ${quote} on the line it belongs to, or indent this line further`,
+      );
+    }
+    scanner.text = next.raw.replace(/^[ \t]+/, "");
+    scanner.pos = 0;
+    scanner.line = next;
+    return empty > 0 ? "\n".repeat(empty) : single;
+  }
+  throw unterminatedQuote(opened, quote);
 }
 
 function unterminatedQuote(line: Line, quote: string): YamlError {
-  return new YamlError(line.n, `a string with no closing ${quote}; schemafit reads a quoted scalar written on a single line`);
+  return new YamlError(line.n, `a string with no closing ${quote}`);
 }

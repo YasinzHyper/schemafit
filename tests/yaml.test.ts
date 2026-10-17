@@ -176,6 +176,43 @@ m: schemafit
     expect(parseYaml("'don''t': 1\n")).toEqual({ "don't": 1 });
   });
 
+  it("folds a quoted scalar continued on the lines below it", () => {
+    expect(parseYaml('description: "Words to look for\n  in the title."\ntype: string\n')).toEqual({
+      description: "Words to look for in the title.",
+      type: "string",
+    });
+    expect(parseYaml("description: 'the user''s\n  name'\n")).toEqual({ description: "the user's name" });
+    // A blank line is a newline, and the white space at either end of a line is not content.
+    expect(parseYaml('a: "one   \n\n     two\n\n\n  three"\n')).toEqual({ a: "one\ntwo\n\nthree" });
+    // Except just inside the quotes, where it is.
+    expect(parseYaml("a: ' one\n  two '\n")).toEqual({ a: " one two " });
+    // A line of nothing but the closing quote folds its line break into a space.
+    expect(parseYaml('a: "one\n  "\n')).toEqual({ a: "one " });
+  });
+
+  it("reads the lines of a quoted scalar as content, not as YAML", () => {
+    expect(
+      parseYaml('a: "one # not a comment\n  # nor this\n  - nor a sequence: item"\nb: 2\n'),
+    ).toEqual({ a: "one # not a comment # nor this - nor a sequence: item", b: 2 });
+    expect(parseYaml("a: 'one\n  it''s \"two\"' # a comment\n")).toEqual({ a: 'one it\'s "two"' });
+  });
+
+  it("breaks a double-quoted line with an escaped line break, keeping the white space before it", () => {
+    expect(parseYaml('a: "abc\\\n  def"\n')).toEqual({ a: "abcdef" });
+    expect(parseYaml('a: "or \\t \\\n  \\ \tend"\n')).toEqual({ a: "or \t  \tend" });
+    expect(parseYaml('a: "one\\\n\n  two"\n')).toEqual({ a: "one\ntwo" });
+    // An escape at the end of a line is content, so the space it spells is not trailing white space.
+    expect(parseYaml('a: "one\\t\n  two"\n')).toEqual({ a: "one\t two" });
+    expect(parseYaml('a: "one\\ \n  two"\n')).toEqual({ a: "one  two" });
+  });
+
+  it("folds a quoted scalar in a sequence item, below its key, and as a whole document", () => {
+    expect(parseYaml('enum:\n  - "first\n    choice"\n  - second\n')).toEqual({ enum: ["first choice", "second"] });
+    expect(parseYaml("a:\n  'one\n  two'\n")).toEqual({ a: "one two" });
+    expect(parseYaml('- name: "a\n    b"\n  type: string\n')).toEqual([{ name: "a b", type: "string" }]);
+    expect(parseYaml('"one\ntwo"\n')).toBe("one two");
+  });
+
   it("strips comments and blank lines, and keeps a # that is part of a scalar", () => {
     expect(
       parseYaml(`# the schema
@@ -367,9 +404,21 @@ properties:
       "line 2: a comment inside a plain scalar spread over lines",
     );
     expect(refusal("a: 'one'\n  two\n")).toBe(
-      "line 2: a quoted scalar continued on the next line; schemafit reads a quoted scalar written on a single line",
+      'line 2: "two" is indented under a quoted scalar that already ended at its closing quote; move the text inside the quotes, or indent the line less',
     );
-    expect(refusal('a: "one"\n  two\n')).toContain("line 2: a quoted scalar continued on the next line");
+    expect(refusal('a: "one"\n  two\n')).toContain('line 2: "two" is indented under a quoted scalar that already ended');
+    expect(refusal('a: "one\n  two"\n  three\n')).toContain('line 3: "three" is indented under a quoted scalar');
+    expect(refusal('a: "one # note\nb: two\n')).toBe(
+      "line 2: a line inside the quoted scalar opened on line 1 indented less than the scalar's block; close the \" on the line it belongs to, or indent this line further",
+    );
+    expect(refusal('"a\n  b": 1\n')).toBe(
+      "line 2: a quoted key spread over lines, from line 1; YAML holds an implicit key to a single line, so write the key on one",
+    );
+    expect(refusal('a: "one\n  two" three\n')).toBe('line 2: unexpected "three" after the value');
+    expect(refusal('"one\n---\ntwo"\n')).toContain("line 2: a line inside the quoted scalar opened on line 1");
+    expect(refusal('a: "one\n\n  two\n')).toBe('line 1: a string with no closing "');
+    expect(refusal("a: 'one\n  two\n")).toBe("line 1: a string with no closing '");
+    expect(refusal('a: "one\n  \\q"\n')).toBe('line 2: unsupported escape "\\q" in a double-quoted string');
     expect(refusal("type: [string,\n  integer]\n")).toBe(
       "line 2: a flow collection continued on the next line; schemafit reads one written on a single line",
     );
