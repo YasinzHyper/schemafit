@@ -312,7 +312,7 @@ Validation keywords outside the documented JSON Schema subset.
 
 - Severity: **warn**
 - Source: <https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support>
-- Last verified: 2026-09-17
+- Last verified: 2026-10-18
 
 ### gemini/undocumented-format
 
@@ -322,4 +322,4 @@ String "format" values other than date-time, date, and time are undocumented.
 
 - Severity: **warn**
 - Source: <https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support>
-- Last verified: 2026-09-17
+- Last verified: 2026-10-18

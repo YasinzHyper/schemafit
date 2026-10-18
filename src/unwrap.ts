@@ -164,10 +164,25 @@ const FORMAT_SLOTS: readonly (readonly string[])[] = [
   ["output_format"],
 ];
 
+/**
+ * The output-format definitions a slot holds, each with the keys leading to it. A slot holds one,
+ * or, in Gemini's Interactions API, a list: its `response_format` is "ResponseFormat or array
+ * (ResponseFormat)", so a request can ask for JSON text beside an image or audio output, and the
+ * entry that carries the schema is found by its index rather than assumed to come first.
+ */
+function formatDefinitions(document: JsonSchema, keys: readonly string[]): [JsonSchema, string[]][] {
+  const slot = resolvePointer(document, joinPointer("", ...keys));
+  if (isJsonSchema(slot)) return [[slot, [...keys]]];
+  if (!Array.isArray(slot)) return [];
+  return slot.flatMap((entry, index): [JsonSchema, string[]][] =>
+    isJsonSchema(entry) ? [[entry, [...keys, String(index)]]] : [],
+  );
+}
+
 /** Whether `document` declares anything a request body declares a schema in. */
 function isRequestBody(document: JsonSchema): boolean {
   if (Array.isArray(document.tools)) return true;
-  return FORMAT_SLOTS.some((keys) => isJsonSchema(resolvePointer(document, joinPointer("", ...keys))));
+  return FORMAT_SLOTS.some((keys) => formatDefinitions(document, keys).length > 0);
 }
 
 /**
@@ -349,9 +364,10 @@ function unwrapDocument(document: unknown, prefix: readonly string[]): Unwrapped
     if (isRequestBody(document)) {
       const schemas: UnwrappedSchema[] = [];
       if (Array.isArray(document.tools)) schemas.push(...unwrapTools(document.tools, [...prefix, "tools"]));
-      for (const keys of FORMAT_SLOTS) {
-        const definition = resolvePointer(document, joinPointer("", ...keys));
-        if (isJsonSchema(definition)) schemas.push(...unwrapFormat(definition, [...prefix, ...keys]));
+      for (const slot of FORMAT_SLOTS) {
+        for (const [definition, keys] of formatDefinitions(document, slot)) {
+          schemas.push(...unwrapFormat(definition, [...prefix, ...keys]));
+        }
       }
       return schemas;
     }
