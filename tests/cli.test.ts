@@ -160,6 +160,30 @@ describe("cli", () => {
     expect(stderr).toContain("Nothing to fix");
   });
 
+  it("lints and fixes the schema of a Gemini request that lists its response formats", async () => {
+    const body = JSON.stringify({
+      model: "gemini-3.8-flash",
+      input: "Extract the ticket.",
+      response_format: [
+        {
+          type: "text",
+          mime_type: "application/json",
+          schema: { type: "object", properties: { id: { type: "string", pattern: "^T-" } } },
+        },
+      ],
+    });
+    const lint = await cli(["-p", "gemini", "-"], body);
+    expect(lint.stdout).toContain("<stdin>  (output format (schema))");
+    expect(lint.stdout).toContain('"pattern" is outside the documented subset');
+
+    const { stdout } = await cli(["--fix", "-p", "openai", "-"], body);
+    const fixed = JSON.parse(stdout);
+    expect(fixed.model).toBe("gemini-3.8-flash");
+    expect(fixed.response_format).toHaveLength(1);
+    expect(fixed.response_format[0]).toMatchObject({ type: "text", mime_type: "application/json" });
+    expect(fixed.response_format[0].schema).toMatchObject({ additionalProperties: false, required: ["id"] });
+  });
+
   it("reports every tool of a captured MCP tools/list response", async () => {
     const { code, stdout } = await cli([example("mcp-tools-list.json")]);
     expect(code).toBe(1);

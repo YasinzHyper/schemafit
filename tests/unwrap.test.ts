@@ -117,6 +117,25 @@ describe("unwrapAll", () => {
     expect(unwrapAll(body)[0]?.schema).toEqual(SCHEMA);
   });
 
+  it("finds the response schema in a Gemini list of response formats, by its index", () => {
+    // The Interactions API takes "ResponseFormat or array (ResponseFormat)", so the JSON text
+    // format can sit beside an image or audio one that declares no schema.
+    const body = {
+      model: "gemini-3.8-flash",
+      input: "…",
+      response_format: [
+        { type: "image", aspect_ratio: "1:1" },
+        { type: "text", mime_type: "application/json", schema: SCHEMA },
+      ],
+    };
+    expect(found(body)).toEqual(["/response_format/1/schema output format (schema) -"]);
+    expect(unwrapAll(body)[0]?.schema).toEqual(SCHEMA);
+
+    // A list that asks for no schema makes the document a request that declares none, rather
+    // than a bare schema with a "response_format" keyword of its own.
+    expect(found({ input: "…", response_format: [{ type: "text", mime_type: "text/plain" }] })).toEqual([]);
+  });
+
   it("ignores a response format that asks for no schema", () => {
     expect(found({ tools: [], response_format: { type: "json_object" } })).toEqual([]);
     expect(found({ text: { format: { type: "text" } } })).toEqual([]);

@@ -2,7 +2,7 @@ import type { Provider, RuleMeta } from "../types.js";
 import { allowedFormats, forbiddenKeywords } from "./shared.js";
 
 const SOURCE = "https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support";
-const VERIFIED = "2026-09-17";
+const VERIFIED = "2026-10-18";
 
 /**
  * Validation keywords outside the documented subset, which is: type, title, description,
