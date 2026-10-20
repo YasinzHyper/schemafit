@@ -117,6 +117,32 @@ input_schema:
     expect(parseYaml("type:\n  [string, integer]\n")).toEqual({ type: ["string", "integer"] });
   });
 
+  it("reads a flow collection continued on the lines below it", () => {
+    expect(parseYaml('type: [string,\n  "null"]\nminLength: 1\n')).toEqual({ type: ["string", "null"], minLength: 1 });
+    // The layout a formatter gives a list too long for its line.
+    expect(parseYaml('type:\n  [\n    string,\n    "null",\n  ]\ndescription: x\n')).toEqual({
+      type: ["string", "null"],
+      description: "x",
+    });
+    expect(parseYaml("items: { type: string,\n  enum: [a,\n    b] }\n")).toEqual({
+      items: { type: "string", enum: ["a", "b"] },
+    });
+    expect(parseYaml("- [a,\n   b]\n- c\n")).toEqual([["a", "b"], "c"]);
+    expect(parseYaml("{ a:\n    b }\n")).toEqual({ a: "b" });
+  });
+
+  it("reads comments and blank lines between the entries of a flow collection", () => {
+    expect(parseYaml("enum: [a, # the first\n  # a whole line\n\n  b]\nc: 1\n")).toEqual({ enum: ["a", "b"], c: 1 });
+    // A quoted scalar folds on over a line break inside a collection as it does in a block, and
+    // what ends the line it closes on may be a comment.
+    expect(parseYaml('enum: ["one\n  two", "x" # note\n  , y]\n')).toEqual({ enum: ["one two", "x", "y"] });
+  });
+
+  it("reads a JSON document written over several lines as the YAML it also is", () => {
+    const json = { type: "object", properties: { tags: { type: "array", items: { type: "string" } } }, required: ["tags"] };
+    expect(parseYaml(JSON.stringify(json, null, 2))).toEqual(json);
+  });
+
   it("resolves plain scalars the way the YAML 1.2 core schema does", () => {
     expect(
       parseYaml(`a: null
@@ -419,11 +445,26 @@ properties:
     expect(refusal('a: "one\n\n  two\n')).toBe('line 1: a string with no closing "');
     expect(refusal("a: 'one\n  two\n")).toBe("line 1: a string with no closing '");
     expect(refusal('a: "one\n  \\q"\n')).toBe('line 2: unsupported escape "\\q" in a double-quoted string');
-    expect(refusal("type: [string,\n  integer]\n")).toBe(
-      "line 2: a flow collection continued on the next line; schemafit reads one written on a single line",
+    expect(refusal("type: [string,\n")).toBe('line 1: a flow collection with no closing "]"');
+    expect(refusal("a: { b: [1,\n    2]\n")).toBe('line 1: a flow collection with no closing "}"');
+    expect(refusal("type: [string,\nb: 1\n")).toBe(
+      "line 2: a line inside the flow collection opened on line 1 indented less than the collection's block; close the collection on the line it belongs to, or indent this line further",
     );
-    expect(refusal("a: { b: 1,\n  c: 2 }\n")).toContain("line 2: a flow collection continued on the next line");
-    expect(refusal("type: [string,\n")).toContain('line 1: a flow collection with no closing "]"');
+    expect(refusal("type: [string,\n]\n")).toBe(
+      'line 2: the closing "]" of the flow collection opened on line 1 is not indented further than the block the collection sits in, which YAML asks of every line of it; indent it further',
+    );
+    expect(refusal("a:\n  b: {\n    c: 1\n  }\n")).toContain('line 4: the closing "}" of the flow collection opened on line 2');
+    expect(refusal("[a,\n---\nb]\n")).toBe(
+      "line 2: a document marker inside the flow collection opened on line 1; close the collection above it",
+    );
+    expect(refusal("type: [string\n  integer]\n")).toBe(
+      'line 2: expected "," or "]" in a flow collection, found "integer]" on the line below the entry before it; a plain scalar inside a flow collection is read on one line, so quote one that wraps, or put a comma after the entry above if they are two',
+    );
+    expect(refusal("a: { b: one\n  two }\n")).toContain('line 2: expected "," or "}" in a flow collection, found "two }" on the line below');
+    expect(refusal("type: [string]\n  extra\n")).toBe(
+      'line 2: "extra" is indented under a flow collection that already ended at its closing bracket; move the text inside the brackets, or indent the line less',
+    );
+    expect(refusal("type: [string,\n  integer] x\n")).toBe('line 2: unexpected "x" after the value');
     expect(refusal('a: "unterminated\n')).toContain('line 1: a string with no closing "');
     expect(refusal("description: |+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
     expect(refusal("description: |2\n  one\n")).toContain("line 1: the block scalar header");

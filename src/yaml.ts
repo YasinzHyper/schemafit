@@ -1,11 +1,12 @@
 /**
  * A reader for the YAML a JSON Schema is written in.
  *
- * It covers what schemas use — block mappings and sequences, flow collections, quoted and
+ * It covers what schemas use — block mappings and sequences, flow collections over as many
+ * lines as they need, quoted and
  * plain scalars spread over as many lines as they need, literal and folded block scalars,
  * comments, the YAML 1.2 core resolution of `null`, `true`, numbers — and refuses the rest by
  * name instead of guessing at it: an anchor, an alias, a tag, a merge key, a second document, a
- * tab in the indentation, a flow collection continued on the next line. A
+ * tab in the indentation, a plain scalar inside a flow collection continued on the next line. A
  * linter that misreads its input reports findings against a schema nobody wrote, so a construct
  * this cannot read with certainty is an error naming the line it is on rather than a value that
  * may or may not be what the file said.
@@ -46,17 +47,19 @@ interface Scanner {
   text: string;
   pos: number;
   line: Line;
+  /** Where a flow collection written in block context finds the lines it runs on over. */
+  more?: Continuation;
 }
 
 /**
- * Where a quoted scalar written in block context finds the lines it runs on over. A quoted
- * scalar anywhere else — a key, or inside a flow collection — has to close on its own line.
+ * Where a quoted scalar or a flow collection written in block context finds the lines it runs
+ * on over. A quoted key has to close on its own line.
  */
-interface QuotedContinuation {
+interface Continuation {
   state: State;
-  /** The indentation a line of the scalar below its first has to clear. */
+  /** The indentation a line of the node below its first has to clear. */
   minIndent: number;
-  /** The line the scalar opens on, which an unclosed quote is reported against. */
+  /** The line the node opens on, which an unclosed quote or bracket is reported against. */
   opened: Line;
 }
 
@@ -307,22 +310,43 @@ function parseValueOnLine(state: State, line: Line, rest: string, indent: number
  * runs on over every line indented to at least `minIndent`, and they are folded into it, which
  * is YAML 1.2 section 7.3.3 (production 135, `ns-plain-multi-line(n,c)`) and how a description
  * long enough to wrap is written without a block scalar. A quoted scalar runs on to its closing
- * quote instead, over lines held to the same indentation. A flow collection may span lines in
- * YAML as well, but this reader takes it from the one line it is written on, so a line below
- * one is refused by name rather than folded in.
+ * quote instead, over lines held to the same indentation, and a flow collection to its closing
+ * bracket.
  */
 function parseScalarOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   if (text.startsWith('"') || text.startsWith("'")) return parseQuotedOnLines(state, line, text, minIndent);
+  if (text.startsWith("[") || text.startsWith("{")) return parseFlowOnLines(state, line, text, minIndent);
   const continuation = takeContinuation(state, minIndent);
-  const next = continuation[0];
-  if (next === undefined) return parseInline(text, line);
-  if (text.startsWith("[") || text.startsWith("{")) {
+  if (continuation[0] === undefined) return parseInline(text, line);
+  return resolvePlain(foldPlain(line, text, continuation), line);
+}
+
+/**
+ * A flow collection written as a block value, which YAML 1.2 lets run on over as many lines as
+ * it needs before its closing bracket: between two of its entries, around a comma or a colon,
+ * a line break is white space like any other (production 137, `c-flow-sequence(n,c)`, and its
+ * `s-separate(n,c)`), and a comment may end any of its lines. Every line has to clear the
+ * indentation of the block the collection sits in (production 197, `s-l+flow-in-block(n)`,
+ * which reads it at `n+1`), which is the formatter's `type: [string,` with `"null"]` indented
+ * under it. Like a quoted scalar, the collection is over at its closing bracket, so a line
+ * indented under it continues nothing.
+ */
+function parseFlowOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
+  const scanner: Scanner = { text, pos: 0, line, more: { state, minIndent, opened: line } };
+  const value = parseFlowNode(scanner, false);
+  skipSpaces(scanner);
+  const after = scanner.text.slice(scanner.pos);
+  if (after !== "" && !after.startsWith("#")) {
+    throw new YamlError(scanner.line.n, `unexpected ${JSON.stringify(after)} after the value`);
+  }
+  const below = takeContinuation(state, minIndent)[0];
+  if (below !== undefined) {
     throw new YamlError(
-      next.n,
-      "a flow collection continued on the next line; schemafit reads one written on a single line",
+      below.n,
+      `${JSON.stringify(below.text)} is indented under a flow collection that already ended at its closing bracket; move the text inside the brackets, or indent the line less`,
     );
   }
-  return resolvePlain(foldPlain(line, text, continuation), line);
+  return value;
 }
 
 /**
@@ -621,7 +645,8 @@ function parseInline(text: string, line: Line): unknown {
 }
 
 function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
-  skipSpaces(scanner);
+  if (inFlow) skipSeparation(scanner);
+  else skipSpaces(scanner);
   switch (scanner.text[scanner.pos]) {
     case undefined:
       return null;
@@ -631,7 +656,7 @@ function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
       return parseFlowMapping(scanner);
     case '"':
     case "'":
-      return readQuoted(scanner);
+      return readQuoted(scanner, scanner.more);
     default:
       return resolvePlain(readPlain(scanner, inFlow), scanner.line);
   }
@@ -640,19 +665,20 @@ function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
 function parseFlowSequence(scanner: Scanner): unknown[] {
   scanner.pos += 1;
   const items: unknown[] = [];
-  skipSpaces(scanner);
+  skipSeparation(scanner);
   if (scanner.text[scanner.pos] === "]") {
     scanner.pos += 1;
     return items;
   }
   for (;;) {
     items.push(parseFlowNode(scanner, true));
-    skipSpaces(scanner);
+    const before = scanner.line;
+    skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     scanner.pos += 1;
     if (char === "]") return items;
-    if (char !== ",") throw flowError(scanner, '"," or "]"', "]");
-    skipSpaces(scanner);
+    if (char !== ",") throw flowError(scanner, '"," or "]"', "]", before);
+    skipSeparation(scanner);
     // A trailing comma, which YAML allows and JSON does not.
     if (scanner.text[scanner.pos] === "]") {
       scanner.pos += 1;
@@ -664,24 +690,25 @@ function parseFlowSequence(scanner: Scanner): unknown[] {
 function parseFlowMapping(scanner: Scanner): Record<string, unknown> {
   scanner.pos += 1;
   const mapping: Record<string, unknown> = {};
-  skipSpaces(scanner);
+  skipSeparation(scanner);
   if (scanner.text[scanner.pos] === "}") {
     scanner.pos += 1;
     return mapping;
   }
   for (;;) {
-    skipSpaces(scanner);
+    skipSeparation(scanner);
     const key = parseFlowKey(scanner);
     if (Object.prototype.hasOwnProperty.call(mapping, key)) {
       throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
     }
     mapping[key] = parseFlowNode(scanner, true);
-    skipSpaces(scanner);
+    const before = scanner.line;
+    skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     scanner.pos += 1;
     if (char === "}") return mapping;
-    if (char !== ",") throw flowError(scanner, '"," or "}"', "}");
-    skipSpaces(scanner);
+    if (char !== ",") throw flowError(scanner, '"," or "}"', "}", before);
+    skipSeparation(scanner);
     if (scanner.text[scanner.pos] === "}") {
       scanner.pos += 1;
       return mapping;
@@ -712,16 +739,69 @@ function parseFlowKey(scanner: Scanner): string {
   return key;
 }
 
-/** Why a flow collection stopped making sense: unterminated, or something else where a comma was. */
-function flowError(scanner: Scanner, expected: string, close: string): YamlError {
+/**
+ * Why a flow collection stopped making sense: unterminated, or something else where a comma
+ * was. Something on a line below the entry it follows is, to YAML, the same plain scalar
+ * folded on over the line break, which this reader leaves alone the way it leaves a plain key
+ * spread over lines, so the error says which of the two the file most likely meant.
+ */
+function flowError(scanner: Scanner, expected: string, close: string, entryLine: Line): YamlError {
   if (scanner.pos > scanner.text.length) {
-    return new YamlError(scanner.line.n, `a flow collection with no closing "${close}"; schemafit reads one written on a single line`);
+    const opened = scanner.more?.opened ?? scanner.line;
+    return new YamlError(opened.n, `a flow collection with no closing "${close}"`);
   }
-  return new YamlError(scanner.line.n, `expected ${expected} in a flow collection, found ${JSON.stringify(scanner.text.slice(scanner.pos - 1))}`);
+  const found = JSON.stringify(scanner.text.slice(scanner.pos - 1));
+  if (scanner.line !== entryLine) {
+    return new YamlError(
+      scanner.line.n,
+      `expected ${expected} in a flow collection, found ${found} on the line below the entry before it; a plain scalar inside a flow collection is read on one line, so quote one that wraps, or put a comma after the entry above if they are two`,
+    );
+  }
+  return new YamlError(scanner.line.n, `expected ${expected} in a flow collection, found ${found}`);
 }
 
 function skipSpaces(scanner: Scanner): void {
   while (scanner.pos < scanner.text.length && /\s/.test(scanner.text[scanner.pos] ?? "")) scanner.pos += 1;
+}
+
+/**
+ * The white space between two tokens of a flow collection, which for one written in block
+ * context takes in the line breaks, the empty lines, and the comments, up to the next line
+ * that holds content (`s-separate(n,c)`, production 80). A line indented less than the block
+ * the collection sits in is an error rather than the end of it, because only the closing
+ * bracket ends one, and the likeliest reason for such a line is a bracket left open above it.
+ */
+function skipSeparation(scanner: Scanner): void {
+  for (;;) {
+    skipSpaces(scanner);
+    const { text, pos } = scanner;
+    // A line a quoted scalar ran on to is read as written, comment and all.
+    if (text[pos] === "#" && (pos === 0 || /\s/.test(text[pos - 1] ?? ""))) scanner.pos = text.length;
+    if (scanner.pos < scanner.text.length || scanner.more === undefined) return;
+    const { state, minIndent, opened } = scanner.more;
+    const next = peek(state);
+    if (next === undefined) return;
+    if (next.indent === 0 && isDocumentMarker(next.text)) {
+      throw new YamlError(next.n, `a document marker inside the flow collection opened on line ${opened.n}; close the collection above it`);
+    }
+    const close = next.text[0];
+    if (next.indent < minIndent && (close === "]" || close === "}")) {
+      throw new YamlError(
+        next.n,
+        `the closing "${close}" of the flow collection opened on line ${opened.n} is not indented further than the block the collection sits in, which YAML asks of every line of it; indent it further`,
+      );
+    }
+    if (next.indent < minIndent) {
+      throw new YamlError(
+        next.n,
+        `a line inside the flow collection opened on line ${opened.n} indented less than the collection's block; close the collection on the line it belongs to, or indent this line further`,
+      );
+    }
+    state.index += 1;
+    scanner.text = next.text;
+    scanner.pos = 0;
+    scanner.line = next;
+  }
 }
 
 /**
@@ -734,6 +814,7 @@ function readPlain(scanner: Scanner, inFlow: boolean): string {
   while (end < scanner.text.length) {
     const char = scanner.text[end] ?? "";
     if (inFlow && ",[]{}".includes(char)) break;
+    if (char === "#" && /\s/.test(scanner.text[end - 1] ?? "")) break;
     end += 1;
   }
   const text = scanner.text.slice(scanner.pos, end).trimEnd();
@@ -773,11 +854,11 @@ function rejectIndicators(line: Line, text: string): void {
  * the empty lines after a break become one newline each. The white space just inside the quotes
  * is content, so `" one` keeps its leading space.
  */
-function readQuoted(scanner: Scanner, more?: QuotedContinuation): string {
+function readQuoted(scanner: Scanner, more?: Continuation): string {
   return scanner.text[scanner.pos] === '"' ? readDoubleQuoted(scanner, more) : readSingleQuoted(scanner, more);
 }
 
-function readDoubleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
+function readDoubleQuoted(scanner: Scanner, more?: Continuation): string {
   let out = "";
   // How much of `out` is safe from the trailing white space a line break discards: an escaped
   // tab or space is content wherever it sits.
@@ -831,7 +912,7 @@ function readDoubleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
   }
 }
 
-function readSingleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
+function readSingleQuoted(scanner: Scanner, more?: Continuation): string {
   let out = "";
   let kept = 0;
   scanner.pos += 1;
@@ -865,7 +946,7 @@ function readSingleQuoted(scanner: Scanner, more?: QuotedContinuation): string {
  * is an error rather than the end of the scalar, because only the closing quote ends one, and
  * the likeliest reason for such a line is a quote left open on a line above it.
  */
-function nextQuotedLine(scanner: Scanner, more: QuotedContinuation, quote: string, single: string): string {
+function nextQuotedLine(scanner: Scanner, more: Continuation, quote: string, single: string): string {
   const { state, minIndent, opened } = more;
   let empty = 0;
   while (state.index < state.lines.length) {
