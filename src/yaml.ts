@@ -496,8 +496,14 @@ function parseSequence(state: State, indent: number, atKeyIndent: boolean): unkn
 /**
  * A literal (`|`) or folded (`>`) block scalar: the lines below the key that are indented
  * further than it. The default chomping keeps one trailing newline and `-` strips it; `+`,
- * which keeps every trailing newline, and an explicit indentation indicator are refused rather
- * than approximated.
+ * which keeps every trailing newline, is refused rather than approximated.
+ *
+ * The block's indentation is that of its first line of content, unless the header gives it
+ * with an indentation indicator: a digit from 1 to 9, before or after the chomping indicator,
+ * which YAML 1.2 section 8.1.1.1 adds to "the indentation level of the block scalar" — the
+ * column of the key, or of the dash for a sequence item. It is the only way to write a block
+ * whose first line of content is itself indented, so what that line holds past the indicated
+ * indentation is content like any other line's.
  *
  * What a line is here is read off `raw`, not off the comment-stripped `text` the rest of the
  * parser works from: a block scalar is scalar content, and YAML has no comments inside it
@@ -507,20 +513,22 @@ function parseSequence(state: State, indent: number, atKeyIndent: boolean): unkn
  * ends it, whatever it looks like.
  */
 function parseBlockScalar(state: State, line: Line, header: string, indent: number): string {
-  const match = /^([|>])([-+]?)$/.exec(header);
+  const match = /^([|>])(?:([1-9])([-+]?)|([-+]?)([1-9]?))$/.exec(header);
   if (match === null) {
     throw new YamlError(
       line.n,
-      `the block scalar header ${JSON.stringify(header)} is not supported; use "|", "|-", ">", or ">-", and quote a scalar that starts with "|" or ">"`,
+      `the block scalar header ${JSON.stringify(header)} is not supported; use "|" or ">", followed by "-" to strip the final line break or a digit from 1 to 9 to give the indentation, and quote a scalar that starts with "|" or ">"`,
     );
   }
-  const [, style, chomping] = match;
+  const style = match[1];
+  const indicator = match[2] ?? match[5];
+  const chomping = match[3] ?? match[4];
   if (chomping === "+") {
     throw new YamlError(line.n, 'the "keep" chomping indicator ("+") is not supported; use "|" or "|-"');
   }
 
   const content: string[] = [];
-  let blockIndent: number | undefined;
+  let blockIndent = indicator ? indent + Number(indicator) : undefined;
   // The empty lines above the block's first line of content, held until that line fixes the
   // indentation they are measured against.
   const leadingEmpty: Line[] = [];
@@ -540,7 +548,10 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
       state.index += 1;
       continue;
     }
-    if (!blank && next.indent < blockIndent) break;
+    if (!blank && next.indent < blockIndent) {
+      if (indicator) throw lessThanIndicated(next, blockIndent, header);
+      break;
+    }
     // Whatever a line holds past the block's indentation is content, spaces included, so a
     // line of nothing but spaces is a more indented line too where it has some to spare.
     content.push(next.raw.slice(blockIndent));
@@ -555,6 +566,18 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
 
   const text = style === "|" ? content.join("\n") : fold(content);
   return chomping === "-" ? text : `${text}\n`;
+}
+
+/**
+ * A line inside a block scalar indented less than its indentation indicator says, which YAML
+ * 1.2 section 8.1.1.1 calls an error ("The text is less indented than the indicated level")
+ * rather than the end of the block: the line is still indented under the key.
+ */
+function lessThanIndicated(line: Line, blockIndent: number, header: string): YamlError {
+  return new YamlError(
+    line.n,
+    `a line inside a block scalar indented less (${line.indent}) than its header ${JSON.stringify(header)} says its content is (${blockIndent}); indent the line further, or lower the indentation indicator`,
+  );
 }
 
 /**

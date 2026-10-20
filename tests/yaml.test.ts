@@ -321,6 +321,27 @@ properties:
     expect(parseYaml("a: one\n# at the mapping's own indentation\nb: 3\n")).toEqual({ a: "one", b: 3 });
   });
 
+  it("reads a block scalar whose header gives its indentation", () => {
+    // YAML 1.2 section 8.1.1.1, Examples 8.1 and 8.2: the indicator is added to the column of
+    // the dash or the key, and what a line holds past that is content, leading spaces included.
+    expect(parseYaml("- |1\n  explicit\n")).toEqual([" explicit\n"]);
+    expect(parseYaml("- >1 # a comment after the header\n  folded\n")).toEqual([" folded\n"]);
+    expect(parseYaml("- >1-\n  strip\n")).toEqual([" strip"]);
+    expect(parseYaml("d: |-2\n    x\n")).toEqual({ d: "  x" });
+    // The first line of content is the one auto-detection would have taken the indentation from.
+    expect(parseYaml("d: |2\n    indented\n  next\n")).toEqual({ d: "  indented\nnext\n" });
+    expect(parseYaml("a:\n  b: >2\n      example\n    prose\n    folds\nc: 1\n")).toEqual({
+      a: { b: "  example\nprose folds\n" },
+      c: 1,
+    });
+    expect(parseYaml("- k: |2\n      x\n")).toEqual([{ k: "  x\n" }]);
+    // A leading blank line is no longer ambiguous once the indentation is given, so the spaces
+    // it holds past it are content.
+    expect(parseYaml("d: |1\n   \n  x\n")).toEqual({ d: "  \n x\n" });
+    // Without content, the indicator changes nothing.
+    expect(parseYaml("d: |2\ne: 1\n")).toEqual({ d: "", e: 1 });
+  });
+
   it("keeps what a block scalar's line holds past the block's indentation, spaces included", () => {
     expect(parseYaml("d: |\n  a\n   \n")).toEqual({ d: "a\n \n" });
     expect(parseYaml("d: |-\n  a\n   \n")).toEqual({ d: "a\n " });
@@ -426,7 +447,15 @@ properties:
     expect(refusal("type: [string,\n")).toContain('line 1: a flow collection with no closing "]"');
     expect(refusal('a: "unterminated\n')).toContain('line 1: a string with no closing "');
     expect(refusal("description: |+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
-    expect(refusal("description: |2\n  one\n")).toContain("line 1: the block scalar header");
+    expect(refusal("description: |0\n  one\n")).toBe(
+      'line 1: the block scalar header "|0" is not supported; use "|" or ">", followed by "-" to strip the final line break or a digit from 1 to 9 to give the indentation, and quote a scalar that starts with "|" or ">"',
+    );
+    expect(refusal("description: |10\n  one\n")).toContain('line 1: the block scalar header "|10"');
+    expect(refusal("description: >2+\n  one\n")).toContain('line 1: the "keep" chomping indicator ("+")');
+    expect(refusal("- |2\n text\n")).toBe(
+      'line 2: a line inside a block scalar indented less (1) than its header "|2" says its content is (2); indent the line further, or lower the indentation indicator',
+    );
+    expect(refusal("a: >3\n   one\n  two\n")).toContain("line 3: a line inside a block scalar indented less (2)");
     expect(refusal("d: |\n   \n  one\n")).toBe(
       "line 2: a blank line inside a block scalar holding more spaces (3) than the block's first line of content is indented (2); leave it empty",
     );
