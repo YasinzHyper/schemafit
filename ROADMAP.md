@@ -40,7 +40,9 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Fold a quoted scalar continued on the next line, which YAML folds exactly as it folds a plain one and the reader refuses by name today, now that the folding is there to reuse
 - [x] Read a flow collection written over more than one line (`type: [string,` / `  "null"]`), which the reader refuses by name today and which a formatter produces for a list long enough to wrap
 - [x] Read a block scalar with an explicit indentation indicator (`|2`, `>2`), which the reader refuses by name today. It is the only way to write a block whose first line of content is itself indented, which auto-detection reads as the block's indentation instead, and now that the more indented lines of a `>` block are kept, that is the one shape of them left out
-- [ ] Write YAML back out, so `--fix --write` can rewrite a `.yaml` file in place instead of pointing at `--out`. Needs an emitter, and a decision about the comments a rewrite cannot keep
+- [x] Write YAML back out, so `--fix --write` can rewrite a `.yaml` file in place instead of pointing at `--out`. The comments a rewrite cannot keep are not dropped: `--write` refuses a file that holds one and names its lines
+- [ ] Keep the comments of a YAML file `--fix --write` rewrites, by carrying each one over to the line of the key it sits on or above, so a commented file can be fixed in place instead of refused
+- [ ] Keep the layout of a YAML file a rewrite touches: the sequence at its key's indentation, the folded (`>`) description wrapped where the file wrapped it, which the writer gives up today for its own two-space block style and a literal block
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [ ] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
 - [ ] Translate OpenAPI 3.0's `nullable: true` into the `type` array or `anyOf` with `null` that JSON Schema spells it as, under `--openapi`, which reads it as the keyword it is today

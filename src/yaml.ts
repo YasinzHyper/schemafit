@@ -40,6 +40,13 @@ interface Line {
 interface State {
   lines: Line[];
   index: number;
+  /**
+   * The lines read as scalar content off `raw`: a block scalar's, and those a quoted scalar runs
+   * on over. What `tokenize` took for a comment on one of them is a character of the string.
+   */
+  content: Set<number>;
+  /** The comments found after a quoted scalar closed on a line of `content`, or between flow entries. */
+  comments: Set<number>;
 }
 
 /** One line being read left to right, for the scalars and flow collections written on it. */
@@ -115,8 +122,28 @@ const HEX_ESCAPES: Record<string, number> = { x: 2, u: 4, U: 8 };
  * not cover, naming the construct and the line, and for one that is not valid YAML at all.
  */
 export function parseYaml(text: string): unknown {
-  const state: State = { lines: tokenize(text), index: 0 };
+  return readYaml(text).value;
+}
 
+/**
+ * Reads a YAML document into the value it describes, together with the lines that hold a
+ * comment, which the value has no room for: a rewrite written from the value alone would drop
+ * them. A `#` inside a block scalar or a quoted scalar is a character of the string, not one.
+ */
+export function readYaml(text: string): { value: unknown; comments: number[] } {
+  const state: State = { lines: tokenize(text), index: 0, content: new Set(), comments: new Set() };
+  const value = parseDocument(state);
+  const comments = state.lines
+    .filter(({ n, raw, text: content, comment }) => {
+      if (state.comments.has(n)) return true;
+      if (state.content.has(n)) return false;
+      return comment || (content === "" && raw.trim() !== "");
+    })
+    .map(({ n }) => n);
+  return { value, comments };
+}
+
+function parseDocument(state: State): unknown {
   const first = peek(state);
   if (first === undefined) return null;
   if (first.text === DOCUMENT_START) state.index += 1;
@@ -336,6 +363,7 @@ function parseFlowOnLines(state: State, line: Line, text: string, minIndent: num
   const value = parseFlowNode(scanner, false);
   skipSpaces(scanner);
   const after = scanner.text.slice(scanner.pos);
+  if (after.startsWith("#")) state.comments.add(scanner.line.n);
   if (after !== "" && !after.startsWith("#")) {
     throw new YamlError(scanner.line.n, `unexpected ${JSON.stringify(after)} after the value`);
   }
@@ -369,6 +397,7 @@ function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: n
     const scanner: Scanner = { text: written, pos: 0, line };
     value = readQuoted(scanner, { state, minIndent, opened: line });
     const after = scanner.text.slice(scanner.pos);
+    if (/^[ \t]+#/.test(after)) state.comments.add(scanner.line.n);
     if (!/^([ \t]*|[ \t]+#.*)$/.test(after)) {
       if (scanner.line !== line && after.trimStart().startsWith(":")) {
         throw new YamlError(
@@ -569,6 +598,7 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
     if (blockIndent === undefined) {
       leadingEmpty.push(next);
       content.push("");
+      state.content.add(next.n);
       state.index += 1;
       continue;
     }
@@ -579,6 +609,7 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
     // Whatever a line holds past the block's indentation is content, spaces included, so a
     // line of nothing but spaces is a more indented line too where it has some to spare.
     content.push(next.raw.slice(blockIndent));
+    state.content.add(next.n);
     state.index += 1;
   }
 
@@ -799,7 +830,10 @@ function skipSeparation(scanner: Scanner): void {
     skipSpaces(scanner);
     const { text, pos } = scanner;
     // A line a quoted scalar ran on to is read as written, comment and all.
-    if (text[pos] === "#" && (pos === 0 || /\s/.test(text[pos - 1] ?? ""))) scanner.pos = text.length;
+    if (text[pos] === "#" && (pos === 0 || /\s/.test(text[pos - 1] ?? ""))) {
+      scanner.pos = text.length;
+      scanner.more?.state.comments.add(scanner.line.n);
+    }
     if (scanner.pos < scanner.text.length || scanner.more === undefined) return;
     const { state, minIndent, opened } = scanner.more;
     const next = peek(state);
@@ -976,6 +1010,7 @@ function nextQuotedLine(scanner: Scanner, more: Continuation, quote: string, sin
     const next = state.lines[state.index];
     if (next === undefined) break;
     state.index += 1;
+    state.content.add(next.n);
     if (/^[ \t]*$/.test(next.raw)) {
       empty += 1;
       continue;

@@ -19,7 +19,7 @@ node dist/bin.js examples/ticket.json   # try the CLI after `npm run build`
 - `src/refs.ts`: local `$ref` resolution and cycle detection.
 - `src/providers/<id>.ts`: one file per provider, holding its rules. `shared.ts` has rule factories used by more than one provider.
 - `src/lint.ts`, `src/unwrap.ts`, `src/cli.ts`, `src/format/`: the engine, tool-definition unwrapping, CLI, and output.
-- `src/yaml.ts`: the reader for a `.yaml` input. It covers the plain YAML a schema is written in and refuses the rest by name, because a misread schema is worse than an error.
+- `src/yaml.ts`: the reader for a `.yaml` input. It covers the plain YAML a schema is written in and refuses the rest by name, because a misread schema is worse than an error. `src/yaml-write.ts` writes a rewrite back as YAML and reads it back before returning it.
 - `tests/<provider>.test.ts`: one positive and one negative case per rule, built with `strictObject()` from `tests/helpers.ts` so each test isolates one rule.
 - `docs/rules.md`: generated. Never edit by hand.
 
