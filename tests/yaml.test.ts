@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { YamlError, parseYaml } from "../src/yaml.js";
+import { YamlError, parseYaml, readYaml } from "../src/yaml.js";
 
 /** The error a document is refused with, for the assertions on what the reader declines. */
 function refusal(text: string): string {
@@ -511,5 +511,36 @@ properties:
     expect(refusal('a: "x" y\n')).toBe('line 1: unexpected "y" after the value');
     expect(refusal('a: "\\q"\n')).toBe('line 1: unsupported escape "\\q" in a double-quoted string');
     expect(refusal('a: "\\u00g1"\n')).toBe('line 1: the escape "\\u" needs 4 hexadecimal digits');
+  });
+});
+
+describe("readYaml", () => {
+  it("names the lines that hold a comment, on their own or after a value", () => {
+    const { value, comments } = readYaml(`# The schema.
+type: object # always
+properties:
+  # one field
+  tags: [a, # first
+    b]
+  title: "quoted # not a comment" # but this is
+`);
+    expect(value).toEqual({ type: "object", properties: { tags: ["a", "b"], title: "quoted # not a comment" } });
+    expect(comments).toEqual([1, 2, 4, 5, 7]);
+  });
+
+  it("leaves out a # that is a character of a block scalar or of a quoted scalar spread over lines", () => {
+    const { comments } = readYaml(`description: |
+  # a heading in the description
+  text
+title: "one
+  # two" # a comment after the closing quote
+note: 'three
+  # four'
+`);
+    expect(comments).toEqual([5]);
+  });
+
+  it("finds no comment in a document without one", () => {
+    expect(readYaml("type: string\ndescription: issue#12, not a comment\n").comments).toEqual([]);
   });
 });
