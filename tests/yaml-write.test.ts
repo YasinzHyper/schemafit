@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { stringifyYaml } from "../src/yaml-write.js";
-import { parseYaml } from "../src/yaml.js";
+import { parseYaml, readYaml } from "../src/yaml.js";
 
 const example = (name: string): string => fileURLToPath(new URL(`../examples/${name}`, import.meta.url));
 
@@ -113,5 +113,65 @@ b: |-
 
   it("refuses a value JSON cannot hold", () => {
     expect(() => stringifyYaml(undefined)).toThrow(TypeError);
+  });
+
+  it("writes the comments of a file back where they were", () => {
+    const text = `# The schema.
+type: object # always
+properties: # the fields
+  # one field
+  tags:
+    type: array
+    items: [string] # strings
+required: [tags]
+# The end.
+`;
+    const { value, attached } = readYaml(text);
+    expect(stringifyYaml(value, attached)).toBe(text);
+  });
+
+  it("puts a comment after the first line of its entry, and one above the first key of a sequence item above the dash", () => {
+    const value = { items: [{ name: "a", schema: { type: "object" } }], description: "one\ntwo" };
+    const comments = [
+      { line: 1, text: "# above the item", pointer: "/items/0", trailing: false },
+      { line: 2, text: "# above its first key", pointer: "/items/0/name", trailing: false },
+      { line: 3, text: "# after the dash", pointer: "/items/0", trailing: true },
+      { line: 4, text: "# after a key with a block below", pointer: "/items/0/schema", trailing: true },
+      { line: 5, text: "# after a block scalar's header", pointer: "/description", trailing: true },
+    ];
+    expect(stringifyYaml(value, comments)).toBe(`items:
+  # above the item
+  # above its first key
+  - name: a # after the dash
+    schema: # after a key with a block below
+      type: object
+description: |- # after a block scalar's header
+  one
+  two
+`);
+  });
+
+  it("keeps a list of scalars in block style when one of its items has a comment", () => {
+    const text = "enum:\n  - open # first\n  # the last\n  - closed\ntype: [string, \"null\"]\n";
+    const { value, attached } = readYaml(text);
+    expect(stringifyYaml(value, attached)).toBe(text);
+  });
+
+  it("reads every YAML example back with its comments", async () => {
+    for (const name of ["agent-tools.yaml"]) {
+      const { value, attached } = readYaml(await readFile(example(name), "utf8"));
+      const written = readYaml(stringifyYaml(value, attached));
+      expect(written.value).toEqual(value);
+      expect(written.attached.map(({ text, pointer }) => [text, pointer])).toEqual(attached.map(({ text, pointer }) => [text, pointer]));
+    }
+  });
+
+  it("refuses a comment on an entry the value does not hold, or one that is not a comment", () => {
+    expect(() => stringifyYaml({ a: 1 }, [{ line: 1, text: "# gone", pointer: "/b", trailing: false }])).toThrow(
+      "1 of the comments belong to an entry the value does not hold",
+    );
+    expect(() => stringifyYaml({ a: 1 }, [{ line: 4, text: "not one", pointer: "/a", trailing: true }])).toThrow(
+      'the comment of line 4 is not one line starting with "#"',
+    );
   });
 });

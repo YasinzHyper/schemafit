@@ -9,9 +9,14 @@
  * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
+ *
+ * Comments read off a file go back to the entries they belong to: one that sat on a line of its
+ * own goes on a line above its entry, at the entry's indentation, and one that sat after a value
+ * goes after the entry's first line.
  */
 
-import { parseYaml } from "./yaml.js";
+import { joinPointer } from "./pointer.js";
+import { type YamlComment, parseYaml, readYaml } from "./yaml.js";
 
 const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
@@ -26,17 +31,40 @@ const UNPRINTABLE_IN_BLOCK = /[\0-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800
 /** The plain scalars YAML 1.1 resolves to a boolean, which 1.2 left as strings. */
 const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
 
+/** The comments to write, by the JSON Pointer of the entry each one belongs to. */
+interface Comments {
+  above: Map<string, string[]>;
+  after: Map<string, string>;
+}
+
 /**
- * Writes a JSON value as YAML. Throws a `TypeError` for a value JSON cannot hold either, and an
- * `Error` if what it wrote does not read back as the value, which would be a bug in the writer.
+ * Writes a JSON value as YAML, with the `comments` given, which `readYaml` reads off a file as
+ * `attached`. Throws a `TypeError` for a value JSON cannot hold either, or for a comment whose
+ * entry the value does not hold, and an `Error` if what it wrote does not read back as the value
+ * and the comments, which would be a bug in the writer.
  */
-export function stringifyYaml(value: unknown): string {
+export function stringifyYaml(value: unknown, comments: readonly YamlComment[] = []): string {
   const json = JSON.stringify(value);
   if (json === undefined) throw new TypeError("stringifyYaml takes a JSON value");
+  const placed: Comments = { above: new Map(), after: new Map() };
+  const end: string[] = [];
+  for (const comment of comments) {
+    if (!comment.text.startsWith("#") || /[\r\n]/.test(comment.text)) {
+      throw new TypeError(`the comment of line ${comment.line} is not one line starting with "#"`);
+    }
+    if (comment.pointer === null) end.push(comment.text);
+    else if (comment.trailing && !placed.after.has(comment.pointer)) placed.after.set(comment.pointer, comment.text);
+    else placed.above.set(comment.pointer, [...(placed.above.get(comment.pointer) ?? []), comment.text]);
+  }
   // What JSON would make of it — no undefined members, no functions — is what is written.
-  const text = `${block(JSON.parse(json) as unknown, 0).join("\n")}\n`;
-  if (JSON.stringify(parseYaml(text)) !== json) {
+  const lines = [...block(JSON.parse(json) as unknown, 0, "", placed), ...end];
+  const text = `${lines.join("\n")}\n`;
+  const read = readYaml(text);
+  if (JSON.stringify(read.value) !== json) {
     throw new Error("the YAML written for this value does not read back as the value");
+  }
+  if (read.comments.length !== comments.length) {
+    throw new TypeError(`${comments.length - read.comments.length} of the comments belong to an entry the value does not hold`);
   }
   return text;
 }
@@ -46,29 +74,55 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The lines of a node that starts on a line of its own, at `indent`. */
-function block(value: unknown, indent: number): string[] {
+function block(value: unknown, indent: number, pointer: string, comments: Comments): string[] {
   const pad = " ".repeat(indent);
   if (Array.isArray(value) && value.length > 0) {
-    return value.flatMap((item) => entry(`${pad}-`, item, indent, true));
+    return value.flatMap((item, index) => {
+      const at = joinPointer(pointer, index);
+      return commented(entry(`${pad}-`, item, indent, true, at, comments), pad, at, comments);
+    });
   }
   if (isObject(value) && Object.keys(value).length > 0) {
-    return Object.entries(value).flatMap(([key, item]) => entry(`${pad}${scalar(key, true)}:`, item, indent, false));
+    return Object.entries(value).flatMap(([key, item]) => {
+      const at = joinPointer(pointer, key);
+      return commented(entry(`${pad}${scalar(key, true)}:`, item, indent, false, at, comments), pad, at, comments);
+    });
   }
   return [`${pad}${inline(value)}`];
 }
 
+/** The lines of an entry with its comments: those above it, and the one after its first line. */
+function commented(lines: readonly string[], pad: string, pointer: string, comments: Comments): string[] {
+  const above = (comments.above.get(pointer) ?? []).map((text) => `${pad}${text}`);
+  const after = comments.after.get(pointer);
+  if (after === undefined) return [...above, ...lines];
+  // The entry's own first line, below any comment its first key brought up above the dash.
+  const first = lines.findIndex((line) => !isComment(line));
+  return [...above, ...lines.map((line, index) => (index === first ? `${line} ${after}` : line))];
+}
+
+/** Whether a line the writer produced is a comment, which no key or dash it writes starts like. */
+function isComment(line: string): boolean {
+  return line.trimStart().startsWith("#");
+}
+
 /** One mapping entry or sequence item: `prefix` is its key and colon, or its dash. */
-function entry(prefix: string, value: unknown, indent: number, dash: boolean): string[] {
+function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, comments: Comments): string[] {
   const child = indent + INDENT;
-  const flow = flowList(value);
+  // A flow list has no line of its own for a comment on one of its items.
+  const flow = commentsWithin(pointer, comments) ? undefined : flowList(value);
   if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return [`${prefix} ${flow}`];
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
-    const lines = block(value, child);
+    const lines = block(value, child, pointer, comments);
     // A collection in a sequence item starts on the dash's line, which YAML reads at the
     // column of its first character; under a key it starts on the line below.
     if (!dash) return [prefix, ...lines];
-    const [first = "", ...rest] = lines;
-    return [`${prefix} ${first.slice(child)}`, ...rest];
+    // A comment above the first entry of that collection would split the dash from it, so it
+    // goes above the dash.
+    const above = lines.findIndex((line) => !isComment(line));
+    const hoisted = lines.slice(0, above).map((line) => line.slice(child - indent));
+    const [first = "", ...rest] = lines.slice(above);
+    return [...hoisted, `${prefix} ${first.slice(child)}`, ...rest];
   }
   if (typeof value === "string") {
     const literal = literalBlock(value);
@@ -78,6 +132,11 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean): s
     }
   }
   return [`${prefix} ${inline(value)}`];
+}
+
+/** Whether a comment belongs to an entry inside the node at `pointer`. */
+function commentsWithin(pointer: string, comments: Comments): boolean {
+  return [...comments.above.keys(), ...comments.after.keys()].some((at) => at.startsWith(`${pointer}/`));
 }
 
 /** A list of nothing but scalars as a flow sequence, or undefined for any other value. */
