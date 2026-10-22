@@ -136,11 +136,11 @@ $ schemafit tools.yaml
 schemafit: tools.yaml is not YAML schemafit can read: line 2: an anchor ("&name") is not supported; write it out by hand, or convert the file to JSON
 ```
 
-A rewrite comes out in the format of the file it goes to: `--fix --write` rewrites a YAML file as YAML, and so does `--out tools.fixed.yaml`, while stdout gets JSON and `--fix` says so. The YAML is written by `schemafit` too — two-space block mappings and sequences, short lists of scalars in flow style, a `|` block for a description over several lines, quotes only where a plain scalar would read as something else — and read back before it is written, so a rewrite that would not come back as the schema it came from is an error rather than a file. Comments are not part of the schema a rewrite is written from, so `--write` will not rewrite a YAML file that holds one and would change; it names the lines instead of deleting them:
+A rewrite comes out in the format of the file it goes to: `--fix --write` rewrites a YAML file as YAML, and so does `--out tools.fixed.yaml`, while stdout gets JSON and `--fix` says so. The YAML is written by `schemafit` too — two-space block mappings and sequences, short lists of scalars in flow style, a `|` block for a description over several lines, quotes only where a plain scalar would read as something else — and read back before it is written, so a rewrite that would not come back as the schema it came from is an error rather than a file. Comments go back to the entries they belong to: a comment on a line of its own goes above the entry below it, at that entry's indentation, and a comment after a value goes after the first line of that value's entry, so `--fix --write examples/agent-tools.yaml` keeps the file's header and the note above `input_schema` where they were. A comment on an entry the rewrite takes out — the `minimum` a fix moves into `description`, the `oneOf` it renames to `anyOf`, anything inside a root it wraps — has nowhere to go, so `--write` will not rewrite a file that holds one; it names the lines instead of deleting them, and `--out` names the lines it did not carry over:
 
 ```
-$ schemafit --fix --write examples/agent-tools.yaml
-schemafit: --write cannot rewrite examples/agent-tools.yaml in place: lines 1, 2 and 7 hold a comment, which the rewrite would drop. Remove the comments, or write the rewrite to --out <file> and carry them over by hand.
+$ schemafit --fix --provider anthropic --write tool.yaml
+schemafit: --write cannot rewrite tool.yaml in place: line 5 holds a comment on an entry the rewrite removes or moves, which it would drop. Move the comment to an entry the rewrite keeps, or write the rewrite to --out <file> and carry it over by hand.
 ```
 
 Some limits are stated per request rather than per schema, and those are measured over the request as a whole: Anthropic allows **20 tools with `strict: true`, 24 optional parameters, and 16 parameters with union types** in one request, counting every schema it sends strictly together. Four strict tools with six optional parameters each reach the limit of 24 though no single tool looks complex, which is exactly the case [the docs warn about](https://platform.claude.com/docs/en/build-with-claude/structured-outputs#schema-complexity-limits), so the finding is reported after the reports on the schemas and names what each one contributed:
@@ -357,13 +357,13 @@ import { parseYaml, unwrapAll } from "schemafit";
 const tools = unwrapAll(parseYaml(await readFile("tools.yaml", "utf8")));
 ```
 
-It returns what the document describes, and throws a `YamlError` — carrying the `line` it gave up on — for the YAML it does not cover. `readYaml` returns the same `value` together with `comments`, the lines that hold one, and `stringifyYaml` writes a value back as the YAML `--fix --write` writes:
+It returns what the document describes, and throws a `YamlError` — carrying the `line` it gave up on — for the YAML it does not cover. `readYaml` returns the same `value` together with `comments`, the lines that hold one, and `attached`, each comment with the JSON Pointer of the entry it belongs to; `stringifyYaml` writes a value back as the YAML `--fix --write` writes, with those comments where they belong, and throws a `TypeError` for one whose entry the value no longer holds:
 
 ```ts
 import { fix, readYaml, stringifyYaml } from "schemafit";
 
-const { value, comments } = readYaml(await readFile("schema.yaml", "utf8"));
-if (comments.length === 0) await writeFile("schema.yaml", stringifyYaml(fix(value, { providers: ["openai"] }).schema));
+const { value, attached } = readYaml(await readFile("schema.yaml", "utf8"));
+await writeFile("schema.yaml", stringifyYaml(fix(value, { providers: ["openai"] }).schema, attached));
 ```
 
 `openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, and the components it `copied` under `$defs`:

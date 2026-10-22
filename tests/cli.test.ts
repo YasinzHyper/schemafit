@@ -629,18 +629,54 @@ additionalProperties: false
     expect((await cli(["-p", "openai", file])).code).toBe(0);
   });
 
-  it("--fix --write refuses to drop the comments of a YAML file, and leaves a file it would not change alone", async () => {
+  it("--fix --write keeps the comments of a YAML file on the entries they belong to", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `# Kept by hand.
+type: object # always an object
+properties:
+  # What the ticket is about.
+  title: {type: string} # one line
+  priority:
+    type: integer
+    description: 1 is a question, 5 is an outage.
+required: [title] # priority is optional
+`,
+    );
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", file]);
+    expect(code).toBe(0);
+    expect(stderr).not.toContain("comment");
+    expect(await readFile(file, "utf8")).toBe(`# Kept by hand.
+type: object # always an object
+properties:
+  # What the ticket is about.
+  title: # one line
+    type: string
+  priority:
+    type: [integer, "null"]
+    description: "1 is a question, 5 is an outage."
+required: [title, priority] # priority is optional
+additionalProperties: false
+`);
+  });
+
+  it("--fix --write refuses to drop a comment on an entry the rewrite removes, and leaves a file it would not change alone", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");
     const fitting = join(dir, "fitting.yaml");
-    const looseText = "# Kept by hand.\ntype: object\nproperties: {} # nothing yet\n";
+    const looseText = "# Kept by hand.\ntype: object\nproperties:\n  status:\n    # One of two.\n    oneOf: [{const: open}, {const: closed}]\n";
     const fittingText = "# Already fits.\ntype: object\nproperties: {}\nrequired: []\nadditionalProperties: false\n";
     await writeFile(loose, looseText);
     await writeFile(fitting, fittingText);
 
     const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", fitting, loose]);
     expect(code).toBe(2);
-    expect(stderr).toContain(`--write cannot rewrite ${loose} in place: lines 1 and 3 hold a comment, which the rewrite would drop.`);
+    expect(stderr).toContain(
+      `--write cannot rewrite ${loose} in place: line 5 holds a comment on an entry the rewrite removes or moves, which it would drop.`,
+    );
     expect(await readFile(loose, "utf8")).toBe(looseText);
 
     const alone = await cli(["--fix", "-p", "openai", "--write", fitting]);
@@ -648,22 +684,49 @@ additionalProperties: false
     expect(await readFile(fitting, "utf8")).toBe(fittingText);
   });
 
-  it("--fix --out writes YAML to a .yaml file and names the comments it could not carry over", async () => {
+  it("--fix --write does not carry a comment into a root the rewrite wrapped, where its pointer names another entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "list.yaml");
+    const text = "# A list at the root.\ntype: array # not an object\nitems: {type: string}\n";
+    await writeFile(file, text);
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", file]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("lines 1 and 2 hold a comment on an entry the rewrite removes or moves");
+    expect(await readFile(file, "utf8")).toBe(text);
+  });
+
+  it("--fix --out writes YAML to a .yaml file, with the comments of the file it read", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const out = join(dir, "tools.fixed.yaml");
 
     const { code, stderr } = await cli(["--fix", example("agent-tools.yaml"), "--out", out]);
     expect(code).toBe(0);
-    expect(stderr).toContain(`agent-tools.yaml: lines 1, 2 and 7 hold a comment, which ${out} does not carry over.`);
+    expect(stderr).not.toContain("comment");
     expect(stderr).not.toContain("rewritten as JSON");
     const written = await readFile(out, "utf8");
-    expect(written).toContain("  description: |\n    Open a support ticket for the customer.\n");
+    expect(written).toMatch(/^# The tools the support agent is given, kept in YAML so the descriptions stay readable and\n# reviewable\./);
+    expect(written).toContain(
+      "    Call it once per issue, after the customer has confirmed the summary.\n  # Generated from the Pydantic model, so edit the model and not this.\n  input_schema:\n",
+    );
     expect((await cli([out])).code).toBe(0);
 
     // A JSON file sent to a .yaml one is written as YAML too.
     const fromJson = join(dir, "ticket.yaml");
     expect((await cli(["--fix", "-p", "openai", example("ticket.json"), "--out", fromJson])).code).toBe(0);
     expect(await readFile(fromJson, "utf8")).toMatch(/^\$schema: https:\/\/json-schema\.org\/draft\/2020-12\/schema\ntitle: SupportTicket\n/);
+  });
+
+  it("--fix --out names the comments it could not carry over", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    const out = join(dir, "tool.fixed.yaml");
+    await writeFile(file, "type: object\nproperties:\n  status:\n    oneOf: # one of two\n    - const: open\n    - const: closed\n");
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", file, "--out", out]);
+    expect(code).toBe(0);
+    expect(stderr).toContain(`tool.yaml: line 4 holds a comment on an entry the rewrite removes or moves, which ${out} does not carry over.`);
+    expect(await readFile(out, "utf8")).not.toContain("#");
   });
 
   it("names the line of a YAML file it cannot read", async () => {

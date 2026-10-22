@@ -543,4 +543,27 @@ note: 'three
   it("finds no comment in a document without one", () => {
     expect(readYaml("type: string\ndescription: issue#12, not a comment\n").comments).toEqual([]);
   });
+
+  it("attaches each comment to the entry it sits on or above", () => {
+    const { attached } = readYaml(`# The tools.
+- name: a # the first
+  # its schema
+  schema:
+    enum: [x, # one
+      # two
+      y]
+    title: "one
+      # not a comment" # after the quote
+# The end.
+`);
+    expect(attached).toEqual([
+      { line: 1, text: "# The tools.", pointer: "/0", trailing: false },
+      { line: 2, text: "# the first", pointer: "/0", trailing: true },
+      { line: 3, text: "# its schema", pointer: "/0/schema", trailing: false },
+      { line: 5, text: "# one", pointer: "/0/schema/enum", trailing: true },
+      { line: 6, text: "# two", pointer: "/0/schema/enum", trailing: false },
+      { line: 9, text: "# after the quote", pointer: "/0/schema/title", trailing: true },
+      { line: 10, text: "# The end.", pointer: null, trailing: false },
+    ]);
+  });
 });

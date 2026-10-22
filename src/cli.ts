@@ -5,7 +5,7 @@ import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
 import { openApiSchemas, withoutCopiedFindings } from "./openapi.js";
-import { displayPointer } from "./pointer.js";
+import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { LintResult, ProviderId, RuleMeta } from "./types.js";
@@ -13,6 +13,7 @@ import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
+import type { YamlComment } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -73,9 +74,11 @@ block scalars, comments — and anything else is an error naming the line and th
 construct rather than a guess at what the file meant: an anchor, an alias, a
 tag, a second document in one file. A rewrite is written in the format of the
 file it goes to: --fix --write rewrites a YAML file as YAML, and so does --out
-<file.yaml>, while stdout gets JSON. The comments of a YAML file are not part of
-the schema the rewrite is written from, so --write refuses to rewrite a file
-that holds one, naming its line, rather than delete it.
+<file.yaml>, while stdout gets JSON. The comments of a YAML file go back to the
+entry they belong to: a comment on a line of its own to the entry below it, and
+one after a value to that value's entry. A comment on an entry the rewrite
+removes has nowhere to go, so --write refuses to rewrite a file that holds one,
+naming its line, rather than delete it.
 
 --openapi checks every schema an OpenAPI document keeps under components.schemas,
 each reported under its component name as the schema it would be on its own: the
@@ -169,11 +172,11 @@ function isYamlFile(file: string): boolean {
   return YAML_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
-/** A document as read, with the lines of its comments when it was read as YAML. */
+/** A document as read, with its comments when it was read as YAML. */
 interface ReadDocument {
   label: string;
   document: unknown;
-  comments?: number[];
+  comments?: YamlComment[];
 }
 
 /**
@@ -211,9 +214,9 @@ async function readDocument(file: string, io: CliIo): Promise<ReadDocument> {
   }
 }
 
-function yamlDocument(text: string): { document: unknown; comments: number[] } {
-  const { value, comments } = readYaml(text);
-  return { document: value, comments };
+function yamlDocument(text: string): { document: unknown; comments: YamlComment[] } {
+  const { value, attached } = readYaml(text);
+  return { document: value, comments: attached };
 }
 
 /** Names a schema inside a document, for an error about that schema alone. */
@@ -423,6 +426,8 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const { checked, skipped } = selectStrict(schemas, allTools);
 
   const reports: FixReport[] = [];
+  // The schemas whose root a fix wrapped in an object, where a pointer may name another node now.
+  const wrapped: string[] = [];
   let rewritten: unknown = document;
   for (const found of checked) {
     let result;
@@ -434,6 +439,7 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
     }
     // Each rewrite goes back where it came from, so a request body comes out whole.
     rewritten = rewrap(rewritten, found.keys, result.schema);
+    if (result.applied.some((applied) => applied.ruleId === "openai/root-object")) wrapped.push(found.pointer);
     reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
 
@@ -441,23 +447,37 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   // no name, so it gets JSON, and a YAML file rewritten there is said to have changed format.
   const yaml = isYamlFile(write ? file : (out ?? ""));
   const changed = reports.some((report) => report.applied.length > 0);
-  if (write && yaml && changed && comments[0] !== undefined) {
-    // The comments are not part of the value the rewrite is written from, so writing it over
-    // the file would delete them, and an in-place rewrite must not lose what it cannot see.
+  // Each comment goes back to the entry it belongs to, which the rewrite may have taken out.
+  const kept = comments.filter((comment) => keepsEntry(comment, rewritten, wrapped));
+  const lost = comments.filter((comment) => !kept.includes(comment)).map(({ line }) => line);
+  if (write && yaml && changed && lost[0] !== undefined) {
+    // Writing the rewrite over the file would delete those comments, and an in-place rewrite
+    // must not lose what it cannot see.
     throw new UsageError(
-      `--write cannot rewrite ${label} in place: ${linesOf(comments)} a comment, which the rewrite would drop. Remove the comments, or write the rewrite to --out <file> and carry them over by hand.`,
+      `--write cannot rewrite ${label} in place: ${linesOf(lost)} a comment on an entry the rewrite removes or moves, which it would drop. Move the comment to an entry the rewrite keeps, or write the rewrite to --out <file> and carry it over by hand.`,
     );
   }
   const formatNote = isYamlFile(file) && !yaml ? `schemafit: ${label}: read as YAML, rewritten as JSON.\n` : undefined;
   const commentNote =
-    !write && yaml && comments[0] !== undefined
-      ? `schemafit: ${label}: ${linesOf(comments)} a comment, which ${destination} does not carry over.\n`
+    !write && yaml && lost[0] !== undefined
+      ? `schemafit: ${label}: ${linesOf(lost)} a comment on an entry the rewrite removes or moves, which ${destination} does not carry over.\n`
       : undefined;
   const notes = [formatNote, commentNote, skippedNote(label, skipped, checked.length)].filter((note) => note !== undefined);
   // --write leaves a file no fix changed as it is, so there is nothing to write out for it.
   const unwritten = write && !changed;
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
+}
+
+/**
+ * Whether the entry a comment belongs to is still in the rewritten document. A schema whose root
+ * was wrapped holds what it held one level down, so a pointer into it may name another entry
+ * now, and its comments are not carried over.
+ */
+function keepsEntry({ pointer }: YamlComment, document: unknown, wrapped: readonly string[]): boolean {
+  if (pointer === null) return true;
+  if (wrapped.some((root) => pointer.startsWith(`${root}/`))) return false;
+  return resolvePointer(document, pointer) !== undefined;
 }
 
 /** "line 3 holds", "lines 3 and 7 hold", "lines 3, 7 and 9 hold". */

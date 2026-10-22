@@ -12,6 +12,8 @@
  * may or may not be what the file said.
  */
 
+import { joinPointer } from "./pointer.js";
+
 /** A YAML this reader declined to read, and the line it gave up on. */
 export class YamlError extends Error {
   readonly line: number;
@@ -34,6 +36,8 @@ interface Line {
   text: string;
   /** Whether a trailing comment was taken off, which ends the plain scalar on the line. */
   comment: boolean;
+  /** The comment `text` gave up, from its `#`, or the whole of a line that holds nothing else. */
+  remark: string;
 }
 
 /** The lines, and how far through them the parser is. */
@@ -46,7 +50,11 @@ interface State {
    */
   content: Set<number>;
   /** The comments found after a quoted scalar closed on a line of `content`, or between flow entries. */
-  comments: Set<number>;
+  comments: Map<number, string>;
+  /** The JSON Pointer of each mapping entry and sequence item, by the line it starts on. */
+  entries: Map<number, string>;
+  /** The JSON Pointer of the node being read. */
+  at: string;
 }
 
 /** One line being read left to right, for the scalars and flow collections written on it. */
@@ -126,21 +134,70 @@ export function parseYaml(text: string): unknown {
 }
 
 /**
- * Reads a YAML document into the value it describes, together with the lines that hold a
- * comment, which the value has no room for: a rewrite written from the value alone would drop
- * them. A `#` inside a block scalar or a quoted scalar is a character of the string, not one.
+ * A comment of a YAML document, and the node it belongs to, so a rewrite can write it back
+ * there. A comment on a line of its own belongs to the entry below it, and one after a value to
+ * the entry that value belongs to.
  */
-export function readYaml(text: string): { value: unknown; comments: number[] } {
-  const state: State = { lines: tokenize(text), index: 0, content: new Set(), comments: new Set() };
+export interface YamlComment {
+  line: number;
+  /** The comment from its `#`. */
+  text: string;
+  /**
+   * The JSON Pointer of the mapping entry or sequence item it belongs to, or null for one with
+   * no entry below it, which goes at the end of the document.
+   */
+  pointer: string | null;
+  /** Whether it goes after the entry's first line rather than on a line of its own above it. */
+  trailing: boolean;
+}
+
+/**
+ * Reads a YAML document into the value it describes, together with its comments, which the
+ * value has no room for: a rewrite written from the value alone would drop them. `comments`
+ * names their lines, and `attached` says where each one belongs. A `#` inside a block scalar or
+ * a quoted scalar is a character of the string, not a comment.
+ */
+export function readYaml(text: string): { value: unknown; comments: number[]; attached: YamlComment[] } {
+  const state: State = {
+    lines: tokenize(text),
+    index: 0,
+    content: new Set(),
+    comments: new Map(),
+    entries: new Map(),
+    at: "",
+  };
   const value = parseDocument(state);
-  const comments = state.lines
-    .filter(({ n, raw, text: content, comment }) => {
-      if (state.comments.has(n)) return true;
-      if (state.content.has(n)) return false;
-      return comment || (content === "" && raw.trim() !== "");
-    })
-    .map(({ n }) => n);
-  return { value, comments };
+  const found = state.lines.flatMap(({ n, raw, text: content, comment, remark }) => {
+    const after = state.comments.get(n);
+    if (after !== undefined) return [{ n, remark: after, own: false }];
+    if (state.content.has(n)) return [];
+    if (content === "") return raw.trim() === "" ? [] : [{ n, remark, own: true }];
+    return comment ? [{ n, remark, own: false }] : [];
+  });
+  return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries) };
+}
+
+/**
+ * Where each comment belongs: one on a line of its own to the first entry below it, and one
+ * after a value to the entry whose line it is on, or whose value runs on to that line. An entry
+ * holds one comment after it, so a second one after the same entry goes above it instead.
+ */
+function attach(found: ReadonlyArray<{ n: number; remark: string; own: boolean }>, entries: Map<number, string>): YamlComment[] {
+  const starts = [...entries.keys()].sort((a, b) => a - b);
+  const trailed = new Set<string>();
+  return found.map(({ n, remark, own }) => {
+    if (!own) {
+      const start = starts.filter((line) => line <= n).pop();
+      const pointer = start === undefined ? undefined : entries.get(start);
+      if (pointer !== undefined && !trailed.has(pointer)) {
+        trailed.add(pointer);
+        return { line: n, text: remark, pointer, trailing: true };
+      }
+      if (pointer !== undefined) return { line: n, text: remark, pointer, trailing: false };
+    }
+    const below = starts.find((line) => line > n);
+    return { line: n, text: remark, pointer: below === undefined ? null : (entries.get(below) ?? null), trailing: false };
+  });
 }
 
 function parseDocument(state: State): unknown {
@@ -175,7 +232,8 @@ function tokenize(text: string): Line[] {
     }
     const content = raw.slice(indent);
     const text = stripComment(content);
-    return { n, raw, indent, text, comment: text !== content.trimEnd() };
+    const comment = text !== content.trimEnd();
+    return { n, raw, indent, text, comment, remark: comment || text === "" ? content.slice(text.length).trim() : "" };
   });
 }
 
@@ -284,8 +342,22 @@ function parseMapping(state: State, indent: number): Record<string, unknown> {
 
     const rest = line.text.slice(end + 1).trim();
     state.index += 1;
+    const outer = enter(state, line, key);
     mapping[key] = rest === "" ? parseNodeBelow(state, indent) : parseValueOnLine(state, line, rest, indent);
+    state.at = outer;
   }
+}
+
+/**
+ * Records the entry that starts on `line` and makes it the node being read, returning the one
+ * that was. A sequence item and the first key of the mapping in it share a line, which belongs
+ * to the item, so a comment above it goes above the dash.
+ */
+function enter(state: State, line: Line, token: string | number): string {
+  const outer = state.at;
+  state.at = joinPointer(outer, token);
+  if (!state.entries.has(line.n)) state.entries.set(line.n, state.at);
+  return outer;
 }
 
 /**
@@ -363,7 +435,7 @@ function parseFlowOnLines(state: State, line: Line, text: string, minIndent: num
   const value = parseFlowNode(scanner, false);
   skipSpaces(scanner);
   const after = scanner.text.slice(scanner.pos);
-  if (after.startsWith("#")) state.comments.add(scanner.line.n);
+  if (after.startsWith("#")) state.comments.set(scanner.line.n, after);
   if (after !== "" && !after.startsWith("#")) {
     throw new YamlError(scanner.line.n, `unexpected ${JSON.stringify(after)} after the value`);
   }
@@ -397,7 +469,7 @@ function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: n
     const scanner: Scanner = { text: written, pos: 0, line };
     value = readQuoted(scanner, { state, minIndent, opened: line });
     const after = scanner.text.slice(scanner.pos);
-    if (/^[ \t]+#/.test(after)) state.comments.add(scanner.line.n);
+    if (/^[ \t]+#/.test(after)) state.comments.set(scanner.line.n, after.trim());
     if (!/^([ \t]*|[ \t]+#.*)$/.test(after)) {
       if (scanner.line !== line && after.trimStart().startsWith(":")) {
         throw new YamlError(
@@ -526,23 +598,23 @@ function parseSequence(state: State, indent: number, atKeyIndent: boolean): unkn
 
     const after = line.text.slice(1);
     const rest = after.trim();
+    const outer = enter(state, line, items.length);
     if (rest === "") {
       state.index += 1;
       items.push(parseBlockIndentedBelow(state, indent));
-      continue;
+    } else {
+      const contentIndent = indent + 1 + (after.length - after.trimStart().length);
+      if (isSequenceEntry(rest) || findKeyEnd({ ...line, text: rest }) !== undefined) {
+        // Blanking the dash leaves the mapping entry or nested item it starts on the column it
+        // sits in, so the block that continues below it parses like any other.
+        state.lines[state.index] = { ...line, indent: contentIndent, text: rest };
+        items.push(parseNode(state, contentIndent));
+      } else {
+        state.index += 1;
+        items.push(parseValueOnLine(state, line, rest, indent));
+      }
     }
-
-    const contentIndent = indent + 1 + (after.length - after.trimStart().length);
-    if (isSequenceEntry(rest) || findKeyEnd({ ...line, text: rest }) !== undefined) {
-      // Blanking the dash leaves the mapping entry or nested item it starts on the column it
-      // sits in, so the block that continues below it parses like any other.
-      state.lines[state.index] = { ...line, indent: contentIndent, text: rest };
-      items.push(parseNode(state, contentIndent));
-      continue;
-    }
-
-    state.index += 1;
-    items.push(parseValueOnLine(state, line, rest, indent));
+    state.at = outer;
   }
 }
 
@@ -831,12 +903,18 @@ function skipSeparation(scanner: Scanner): void {
     const { text, pos } = scanner;
     // A line a quoted scalar ran on to is read as written, comment and all.
     if (text[pos] === "#" && (pos === 0 || /\s/.test(text[pos - 1] ?? ""))) {
+      scanner.more?.state.comments.set(scanner.line.n, text.slice(pos).trimEnd());
       scanner.pos = text.length;
-      scanner.more?.state.comments.add(scanner.line.n);
     }
     if (scanner.pos < scanner.text.length || scanner.more === undefined) return;
     const { state, minIndent, opened } = scanner.more;
+    const skipped = state.index;
     const next = peek(state);
+    // A comment on a line of its own between two entries of the collection is a comment on
+    // the value the collection is, like one after an entry, not on the key below it.
+    for (const line of state.lines.slice(skipped, state.index)) {
+      if (line.remark !== "") state.comments.set(line.n, line.remark);
+    }
     if (next === undefined) return;
     if (next.indent === 0 && isDocumentMarker(next.text)) {
       throw new YamlError(next.n, `a document marker inside the flow collection opened on line ${opened.n}; close the collection above it`);
