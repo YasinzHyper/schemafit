@@ -87,7 +87,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `AppliedFix.ruleId` and `AppliedFix.provider` are now optional: a rewrite that no finding asked for, which today means a definition `--prune-unused-defs` removed, has no rule behind it. The `--fix` report names the flag where it would name the rule.
 - Every Anthropic rule was re-checked against the structured outputs documentation and now records `2026-10-03` as its verification date. The supported and unsupported keyword lists, the string formats, the regex features, the enum-casing caveat, and the 24 optional and 16 union parameter limits are unchanged.
 - Every Gemini rule was re-checked against the structured output documentation and now records `2026-10-18` as its verification date. The supported types, the descriptive and type-specific keywords, the `date-time`, `date`, and `time` formats listed with "such as", and the use of `anyOf` and `$ref` in the examples are unchanged.
-- Every OpenAI rule was re-checked against the Structured Outputs documentation and now records `2026-09-22` as its verification date. The supported types, string formats, per-type keywords, unsupported composition keywords, and the nesting, property, enum, and string-size limits are unchanged.
+- Every OpenAI rule was re-checked against the Structured Outputs documentation and now records `2026-10-23` as its verification date. The supported types, string formats, per-type keywords, unsupported composition keywords, and the nesting, property, enum, and string-size limits are unchanged.
 
 ## 0.1.0 - 2026-09-17
 
