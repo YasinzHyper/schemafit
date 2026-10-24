@@ -30,11 +30,13 @@ function meta(name: string, rest: Omit<RuleMeta, "id" | "provider" | "source" | 
 }
 
 /** The property the root is wrapped in, when it is not an object itself. */
-const WRAPPER_KEY = "result";
+export const WRAPPER_KEY = "result";
 
 /** Keywords that describe the document rather than what it accepts, and so stay at the root. */
 const DOCUMENT_KEYWORDS = ["$schema", "$id"];
 const DEFINITION_KEYWORDS = ["$defs", "definitions"];
+/** The keywords a wrapped root keeps, where everything else moves inside the wrapper. */
+export const UNWRAPPED_KEYWORDS: readonly string[] = [...DOCUMENT_KEYWORDS, ...DEFINITION_KEYWORDS];
 
 /**
  * The root schema as the single required property of a strict object, which is the shape

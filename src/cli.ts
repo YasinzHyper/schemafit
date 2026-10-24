@@ -4,6 +4,7 @@ import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
+import { movedPointer } from "./moves.js";
 import { openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
@@ -76,9 +77,10 @@ tag, a second document in one file. A rewrite is written in the format of the
 file it goes to: --fix --write rewrites a YAML file as YAML, and so does --out
 <file.yaml>, while stdout gets JSON. The comments of a YAML file go back to the
 entry they belong to: a comment on a line of its own to the entry below it, and
-one after a value to that value's entry. A comment on an entry the rewrite
-removes has nowhere to go, so --write refuses to rewrite a file that holds one,
-naming its line, rather than delete it.
+one after a value to that value's entry, which follows the entry when a fix
+moves it: a oneOf renamed to anyOf, a root wrapped in an object. A comment on an
+entry the rewrite removes has nowhere to go, so --write refuses to rewrite a
+file that holds one, naming its line, rather than delete it.
 
 --openapi checks every schema an OpenAPI document keeps under components.schemas,
 each reported under its component name as the schema it would be on its own: the
@@ -426,8 +428,8 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const { checked, skipped } = selectStrict(schemas, allTools);
 
   const reports: FixReport[] = [];
-  // The schemas whose root a fix wrapped in an object, where a pointer may name another node now.
-  const wrapped: string[] = [];
+  // Each comment follows its entry through the fixes that move one, a rename or a wrapped root.
+  let moved = comments;
   let rewritten: unknown = document;
   for (const found of checked) {
     let result;
@@ -439,7 +441,11 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
     }
     // Each rewrite goes back where it came from, so a request body comes out whole.
     rewritten = rewrap(rewritten, found.keys, result.schema);
-    if (result.applied.some((applied) => applied.ruleId === "openai/root-object")) wrapped.push(found.pointer);
+    for (const applied of result.applied) {
+      moved = moved.map((comment) =>
+        comment.pointer === null ? comment : { ...comment, pointer: movedPointer(comment.pointer, found.pointer, applied) },
+      );
+    }
     reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
 
@@ -448,8 +454,8 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const yaml = isYamlFile(write ? file : (out ?? ""));
   const changed = reports.some((report) => report.applied.length > 0);
   // Each comment goes back to the entry it belongs to, which the rewrite may have taken out.
-  const kept = comments.filter((comment) => keepsEntry(comment, rewritten, wrapped));
-  const lost = comments.filter((comment) => !kept.includes(comment)).map(({ line }) => line);
+  const kept = moved.filter((comment) => keepsEntry(comment, rewritten));
+  const lost = moved.filter((comment) => !kept.includes(comment)).map(({ line }) => line);
   if (write && yaml && changed && lost[0] !== undefined) {
     // Writing the rewrite over the file would delete those comments, and an in-place rewrite
     // must not lose what it cannot see.
@@ -469,15 +475,9 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   return { file, output, reports, notes };
 }
 
-/**
- * Whether the entry a comment belongs to is still in the rewritten document. A schema whose root
- * was wrapped holds what it held one level down, so a pointer into it may name another entry
- * now, and its comments are not carried over.
- */
-function keepsEntry({ pointer }: YamlComment, document: unknown, wrapped: readonly string[]): boolean {
-  if (pointer === null) return true;
-  if (wrapped.some((root) => pointer.startsWith(`${root}/`))) return false;
-  return resolvePointer(document, pointer) !== undefined;
+/** Whether the entry a comment belongs to is still in the rewritten document. */
+function keepsEntry({ pointer }: YamlComment, document: unknown): boolean {
+  return pointer === null || resolvePointer(document, pointer) !== undefined;
 }
 
 /** "line 3 holds", "lines 3 and 7 hold", "lines 3, 7 and 9 hold". */
