@@ -78,9 +78,10 @@ file it goes to: --fix --write rewrites a YAML file as YAML, and so does --out
 <file.yaml>, while stdout gets JSON. The comments of a YAML file go back to the
 entry they belong to: a comment on a line of its own to the entry below it, and
 one after a value to that value's entry, which follows the entry when a fix
-moves it: a oneOf renamed to anyOf, a root wrapped in an object. A comment on an
-entry the rewrite removes has nowhere to go, so --write refuses to rewrite a
-file that holds one, naming its line, rather than delete it.
+moves it: a oneOf renamed to anyOf, a root wrapped in an object, a minimum or a
+format folded into description. A comment on an entry the rewrite removes has
+nowhere to go, so --write refuses to rewrite a file that holds one, naming its
+line, rather than delete it.
 
 --openapi checks every schema an OpenAPI document keeps under components.schemas,
 each reported under its component name as the schema it would be on its own: the

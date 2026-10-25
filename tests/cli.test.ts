@@ -667,7 +667,7 @@ additionalProperties: false
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");
     const fitting = join(dir, "fitting.yaml");
-    const looseText = "# Kept by hand.\ntype: object\nproperties:\n  code:\n    type: string\n    # Codes are short.\n    maxLength: 8\n";
+    const looseText = "# Kept by hand.\ntype: object\nproperties:\n  tags:\n    type: array\n    # Repeats are fine.\n    uniqueItems: false\n";
     const fittingText = "# Already fits.\ntype: object\nproperties: {}\nrequired: []\nadditionalProperties: false\n";
     await writeFile(loose, looseText);
     await writeFile(fitting, fittingText);
@@ -682,6 +682,49 @@ additionalProperties: false
     const alone = await cli(["--fix", "-p", "anthropic", "--write", fitting]);
     expect(alone.code).toBe(0);
     expect(await readFile(fitting, "utf8")).toBe(fittingText);
+  });
+
+  it("--fix --write carries a comment on a keyword it folds into description over to the description", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  code:
+    type: string
+    # Codes are short.
+    maxLength: 8 # the printer's limit
+  site:
+    type: string
+    description: Where it was reported.
+    format: uri-reference # a link to the page
+  count:
+    type: integer
+    minimum: 1 # at least one
+required: [code, site, count]
+additionalProperties: false
+`,
+    );
+
+    const { code, stderr } = await cli(["--fix", "-p", "anthropic", "--write", file]);
+    expect(code).toBe(0);
+    expect(stderr).not.toContain("comment");
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  code:
+    type: string
+    # Codes are short.
+    description: Must be at most 8 characters long. # the printer's limit
+  site:
+    type: string
+    description: Where it was reported. Must be a URI, absolute or relative. # a link to the page
+  count:
+    type: integer
+    description: Must be at least 1. # at least one
+required: [code, site, count]
+additionalProperties: false
+`);
   });
 
   it("--fix --write carries a comment on a oneOf over to the anyOf it is renamed to", async () => {
@@ -769,7 +812,7 @@ $defs:
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");
     const out = join(dir, "tool.fixed.yaml");
-    await writeFile(file, "type: object\nproperties:\n  code:\n    type: string\n    maxLength: 8 # codes are short\n");
+    await writeFile(file, "type: object\nproperties:\n  tags:\n    type: array\n    uniqueItems: false # repeats are fine\n");
 
     const { code, stderr } = await cli(["--fix", "-p", "anthropic", file, "--out", out]);
     expect(code).toBe(0);

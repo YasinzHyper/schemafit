@@ -11,7 +11,7 @@ import type {
   SchemaNode,
 } from "../types.js";
 import { isJsonSchema } from "../walk.js";
-import { additionalPropertiesFalse, allowedFormats, forbiddenKeywords, withNote } from "./shared.js";
+import { additionalPropertiesFalse, allowedFormats, foldTitle, forbiddenKeywords, withNote } from "./shared.js";
 
 const DOCS = "https://platform.claude.com/docs/en/build-with-claude/structured-outputs";
 const LIMITATIONS = `${DOCS}#json-schema-limitations`;
@@ -152,7 +152,7 @@ function moveToDescription(keyword: string, schema: JsonSchema, keep?: number): 
     note === ""
       ? `Remove "${keyword}".`
       : keep === undefined
-        ? `Remove "${keyword}" and state it in "description".`
+        ? foldTitle(`"${keyword}"`)
         : `Lower "${keyword}" to ${keep} and state the real minimum in "description".`;
 
   return {
