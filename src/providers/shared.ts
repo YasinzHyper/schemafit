@@ -7,6 +7,19 @@ export function withNote(schema: JsonSchema, note: string): JsonSchema {
   return { ...schema, description: existing.length > 0 ? `${existing} ${note}` : note };
 }
 
+/**
+ * The title of a fix that removes a keyword and states it in `description` with `withNote`.
+ * `subject` is the keyword quoted, and its value after it where that says more: `"format": "uri"`.
+ */
+export function foldTitle(subject: string): string {
+  return `Remove ${subject} and state it in "description".`;
+}
+
+/** The keyword a fix titled by `foldTitle` folded into `description`, or undefined for any other title. */
+export function foldedKeyword(title: string): string | undefined {
+  return /^Remove "([^"]+)"(?:: .*)? and state it in "description"\.$/.exec(title)?.[1];
+}
+
 /** Calls `visit` for every node that uses one of `keywords`, once per keyword used. */
 export function forEachKeyword(
   ctx: RuleContext,
@@ -77,7 +90,7 @@ const FORMAT_NOTES: Record<string, string> = {
 function dropFormat(format: string): SchemaFix {
   const note = FORMAT_NOTES[format] ?? `Must be a string in the "${format}" format.`;
   return {
-    title: `Remove "format": "${format}" and state it in "description".`,
+    title: foldTitle(`"format": "${format}"`),
     rewrite(current) {
       // The node may have been rewritten since the finding was reported.
       if (current.format !== format) return current;

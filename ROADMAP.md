@@ -43,7 +43,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Write YAML back out, so `--fix --write` can rewrite a `.yaml` file in place instead of pointing at `--out`. The comments a rewrite cannot keep are not dropped: `--write` refuses a file that holds one and names its lines
 - [x] Keep the comments of a YAML file `--fix --write` rewrites, by carrying each one over to the line of the key it sits on or above, so a commented file can be fixed in place instead of refused
 - [x] Carry a comment over an entry a fix renames or moves, which `--write` refuses today: the `oneOf` that becomes `anyOf`, and the keys of a root `openai/root-object` wraps, whose new pointers are known
-- [ ] Carry a comment over an entry a fix folds into `description`, which `--write` still refuses: the `minimum`, `maxLength`, or `format` the comment could go with to the `description` entry, which may not have existed before the fix and so has no line of its own yet
+- [x] Carry a comment over an entry a fix folds into `description`, which `--write` still refuses: the `minimum`, `maxLength`, or `format` the comment could go with to the `description` entry, which may not have existed before the fix and so has no line of its own yet
 - [ ] Keep the blank lines between the entries of a YAML file a rewrite touches, which the writer drops today, so two tool definitions a file kept apart stay apart
 - [ ] Keep the layout of a YAML file a rewrite touches: the sequence at its key's indentation, the folded (`>`) description wrapped where the file wrapped it, which the writer gives up today for its own two-space block style and a literal block
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
