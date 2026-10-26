@@ -47,6 +47,8 @@ interface State {
   /**
    * The lines read as scalar content off `raw`: a block scalar's, and those a quoted scalar runs
    * on over. What `tokenize` took for a comment on one of them is a character of the string.
+   * The empty lines inside a plain scalar or a flow collection are here too, since they are part
+   * of the node rather than space between two entries.
    */
   content: Set<number>;
   /** The comments found after a quoted scalar closed on a line of `content`, or between flow entries. */
@@ -152,12 +154,24 @@ export interface YamlComment {
 }
 
 /**
- * Reads a YAML document into the value it describes, together with its comments, which the
- * value has no room for: a rewrite written from the value alone would drop them. `comments`
- * names their lines, and `attached` says where each one belongs. A `#` inside a block scalar or
- * a quoted scalar is a character of the string, not a comment.
+ * An empty line between two entries of a YAML document, which belongs to the entry below it,
+ * so a rewrite can keep apart what the file kept apart.
  */
-export function readYaml(text: string): { value: unknown; comments: number[]; attached: YamlComment[] } {
+export interface YamlBlank {
+  line: number;
+  /** The JSON Pointer of the entry below it, or null for one with no entry below it. */
+  pointer: string | null;
+}
+
+/**
+ * Reads a YAML document into the value it describes, together with its comments and its empty
+ * lines, which the value has no room for: a rewrite written from the value alone would drop
+ * them. `comments` names the lines of the comments, `attached` says where each one belongs, and
+ * `blanks` where each empty line between two entries does. A `#` inside a block scalar or a
+ * quoted scalar is a character of the string, not a comment, and an empty line inside a scalar
+ * or a flow collection is part of it.
+ */
+export function readYaml(text: string): { value: unknown; comments: number[]; attached: YamlComment[]; blanks: YamlBlank[] } {
   const state: State = {
     lines: tokenize(text),
     index: 0,
@@ -174,7 +188,15 @@ export function readYaml(text: string): { value: unknown; comments: number[]; at
     if (content === "") return raw.trim() === "" ? [] : [{ n, remark, own: true }];
     return comment ? [{ n, remark, own: false }] : [];
   });
-  return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries) };
+  const starts = [...state.entries.keys()].sort((a, b) => a - b);
+  const blanks = state.lines.flatMap(({ n, raw }) => {
+    // The line break that ends the last line splits off an empty string, which is no line.
+    const last = n === state.lines.length && text.endsWith("\n");
+    if (raw.trim() !== "" || state.content.has(n) || last) return [];
+    const below = starts.find((line) => line > n);
+    return [{ line: n, pointer: below === undefined ? null : (state.entries.get(below) ?? null) }];
+  });
+  return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks };
 }
 
 /**
@@ -511,6 +533,7 @@ function takeContinuation(state: State, minIndent: number): Line[] {
     }
     if (next.indent < minIndent || isDocumentMarker(next.text)) break;
     taken.push(...empty, next);
+    for (const line of empty) if (line.raw.trim() === "") state.content.add(line.n);
     empty.length = 0;
     end = index;
   }
@@ -657,6 +680,8 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
   // The empty lines above the block's first line of content, held until that line fixes the
   // indentation they are measured against.
   const leadingEmpty: Line[] = [];
+  // The line of `content[0]`: the block takes every line from here on until it ends.
+  const first = state.index;
   while (state.index < state.lines.length) {
     const next = state.lines[state.index];
     if (next === undefined) break;
@@ -688,7 +713,12 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
   // Chomping drops the trailing empty lines, and a line is empty only when nothing of it is
   // left past the block's indentation: one that holds spaces beyond it holds them as content,
   // which neither the clip nor the strip indicator takes away.
-  while (content.length > 0 && content[content.length - 1] === "") content.pop();
+  // Those lines are space between the scalar and the entry below it, not lines of the scalar.
+  while (content.length > 0 && content[content.length - 1] === "") {
+    content.pop();
+    const dropped = state.lines[first + content.length];
+    if (dropped !== undefined) state.content.delete(dropped.n);
+  }
   if (content.length === 0) return "";
 
   const text = style === "|" ? content.join("\n") : fold(content);
@@ -914,6 +944,7 @@ function skipSeparation(scanner: Scanner): void {
     // the value the collection is, like one after an entry, not on the key below it.
     for (const line of state.lines.slice(skipped, state.index)) {
       if (line.remark !== "") state.comments.set(line.n, line.remark);
+      else state.content.add(line.n);
     }
     if (next === undefined) return;
     if (next.indent === 0 && isDocumentMarker(next.text)) {

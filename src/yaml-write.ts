@@ -12,11 +12,12 @@
  *
  * Comments read off a file go back to the entries they belong to: one that sat on a line of its
  * own goes on a line above its entry, at the entry's indentation, and one that sat after a value
- * goes after the entry's first line.
+ * goes after the entry's first line. An empty line between two entries goes back above the entry
+ * below it, in its place among that entry's comments.
  */
 
 import { joinPointer } from "./pointer.js";
-import { type YamlComment, parseYaml, readYaml } from "./yaml.js";
+import { type YamlBlank, type YamlComment, parseYaml, readYaml } from "./yaml.js";
 
 const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
@@ -31,19 +32,24 @@ const UNPRINTABLE_IN_BLOCK = /[\0-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800
 /** The plain scalars YAML 1.1 resolves to a boolean, which 1.2 left as strings. */
 const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
 
-/** The comments to write, by the JSON Pointer of the entry each one belongs to. */
+/**
+ * The comments to write, by the JSON Pointer of the entry each one belongs to. The lines above
+ * an entry are its comments and its empty lines, an empty one written as `""`.
+ */
 interface Comments {
   above: Map<string, string[]>;
   after: Map<string, string>;
 }
 
 /**
- * Writes a JSON value as YAML, with the `comments` given, which `readYaml` reads off a file as
- * `attached`. Throws a `TypeError` for a value JSON cannot hold either, or for a comment whose
- * entry the value does not hold, and an `Error` if what it wrote does not read back as the value
- * and the comments, which would be a bug in the writer.
+ * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
+ * `readYaml` reads off a file as `attached` and `blanks`. An empty line with no entry below it
+ * is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON
+ * cannot hold either, or for a comment or an empty line whose entry the value does not hold,
+ * and an `Error` if what it wrote does not read back as the value and the comments, which would
+ * be a bug in the writer.
  */
-export function stringifyYaml(value: unknown, comments: readonly YamlComment[] = []): string {
+export function stringifyYaml(value: unknown, comments: readonly YamlComment[] = [], blanks: readonly YamlBlank[] = []): string {
   const json = JSON.stringify(value);
   if (json === undefined) throw new TypeError("stringifyYaml takes a JSON value");
   const placed: Comments = { above: new Map(), after: new Map() };
@@ -52,10 +58,17 @@ export function stringifyYaml(value: unknown, comments: readonly YamlComment[] =
     if (!comment.text.startsWith("#") || /[\r\n]/.test(comment.text)) {
       throw new TypeError(`the comment of line ${comment.line} is not one line starting with "#"`);
     }
-    if (comment.pointer === null) end.push(comment.text);
-    else if (comment.trailing && !placed.after.has(comment.pointer)) placed.after.set(comment.pointer, comment.text);
-    else placed.above.set(comment.pointer, [...(placed.above.get(comment.pointer) ?? []), comment.text]);
   }
+  // An empty line goes where it was among the comments above the same entry, so both are
+  // placed in the order of their lines.
+  const layout = [...comments, ...blanks.map(({ line, pointer }) => ({ line, text: "", pointer, trailing: false }))];
+  for (const { text, pointer, trailing } of layout.sort((a, b) => a.line - b.line)) {
+    if (pointer === null) end.push(text);
+    else if (trailing && !placed.after.has(pointer)) placed.after.set(pointer, text);
+    else placed.above.set(pointer, [...(placed.above.get(pointer) ?? []), text]);
+  }
+  while (end[end.length - 1] === "") end.pop();
+  const ending = end.filter((text) => text === "").length;
   // What JSON would make of it — no undefined members, no functions — is what is written.
   const lines = [...block(JSON.parse(json) as unknown, 0, "", placed), ...end];
   const text = `${lines.join("\n")}\n`;
@@ -65,6 +78,10 @@ export function stringifyYaml(value: unknown, comments: readonly YamlComment[] =
   }
   if (read.comments.length !== comments.length) {
     throw new TypeError(`${comments.length - read.comments.length} of the comments belong to an entry the value does not hold`);
+  }
+  const placedBlanks = blanks.filter(({ pointer }) => pointer !== null).length + ending;
+  if (read.blanks.length !== placedBlanks) {
+    throw new TypeError(`${placedBlanks - read.blanks.length} of the empty lines belong to an entry the value does not hold`);
   }
   return text;
 }
@@ -93,23 +110,26 @@ function block(value: unknown, indent: number, pointer: string, comments: Commen
 
 /** The lines of an entry with its comments: those above it, and the one after its first line. */
 function commented(lines: readonly string[], pad: string, pointer: string, comments: Comments): string[] {
-  const above = (comments.above.get(pointer) ?? []).map((text) => `${pad}${text}`);
+  const above = (comments.above.get(pointer) ?? []).map((text) => (text === "" ? "" : `${pad}${text}`));
   const after = comments.after.get(pointer);
   if (after === undefined) return [...above, ...lines];
   // The entry's own first line, below any comment its first key brought up above the dash.
-  const first = lines.findIndex((line) => !isComment(line));
+  const first = lines.findIndex((line) => !isLayout(line));
   return [...above, ...lines.map((line, index) => (index === first ? `${line} ${after}` : line))];
 }
 
-/** Whether a line the writer produced is a comment, which no key or dash it writes starts like. */
-function isComment(line: string): boolean {
-  return line.trimStart().startsWith("#");
+/**
+ * Whether a line the writer produced is a comment or an empty line between two entries, which
+ * no key or dash it writes looks like.
+ */
+function isLayout(line: string): boolean {
+  return line === "" || line.trimStart().startsWith("#");
 }
 
 /** One mapping entry or sequence item: `prefix` is its key and colon, or its dash. */
 function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, comments: Comments): string[] {
   const child = indent + INDENT;
-  // A flow list has no line of its own for a comment on one of its items.
+  // A flow list has no line of its own for a comment on one of its items, or an empty line between two.
   const flow = commentsWithin(pointer, comments) ? undefined : flowList(value);
   if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return [`${prefix} ${flow}`];
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
@@ -119,7 +139,7 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
     if (!dash) return [prefix, ...lines];
     // A comment above the first entry of that collection would split the dash from it, so it
     // goes above the dash.
-    const above = lines.findIndex((line) => !isComment(line));
+    const above = lines.findIndex((line) => !isLayout(line));
     const hoisted = lines.slice(0, above).map((line) => line.slice(child - indent));
     const [first = "", ...rest] = lines.slice(above);
     return [...hoisted, `${prefix} ${first.slice(child)}`, ...rest];
