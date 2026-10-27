@@ -160,6 +160,15 @@ function pruneUnusedDefs(root: JsonSchema): AppliedFix[] {
  * `pruneUnusedDefs` additionally removes the definitions the input itself left unreferenced.
  */
 export function fix(schema: unknown, options: FixOptions = {}): FixResult {
+  return fixExcept(schema, options, new Set());
+}
+
+/**
+ * `fix()`, leaving the findings of the rules in `held` as they are. A fix that is right for a
+ * schema sent on its own can be wrong for one that is also part of a larger document: wrapping
+ * an OpenAPI component's root changes what every reference to it means.
+ */
+export function fixExcept(schema: unknown, options: FixOptions, held: ReadonlySet<string>): FixResult {
   if (!isJsonSchema(schema)) {
     throw new TypeError("Schema must be a JSON object.");
   }
@@ -174,7 +183,7 @@ export function fix(schema: unknown, options: FixOptions = {}): FixResult {
     let changed = false;
 
     for (const finding of deepestFirst(result.findings)) {
-      if (!finding.fix) continue;
+      if (!finding.fix || held.has(finding.ruleId)) continue;
       // Re-read the node: an earlier fix in this pass may already have rewritten it.
       const target = resolvePointer(current, finding.path);
       if (!isJsonSchema(target)) continue;

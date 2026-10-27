@@ -47,7 +47,7 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Keep the blank lines between the entries of a YAML file a rewrite touches, which the writer drops today, so two tool definitions a file kept apart stay apart
 - [ ] Keep the layout of a YAML file a rewrite touches: the sequence at its key's indentation, the folded (`>`) description wrapped where the file wrapped it, which the writer gives up today for its own two-space block style and a literal block
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
-- [ ] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
+- [x] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
 - [ ] Translate OpenAPI 3.0's `nullable: true` into the `type` array or `anyOf` with `null` that JSON Schema spells it as, under `--openapi`, which reads it as the keyword it is today
 - [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`

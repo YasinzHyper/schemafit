@@ -1,5 +1,8 @@
+import { fixExcept } from "./fix.js";
+import { summarize } from "./lint.js";
 import { joinPointer, unescapeToken } from "./pointer.js";
-import type { Finding, JsonSchema, LintResult } from "./types.js";
+import { PROVIDER_IDS } from "./types.js";
+import type { Finding, FixOptions, FixResult, JsonSchema, LintResult } from "./types.js";
 import type { UnwrappedSchema } from "./unwrap.js";
 import { isJsonSchema } from "./walk.js";
 
@@ -15,10 +18,13 @@ function componentSchemas(document: unknown): JsonSchema | undefined {
   return isJsonSchema(schemas) ? schemas : undefined;
 }
 
-/** The component a `$ref` names, when it names one: `#/components/schemas/Pet/properties/id` names `Pet`. */
-function referencedComponent(ref: string): string | undefined {
-  if (!ref.startsWith(COMPONENT_REF)) return undefined;
-  const [token] = ref.slice(COMPONENT_REF.length).split("/");
+/**
+ * The name a `$ref` names under `prefix`, when it names one: `#/components/schemas/Pet/properties/id`
+ * names the component `Pet`, and `#/$defs/Pet/properties/id` the definition `Pet`.
+ */
+function referencedName(ref: string, prefix: string = COMPONENT_REF): string | undefined {
+  if (!ref.startsWith(prefix)) return undefined;
+  const [token] = ref.slice(prefix.length).split("/");
   if (!token) return undefined;
   try {
     return unescapeToken(decodeURIComponent(token));
@@ -27,16 +33,19 @@ function referencedComponent(ref: string): string | undefined {
   }
 }
 
-/** A copy of `value` with every reference to a component rewritten to the same name under `$defs`. */
-function retarget(value: unknown, names: ReadonlySet<string>): unknown {
-  if (Array.isArray(value)) return value.map((item) => retarget(item, names));
+/**
+ * A copy of `value` with every reference to one of `names` under `from` rewritten to the same
+ * name under `to`: by default a component's, to the definition `bundle` copies it into.
+ */
+function retarget(value: unknown, names: ReadonlySet<string>, from = COMPONENT_REF, to = DEFS_REF): unknown {
+  if (Array.isArray(value)) return value.map((item) => retarget(item, names, from, to));
   if (!isJsonSchema(value)) return value;
 
   const copy: JsonSchema = {};
   for (const [key, child] of Object.entries(value)) {
-    const name = key === "$ref" && typeof child === "string" ? referencedComponent(child) : undefined;
+    const name = key === "$ref" && typeof child === "string" ? referencedName(child, from) : undefined;
     copy[key] =
-      name !== undefined && names.has(name) ? DEFS_REF + (child as string).slice(COMPONENT_REF.length) : retarget(child, names);
+      name !== undefined && names.has(name) ? to + (child as string).slice(from.length) : retarget(child, names, from, to);
   }
   return copy;
 }
@@ -48,7 +57,7 @@ function references(value: unknown, into: Set<string>): Set<string> {
   } else if (isJsonSchema(value)) {
     for (const [key, child] of Object.entries(value)) {
       if (key === "$ref" && typeof child === "string") {
-        const name = referencedComponent(child);
+        const name = referencedName(child);
         if (name !== undefined) into.add(name);
       } else {
         references(child, into);
@@ -169,4 +178,84 @@ export function withoutCopiedFindings(
     });
     return findings.length === result.findings.length ? result : { findings, summary: summarize(findings) };
   });
+}
+
+/**
+ * The fixes that rewrite what a component is rather than how it is spelled, held back under
+ * `fixOpenApi`. Wrapping a non-object root in `{ "result": ... }` is right for a schema sent on
+ * its own, but a component is also what every `#/components/schemas/<name>` reference to it
+ * means, so the wrapped one would change the API the document describes, the requests and
+ * responses that use it included. Wrap such a component where it is sent instead.
+ */
+const HELD_IN_COMPONENTS: ReadonlySet<string> = new Set(["openai/root-object"]);
+
+/**
+ * A fixed bundle turned back into the component it was made from: the copies of `names` taken
+ * out of its `$defs`, which goes too once it holds nothing, and every reference to one of them
+ * pointed at the component again.
+ */
+function unbundle(schema: JsonSchema, names: ReadonlySet<string>): JsonSchema {
+  if (names.size === 0) return schema;
+  const restored = retarget(schema, names, DEFS_REF, COMPONENT_REF) as JsonSchema;
+  if (!isJsonSchema(restored.$defs)) return restored;
+  const defs = Object.fromEntries(Object.entries(restored.$defs).filter(([name]) => !names.has(name)));
+  if (Object.keys(defs).length > 0) restored.$defs = defs;
+  else delete restored.$defs;
+  return restored;
+}
+
+/** One component of an OpenAPI document after `fixOpenApi`, the schema back in its own shape. */
+export type FixedComponent = Omit<OpenApiSchema, "schema"> & FixResult;
+
+/**
+ * Applies every available fix to each schema under `components.schemas` and puts it back where
+ * it came from, so a fix lands once, in the component it belongs to.
+ *
+ * Each component is fixed as the bundle `openApiSchemas` lints, so a fix sees the components
+ * it references, and an `allOf` of one can be merged. The copies the bundle made under `$defs`
+ * are then taken out again and its references pointed back at `#/components/schemas/`, and the
+ * fixes made inside a copy are dropped from its report: they are applied, and reported, on the
+ * component the copy was made from. What a fix inlined into the component stays in it.
+ *
+ * The fix for `openai/root-object` is held back: see `HELD_IN_COMPONENTS`. Returns the
+ * rewritten document, which is the input left untouched when it declares no schema components,
+ * and one result per component. Throws a TypeError for a component that is not a JSON object,
+ * or whose `$defs` cannot take the components it references.
+ */
+export function fixOpenApi(
+  document: unknown,
+  options: FixOptions = {},
+): { document: unknown; components: FixedComponent[] } {
+  const components = componentSchemas(document);
+  const found = openApiSchemas(document);
+  if (components === undefined || found.length === 0) return { document, components: [] };
+
+  const results = found.map((component) => {
+    const own = components[component.name as string];
+    const defs = isJsonSchema(own) && isJsonSchema(own.$defs) ? own.$defs : {};
+    // A copy the component's own `$defs` already held, identical, is its own definition too.
+    const copies = new Set(component.copied.filter((name) => !(name in defs)));
+    let result: FixResult;
+    try {
+      result = fixExcept(component.schema, options, HELD_IN_COMPONENTS);
+    } catch (error) {
+      if (error instanceof TypeError) throw new TypeError(`Component "${component.name}": ${error.message}`);
+      throw error;
+    }
+    const applied = result.applied.filter((item) => copiedLocation(item.path, [...copies]) === undefined);
+    return { ...result, schema: unbundle(result.schema, copies), applied };
+  });
+
+  const selected = options.providers ?? PROVIDER_IDS;
+  const remaining = withoutCopiedFindings(found, results, (findings) => summarize(findings, selected));
+  const fixed: JsonSchema = structuredClone(components);
+  const out = found.map((component, index): FixedComponent => {
+    const { schema: _bundle, ...where } = component;
+    const result = results[index] as FixResult;
+    fixed[component.name as string] = result.schema;
+    return { ...where, ...result, ...(remaining[index] as LintResult) };
+  });
+  const rewritten = structuredClone(document) as { components: { schemas: JsonSchema } };
+  rewritten.components.schemas = fixed;
+  return { document: rewritten, components: out };
 }

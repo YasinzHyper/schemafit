@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lint, openApiSchemas } from "../src/index.js";
+import { fixOpenApi, lint, openApiSchemas } from "../src/index.js";
 import type { Finding, LintResult } from "../src/index.js";
 import { summarize } from "../src/lint.js";
 import { withoutCopiedFindings } from "../src/openapi.js";
@@ -114,5 +114,71 @@ describe("withoutCopiedFindings", () => {
       { findings: [only], summary: counted([only]) },
     ];
     expect(withoutCopiedFindings(components, results, counted)[1]?.findings).toEqual([only]);
+  });
+});
+
+describe("fixOpenApi", () => {
+  it("fixes each component and puts it back without the copies of the components it references", () => {
+    const document = openApi({ Tag: tag, Pet: pet });
+    const { document: fixed, components } = fixOpenApi(document, { providers: ["anthropic"] });
+    expect((fixed as { components: unknown }).components).toEqual({
+      schemas: {
+        Tag: strictObject({ name: { type: "string", description: "Must be at least 1 character long." } }),
+        Pet: pet,
+      },
+    });
+    expect(components.map(({ name, applied }) => [name, applied.map((item) => item.path)])).toEqual([
+      ["Tag", ["/properties/name"]],
+      ["Pet", []],
+    ]);
+    expect(document).toEqual(openApi({ Tag: tag, Pet: pet }));
+  });
+
+  it("reports what remains in a copy on the component it was copied from alone", () => {
+    const loose = { type: "object", properties: { at: { type: "string", format: "email" } } };
+    const holder = strictObject({ loose: { $ref: "#/components/schemas/Loose" } });
+    const { components } = fixOpenApi(openApi({ Loose: loose, Holder: holder }), { providers: ["gemini"] });
+    expect(components.map(({ name, findings }) => [name, findings.map((item) => item.path)])).toEqual([
+      ["Loose", ["/properties/at"]],
+      ["Holder", []],
+    ]);
+  });
+
+  it("keeps what a fix inlined into the component, and the component's own definitions", () => {
+    const base = strictObject({ id: { type: "integer" } });
+    const named = {
+      allOf: [{ $ref: "#/components/schemas/Base" }, strictObject({ name: { type: "string" } })],
+      $defs: { Id: { type: "integer" } },
+    };
+    const { document } = fixOpenApi(openApi({ Base: base, Named: named }), { providers: ["anthropic"] });
+    const schemas = (document as { components: { schemas: Record<string, { $defs?: unknown; allOf?: unknown }> } })
+      .components.schemas;
+    expect(schemas.Named?.allOf).toEqual([base, named.allOf[1]]);
+    expect(schemas.Named?.$defs).toEqual({ Id: { type: "integer" } });
+  });
+
+  it("points a reference that stays back at the component", () => {
+    const branches = [{ $ref: "#/components/schemas/Node" }, { type: "null" }];
+    const node = strictObject({ next: { oneOf: branches } });
+    const { document } = fixOpenApi(openApi({ Node: node }), { providers: ["openai"] });
+    expect((document as { components: { schemas: unknown } }).components.schemas).toEqual({
+      Node: strictObject({ next: { anyOf: branches } }),
+    });
+  });
+
+  it("does not wrap the root of a component that is not an object", () => {
+    const status = { type: "string", enum: ["available", "sold"] };
+    const { document, components } = fixOpenApi(openApi({ Status: status }), { providers: ["openai"] });
+    expect((document as { components: { schemas: unknown } }).components.schemas).toEqual({ Status: status });
+    expect(components[0]?.findings.map((item) => item.ruleId)).toEqual(["openai/root-object"]);
+  });
+
+  it("names a component that is not a JSON object", () => {
+    expect(() => fixOpenApi(openApi({ Tag: tag, Any: true }))).toThrow('Component "Any": Schema must be a JSON object.');
+  });
+
+  it("returns a document without schema components as it is", () => {
+    const document = { openapi: "3.1.1", paths: {} };
+    expect(fixOpenApi(document)).toEqual({ document, components: [] });
   });
 });
