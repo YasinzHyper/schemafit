@@ -1005,11 +1005,56 @@ $defs:
       expect(stderr).toContain('Component "Pet": "$defs" already defines "Tag"');
     });
 
-    it("refuses --fix", async () => {
-      const file = await openApiFile({ Tag: tag });
-      const { code, stderr } = await cli(["--openapi", "--fix", file]);
-      expect(code).toBe(2);
-      expect(stderr).toContain("--fix does not take --openapi yet");
+    it("rewrites each component in place with --fix, without the copies of the others", async () => {
+      const file = await openApiFile({ Tag: tag, Pet: pet });
+      const { code, stdout, stderr } = await cli(["--openapi", "--fix", "-p", "anthropic", file]);
+      expect(code).toBe(0);
+      const { components } = JSON.parse(stdout) as { components: { schemas: Record<string, unknown> } };
+      expect(components.schemas.Tag).toEqual({
+        ...tag,
+        properties: { name: { type: "string", description: "Must be at least 1 character long." } },
+      });
+      expect(components.schemas.Pet).toEqual(pet);
+      expect(stderr).toContain("#/components/schemas/Tag  Tag  (OpenAPI component)");
+      expect(stderr.match(/anthropic\/no-string-length/g)).toHaveLength(1);
+      expect(stderr).not.toContain("#/$defs");
+    });
+
+    it("rewrites an OpenAPI document written in YAML in place, its comments kept", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.1.1",
+          "components:",
+          "  schemas:",
+          "    # The pet's tag",
+          "    Tag:",
+          "      type: object",
+          "      properties:",
+          "        name: { type: string, minLength: 1 } # never empty",
+          "      required: [name]",
+          "      additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code } = await cli(["--openapi", "--fix", "--write", "-p", "anthropic", file]);
+      expect(code).toBe(0);
+      const written = await readFile(file, "utf8");
+      expect(written).toContain("    # The pet's tag\n    Tag:");
+      expect(written).toContain("name: # never empty");
+      expect(written).toContain("description: Must be at least 1 character long.");
+      expect(written).not.toContain("minLength");
+    });
+
+    it("leaves the root of a component that is not an object unwrapped with --fix", async () => {
+      const status = { type: "string", enum: ["available", "sold"] };
+      const file = await openApiFile({ Status: status });
+      const { code, stdout, stderr } = await cli(["--openapi", "--fix", "-p", "openai", file]);
+      expect(code).toBe(1);
+      expect((JSON.parse(stdout) as { components: { schemas: unknown } }).components.schemas).toEqual({ Status: status });
+      expect(stderr).toContain("openai/root-object");
     });
   });
 });

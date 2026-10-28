@@ -80,6 +80,9 @@ schemafit examples/agent-tools.yaml
 # Every schema an OpenAPI document keeps under components.schemas
 schemafit --openapi openapi.yaml
 
+# ...and fix each one in place, under components.schemas
+schemafit --openapi --fix --provider openai --write openapi.yaml
+
 # From stdin
 cat schema.json | schemafit -
 
@@ -188,7 +191,9 @@ A shared component would then be reported once for every component that uses it,
 openapi.yaml#/components/schemas/Pet  Pet  (OpenAPI component, with the components it references under $defs)
 ```
 
-A component that is only ever part of another, a string `enum` say, is still checked as the root of a schema, so expect `openai/root-object` on it, and narrow `--provider` if you will never send it alone. The schemas are checked as they are written: OpenAPI 3.0's `nullable` is read as the keyword it is, not translated to a `type` array. `--fix` does not take `--openapi` yet.
+A component that is only ever part of another, a string `enum` say, is still checked as the root of a schema, so expect `openai/root-object` on it, and narrow `--provider` if you will never send it alone. The schemas are checked as they are written: OpenAPI 3.0's `nullable` is read as the keyword it is, not translated to a `type` array.
+
+`--fix --openapi` rewrites each component as that same schema and puts it back under `components.schemas` with the copies taken out again: the references the bundle pointed at `#/$defs/<name>` point at `#/components/schemas/<name>` once more, while a reference the component itself wrote to a definition of its own is left alone, as is a `$defs` it declared, and a fix is applied and reported once, in the component it belongs to, rather than in every copy of it. A fix that inlines a referenced component — the `allOf` of a `$ref` that `openai/unsupported-composition` merges and `anthropic/allof-ref` resolves — leaves what it inlined in the component, which is the point of it. The rest of the document is written back as it was, and `--write` and `--out` work as they do for any file, a YAML document's comments included. One fix is held back: `openai/root-object` would wrap a component that is not an object in `{ "result": ... }`, and a component is also what every reference to it means, so the wrap would change the requests and responses the document describes. That finding stays, for you to wrap the schema where you send it.
 
 ### Only the schemas you send strictly
 
@@ -366,12 +371,20 @@ const { value, attached, blanks } = readYaml(await readFile("schema.yaml", "utf8
 await writeFile("schema.yaml", stringifyYaml(fix(value, { providers: ["openai"] }).schema, attached, blanks));
 ```
 
-`openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, and the components it `copied` under `$defs`:
+`openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, the components it `copied` under `$defs`, and `copiedAs`, the key each copy sits at: the component's name, or `components.schemas.<name>` when the component's own `$defs` already uses that name, so a reference the bundle rewrote never reads as one the component wrote itself:
 
 ```ts
 import { lint, openApiSchemas } from "schemafit";
 
 for (const { name, schema } of openApiSchemas(document)) console.log(name, lint(schema).summary);
+```
+
+`fixOpenApi` is what `--fix --openapi` runs. It returns the rewritten `document`, its input untouched, and one result per component, with the `schema` back in its own shape and the `applied` fixes and remaining `findings` of that component alone:
+
+```ts
+import { fixOpenApi } from "schemafit";
+
+const { document: fixed, components } = fixOpenApi(document, { providers: ["openai"] });
 ```
 
 Each entry also carries `pointer`, the JSON Pointer from the document to the schema, `wrapper`, the wrapper it was found in, `kind` (`"tool"` or `"format"`), and `strict`, what the declaration says about strict decoding. `unwrap` is still there for a document that holds exactly one schema.

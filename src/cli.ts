@@ -5,11 +5,11 @@ import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
-import { openApiSchemas, withoutCopiedFindings } from "./openapi.js";
+import { fixOpenApi, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
-import type { AppliedFix, LintResult, ProviderId, RuleMeta } from "./types.js";
+import type { AppliedFix, FixResult, LintResult, ProviderId, RuleMeta } from "./types.js";
 import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
@@ -94,7 +94,10 @@ copied component is reported once, on that component's own report, unless only t
 schema around it shows it. A component that is only ever part of another, an enum
 say, is still checked as a root, so expect openai/root-object on it; the schemas are
 checked as written, so an OpenAPI 3.0 "nullable" is read as the keyword it is.
---fix does not take --openapi yet.
+With --fix, each component is rewritten as that schema and put back under
+components.schemas without the copies, so a fix lands once, in the component it
+belongs to. A component's root is not wrapped in an object for openai/root-object,
+because every reference to it would change meaning with it.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -361,8 +364,9 @@ function noSchemaReason(label: string, document: unknown): string {
  * with none is a usage error, and so is a component whose `$defs` cannot take the components
  * it references.
  */
-async function readOpenApi(file: string, io: CliIo): Promise<{ label: string; schemas: OpenApiSchema[] }> {
-  const { label, document } = await readDocument(file, io);
+async function readOpenApi(file: string, io: CliIo): Promise<ReadDocument & { schemas: OpenApiSchema[] }> {
+  const read = await readDocument(file, io);
+  const { label, document } = read;
   let schemas: OpenApiSchema[];
   try {
     schemas = openApiSchemas(document);
@@ -373,7 +377,7 @@ async function readOpenApi(file: string, io: CliIo): Promise<{ label: string; sc
   if (schemas.length === 0) {
     throw new UsageError(`${label} declares no schema under components.schemas, which is where --openapi looks.`);
   }
-  return { label, schemas };
+  return { ...read, schemas };
 }
 
 /** Lints every schema component of an OpenAPI document, each as its own request. */
@@ -409,6 +413,7 @@ interface FixRequest {
   write: boolean;
   pruneUnusedDefs: boolean;
   allTools: boolean;
+  openapi: boolean;
 }
 
 /** One file rewritten in memory: the document to write out, and one report per schema in it. */
@@ -421,15 +426,20 @@ interface PlannedFix {
 }
 
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
-async function planFix(file: string, { providers, out, write, pruneUnusedDefs, allTools }: FixRequest, io: CliIo): Promise<PlannedFix> {
-  const { label, document, schemas, comments = [], blanks = [] } = await readSchemas(file, io);
+async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
+  const { providers, out, write, pruneUnusedDefs, allTools } = request;
+  const { label, document, schemas, comments = [], blanks = [] } = request.openapi
+    ? await readOpenApi(file, io)
+    : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
   const destination = write ? label : (out ?? label);
   // A schema the request does not send strictly is left exactly as it was. The rewrites trade a
   // constraint away for a subset rule — a "minimum" moved into "description", a dropped
   // "format" — and a non-strict schema is bound by no such rule: the model is still shown the
   // constraint, and your own validator still reads it, so the trade would be a loss for nothing.
+  // A component of an OpenAPI document declares no "strict", so every one of them is fixed.
   const { checked, skipped } = selectStrict(schemas, allTools);
+  const components = request.openapi ? fixComponents(label, document, { providers, pruneUnusedDefs }) : undefined;
 
   const reports: FixReport[] = [];
   // Each comment and empty line follows its entry through the fixes that move one, a rename or
@@ -437,21 +447,22 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   let moved = comments;
   let movedBlanks = blanks;
   let rewritten: unknown = document;
-  for (const found of checked) {
-    let result;
+  for (const [index, found] of checked.entries()) {
+    let result: FixResult;
     try {
-      result = fix(found.schema, { providers, pruneUnusedDefs });
+      result = components?.[index] ?? fix(found.schema, { providers, pruneUnusedDefs });
     } catch (error) {
       if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
       throw error;
     }
-    // Each rewrite goes back where it came from, so a request body comes out whole.
+    // Each rewrite goes back where it came from, so a request body comes out whole, and a
+    // component without the copies of the components it references.
     rewritten = rewrap(rewritten, found.keys, result.schema);
     for (const applied of result.applied) {
       moved = moved.map((comment) => follow(comment, found.pointer, applied));
       movedBlanks = movedBlanks.map((blank) => follow(blank, found.pointer, applied));
     }
-    reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
+    reports.push({ ...sourceOf(destination, found, request.openapi || schemas.length > 1), ...result });
   }
 
   // The rewrite is written in the format the name of the file it goes to declares. Stdout has
@@ -480,6 +491,24 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
   const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
+}
+
+/**
+ * Every schema component of an OpenAPI document, fixed and back in its own shape: what a fix
+ * made of the copies of other components is dropped, since each is fixed where it is declared.
+ */
+function fixComponents(label: string, document: unknown, options: Pick<FixRequest, "providers" | "pruneUnusedDefs">): FixResult[] {
+  try {
+    return fixOpenApi(document, options).components.map(({ schema, applied, findings, summary }) => ({
+      schema,
+      applied,
+      findings,
+      summary,
+    }));
+  } catch (error) {
+    if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
+    throw error;
+  }
 }
 
 /** A comment or an empty line, moved to where `applied` put its entry. */
@@ -598,10 +627,6 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       throw new UsageError("--prune-unused-defs only applies with --fix.");
     }
 
-    if (values.openapi && values.fix) {
-      throw new UsageError("--fix does not take --openapi yet; lint the document with --openapi alone.");
-    }
-
     if (values.fix) {
       if (positionals[0] === "rules") throw new UsageError("--fix does not apply to the rules subcommand.");
       if (positionals.length === 0) {
@@ -619,6 +644,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         write: values.write,
         pruneUnusedDefs: values["prune-unused-defs"],
         allTools: values["all-tools"],
+        openapi: values.openapi,
       };
       return await runFix(positionals, request, io);
     }
