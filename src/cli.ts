@@ -9,12 +9,12 @@ import { openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
-import type { LintResult, ProviderId, RuleMeta } from "./types.js";
+import type { AppliedFix, LintResult, ProviderId, RuleMeta } from "./types.js";
 import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
-import type { YamlComment } from "./yaml.js";
+import type { YamlBlank, YamlComment } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -81,7 +81,9 @@ one after a value to that value's entry, which follows the entry when a fix
 moves it: a oneOf renamed to anyOf, a root wrapped in an object, a minimum or a
 format folded into description. A comment on an entry the rewrite removes has
 nowhere to go, so --write refuses to rewrite a file that holds one, naming its
-line, rather than delete it.
+line, rather than delete it. An empty line between two entries goes back above
+the entry below it in the same way, so tool definitions a file kept apart stay
+apart.
 
 --openapi checks every schema an OpenAPI document keeps under components.schemas,
 each reported under its component name as the schema it would be on its own: the
@@ -175,11 +177,12 @@ function isYamlFile(file: string): boolean {
   return YAML_EXTENSIONS.some((extension) => lower.endsWith(extension));
 }
 
-/** A document as read, with its comments when it was read as YAML. */
+/** A document as read, with its comments and empty lines when it was read as YAML. */
 interface ReadDocument {
   label: string;
   document: unknown;
   comments?: YamlComment[];
+  blanks?: YamlBlank[];
 }
 
 /**
@@ -217,9 +220,9 @@ async function readDocument(file: string, io: CliIo): Promise<ReadDocument> {
   }
 }
 
-function yamlDocument(text: string): { document: unknown; comments: YamlComment[] } {
-  const { value, attached } = readYaml(text);
-  return { document: value, comments: attached };
+function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[] } {
+  const { value, attached, blanks } = readYaml(text);
+  return { document: value, comments: attached, blanks };
 }
 
 /** Names a schema inside a document, for an error about that schema alone. */
@@ -419,7 +422,7 @@ interface PlannedFix {
 
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
 async function planFix(file: string, { providers, out, write, pruneUnusedDefs, allTools }: FixRequest, io: CliIo): Promise<PlannedFix> {
-  const { label, document, schemas, comments = [] } = await readSchemas(file, io);
+  const { label, document, schemas, comments = [], blanks = [] } = await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
   const destination = write ? label : (out ?? label);
   // A schema the request does not send strictly is left exactly as it was. The rewrites trade a
@@ -429,8 +432,10 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const { checked, skipped } = selectStrict(schemas, allTools);
 
   const reports: FixReport[] = [];
-  // Each comment follows its entry through the fixes that move one, a rename or a wrapped root.
+  // Each comment and empty line follows its entry through the fixes that move one, a rename or
+  // a wrapped root.
   let moved = comments;
+  let movedBlanks = blanks;
   let rewritten: unknown = document;
   for (const found of checked) {
     let result;
@@ -443,9 +448,8 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
     // Each rewrite goes back where it came from, so a request body comes out whole.
     rewritten = rewrap(rewritten, found.keys, result.schema);
     for (const applied of result.applied) {
-      moved = moved.map((comment) =>
-        comment.pointer === null ? comment : { ...comment, pointer: movedPointer(comment.pointer, found.pointer, applied) },
-      );
+      moved = moved.map((comment) => follow(comment, found.pointer, applied));
+      movedBlanks = movedBlanks.map((blank) => follow(blank, found.pointer, applied));
     }
     reports.push({ ...sourceOf(destination, found, schemas.length > 1), ...result });
   }
@@ -472,12 +476,19 @@ async function planFix(file: string, { providers, out, write, pruneUnusedDefs, a
   const notes = [formatNote, commentNote, skippedNote(label, skipped, checked.length)].filter((note) => note !== undefined);
   // --write leaves a file no fix changed as it is, so there is nothing to write out for it.
   const unwritten = write && !changed;
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
+  const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 
-/** Whether the entry a comment belongs to is still in the rewritten document. */
-function keepsEntry({ pointer }: YamlComment, document: unknown): boolean {
+/** A comment or an empty line, moved to where `applied` put its entry. */
+function follow<T extends { pointer: string | null }>(item: T, schema: string, applied: AppliedFix): T {
+  return item.pointer === null ? item : { ...item, pointer: movedPointer(item.pointer, schema, applied) };
+}
+
+/** Whether the entry a comment or an empty line belongs to is still in the rewritten document. */
+function keepsEntry({ pointer }: { pointer: string | null }, document: unknown): boolean {
   return pointer === null || resolvePointer(document, pointer) !== undefined;
 }
 
