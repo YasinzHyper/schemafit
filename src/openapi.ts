@@ -34,18 +34,19 @@ function referencedName(ref: string, prefix: string = COMPONENT_REF): string | u
 }
 
 /**
- * A copy of `value` with every reference to one of `names` under `from` rewritten to the same
- * name under `to`: by default a component's, to the definition `bundle` copies it into.
+ * A copy of `value` with every reference under `from` to a name `to` maps rewritten under the
+ * prefix it maps to, the rest of the reference kept as it was spelled: by default a component's,
+ * to the definition `bundle` copies it into.
  */
-function retarget(value: unknown, names: ReadonlySet<string>, from = COMPONENT_REF, to = DEFS_REF): unknown {
-  if (Array.isArray(value)) return value.map((item) => retarget(item, names, from, to));
+function retarget(value: unknown, to: ReadonlyMap<string, string>, from = COMPONENT_REF): unknown {
+  if (Array.isArray(value)) return value.map((item) => retarget(item, to, from));
   if (!isJsonSchema(value)) return value;
 
   const copy: JsonSchema = {};
   for (const [key, child] of Object.entries(value)) {
     const name = key === "$ref" && typeof child === "string" ? referencedName(child, from) : undefined;
-    copy[key] =
-      name !== undefined && names.has(name) ? to + (child as string).slice(from.length) : retarget(child, names, from, to);
+    const prefix = name === undefined ? undefined : to.get(name);
+    copy[key] = prefix !== undefined ? prefix + (child as string).slice(from.length) : retarget(child, to, from);
   }
   return copy;
 }
@@ -81,39 +82,64 @@ function reachable(components: JsonSchema, start: string): string[] {
 }
 
 /**
+ * What a copied component is named under `$defs` when the component it is copied into already
+ * defines its name there. The name is appended to it as the reference spelled it, so the
+ * reference can be spelled the same way again once the copy is taken out.
+ */
+const RENAMED_COPY = "components.schemas.";
+
+/**
  * One component as it would be sent on its own: the schema, with every component it reaches
  * copied under `$defs` and every `#/components/schemas/<name>` reference rewritten to
  * `#/$defs/<name>`, so the references resolve inside the schema the way a provider resolves them.
- * Throws a TypeError when the component's own `$defs` already holds a different schema under
- * one of those names, because the bundle could not hold both.
+ * A copy whose name the component's own `$defs` already uses, for a copy of its own, goes under
+ * `components.schemas.<name>` instead, so the references the bundle rewrote stay apart from the
+ * ones the component wrote. Throws a TypeError when the component's own `$defs` already holds a
+ * different schema under one of those names, because the bundle could not hold both.
  */
-function bundle(components: JsonSchema, name: string): { schema: unknown; copied: string[] } {
+function bundle(components: JsonSchema, name: string): { schema: unknown; copied: string[]; copiedAs: Record<string, string> } {
   const component = components[name];
   const copied = reachable(components, name);
-  if (!isJsonSchema(component) || copied.length === 0) return { schema: component, copied };
+  if (!isJsonSchema(component) || copied.length === 0) return { schema: component, copied, copiedAs: {} };
 
-  const names = new Set(copied);
-  const schema = retarget(component, names) as JsonSchema;
-  const own = schema.$defs;
+  const own = component.$defs;
   if (own !== undefined && !isJsonSchema(own)) {
     throw new TypeError(`Component "${name}": "$defs" must be an object to bundle the components it references into.`);
   }
-  const defs: JsonSchema = { ...own };
+  const copiedAs: Record<string, string> = {};
+  const to = new Map<string, string>();
   for (const copy of copied) {
-    const definition = retarget(components[copy], names);
-    if (copy in defs && JSON.stringify(defs[copy]) !== JSON.stringify(definition)) {
+    const renamed = own !== undefined && copy in own;
+    copiedAs[copy] = renamed ? RENAMED_COPY + copy : copy;
+    to.set(copy, DEFS_REF + (renamed ? RENAMED_COPY : ""));
+  }
+
+  const schema = retarget(component, to) as JsonSchema;
+  const defs: JsonSchema = { ...(schema.$defs as JsonSchema | undefined) };
+  for (const copy of copied) {
+    const definition = retarget(components[copy], to);
+    const key = copiedAs[copy] as string;
+    if (key !== copy && JSON.stringify(defs[copy]) !== JSON.stringify(definition)) {
       throw new TypeError(`Component "${name}": "$defs" already defines "${copy}", the name of a component it references.`);
     }
-    defs[copy] = definition;
+    if (key in defs) {
+      throw new TypeError(`Component "${name}": "$defs" already defines "${key}", the name its copy of "${copy}" needs.`);
+    }
+    defs[key] = definition;
   }
   schema.$defs = defs;
-  return { schema, copied };
+  return { schema, copied, copiedAs };
 }
 
 /** One component of an OpenAPI document, ready to lint. */
 export interface OpenApiSchema extends UnwrappedSchema {
   /** The components copied under `$defs` because this one references them. */
   copied: string[];
+  /**
+   * The key under `$defs` each copied component sits at: its name, or `components.schemas.<name>`
+   * when the component's own `$defs` already uses that name.
+   */
+  copiedAs: Record<string, string>;
 }
 
 /**
@@ -126,7 +152,7 @@ export function openApiSchemas(document: unknown): OpenApiSchema[] {
   const components = componentSchemas(document);
   if (components === undefined) return [];
   return Object.keys(components).map((name) => {
-    const { schema, copied } = bundle(components, name);
+    const { schema, copied, copiedAs } = bundle(components, name);
     const keys = [...COMPONENTS, name];
     return {
       schema,
@@ -136,16 +162,18 @@ export function openApiSchemas(document: unknown): OpenApiSchema[] {
       pointer: joinPointer("", ...keys),
       name,
       copied,
+      copiedAs,
     };
   });
 }
 
 /** The component a finding in a bundle sits in, and its path inside that component. */
-function copiedLocation(path: string, copied: readonly string[]): { name: string; path: string } | undefined {
+function copiedLocation(path: string, copiedAs: Readonly<Record<string, string>>): { name: string; path: string } | undefined {
   if (!path.startsWith("/$defs/")) return undefined;
   const [token = "", ...rest] = path.slice("/$defs/".length).split("/");
-  const name = unescapeToken(token);
-  if (!copied.includes(name)) return undefined;
+  const key = unescapeToken(token);
+  const name = Object.keys(copiedAs).find((copy) => copiedAs[copy] === key);
+  if (name === undefined) return undefined;
   return { name, path: rest.length > 0 ? `/${rest.join("/")}` : "" };
 }
 
@@ -171,9 +199,9 @@ export function withoutCopiedFindings(
   });
 
   return results.map((result, index) => {
-    const copied = components[index]?.copied ?? [];
+    const copiedAs = components[index]?.copiedAs ?? {};
     const findings = result.findings.filter((item) => {
-      const location = copiedLocation(item.path, copied);
+      const location = copiedLocation(item.path, copiedAs);
       return location === undefined || !own.get(location.name)?.has(`${item.ruleId} ${location.path}`);
     });
     return findings.length === result.findings.length ? result : { findings, summary: summarize(findings) };
@@ -190,16 +218,21 @@ export function withoutCopiedFindings(
 const HELD_IN_COMPONENTS: ReadonlySet<string> = new Set(["openai/root-object"]);
 
 /**
- * A fixed bundle turned back into the component it was made from: the copies of `names` taken
- * out of its `$defs`, which goes too once it holds nothing, and every reference to one of them
- * pointed at the component again.
+ * A fixed bundle turned back into the component it was made from: the copies `copiedAs` names
+ * taken out of its `$defs`, and every reference the bundle pointed at one of them pointed at the
+ * component again. The `$defs` goes too once it holds nothing, unless the component declared it.
  */
-function unbundle(schema: JsonSchema, names: ReadonlySet<string>): JsonSchema {
-  if (names.size === 0) return schema;
-  const restored = retarget(schema, names, DEFS_REF, COMPONENT_REF) as JsonSchema;
+function unbundle(schema: JsonSchema, copiedAs: Readonly<Record<string, string>>, declared: boolean): JsonSchema {
+  const copies = Object.entries(copiedAs);
+  if (copies.length === 0) return schema;
+  // The renamed copies first: `#/$defs/components.schemas.<name>` is no reference to `<name>`.
+  const renamed = new Map(copies.filter(([name, key]) => key !== name).map(([name]) => [name, COMPONENT_REF]));
+  const kept = new Map(copies.filter(([name, key]) => key === name).map(([name]) => [name, COMPONENT_REF]));
+  const restored = retarget(retarget(schema, renamed, DEFS_REF + RENAMED_COPY), kept, DEFS_REF) as JsonSchema;
   if (!isJsonSchema(restored.$defs)) return restored;
-  const defs = Object.fromEntries(Object.entries(restored.$defs).filter(([name]) => !names.has(name)));
-  if (Object.keys(defs).length > 0) restored.$defs = defs;
+  const keys = new Set(Object.values(copiedAs));
+  const defs = Object.fromEntries(Object.entries(restored.$defs).filter(([key]) => !keys.has(key)));
+  if (Object.keys(defs).length > 0 || declared) restored.$defs = defs;
   else delete restored.$defs;
   return restored;
 }
@@ -232,9 +265,7 @@ export function fixOpenApi(
 
   const results = found.map((component) => {
     const own = components[component.name as string];
-    const defs = isJsonSchema(own) && isJsonSchema(own.$defs) ? own.$defs : {};
-    // A copy the component's own `$defs` already held, identical, is its own definition too.
-    const copies = new Set(component.copied.filter((name) => !(name in defs)));
+    const declared = isJsonSchema(own) && own.$defs !== undefined;
     let result: FixResult;
     try {
       result = fixExcept(component.schema, options, HELD_IN_COMPONENTS);
@@ -242,8 +273,8 @@ export function fixOpenApi(
       if (error instanceof TypeError) throw new TypeError(`Component "${component.name}": ${error.message}`);
       throw error;
     }
-    const applied = result.applied.filter((item) => copiedLocation(item.path, [...copies]) === undefined);
-    return { ...result, schema: unbundle(result.schema, copies), applied };
+    const applied = result.applied.filter((item) => copiedLocation(item.path, component.copiedAs) === undefined);
+    return { ...result, schema: unbundle(result.schema, component.copiedAs, declared), applied };
   });
 
   const selected = options.providers ?? PROVIDER_IDS;

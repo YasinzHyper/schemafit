@@ -193,7 +193,7 @@ openapi.yaml#/components/schemas/Pet  Pet  (OpenAPI component, with the componen
 
 A component that is only ever part of another, a string `enum` say, is still checked as the root of a schema, so expect `openai/root-object` on it, and narrow `--provider` if you will never send it alone. The schemas are checked as they are written: OpenAPI 3.0's `nullable` is read as the keyword it is, not translated to a `type` array.
 
-`--fix --openapi` rewrites each component as that same schema and puts it back under `components.schemas` with the copies taken out again: the references the bundle pointed at `#/$defs/<name>` point at `#/components/schemas/<name>` once more, and a fix is applied and reported once, in the component it belongs to, rather than in every copy of it. A fix that inlines a referenced component — the `allOf` of a `$ref` that `openai/unsupported-composition` merges and `anthropic/allof-ref` resolves — leaves what it inlined in the component, which is the point of it. The rest of the document is written back as it was, and `--write` and `--out` work as they do for any file, a YAML document's comments included. One fix is held back: `openai/root-object` would wrap a component that is not an object in `{ "result": ... }`, and a component is also what every reference to it means, so the wrap would change the requests and responses the document describes. That finding stays, for you to wrap the schema where you send it.
+`--fix --openapi` rewrites each component as that same schema and puts it back under `components.schemas` with the copies taken out again: the references the bundle pointed at `#/$defs/<name>` point at `#/components/schemas/<name>` once more, while a reference the component itself wrote to a definition of its own is left alone, as is a `$defs` it declared, and a fix is applied and reported once, in the component it belongs to, rather than in every copy of it. A fix that inlines a referenced component — the `allOf` of a `$ref` that `openai/unsupported-composition` merges and `anthropic/allof-ref` resolves — leaves what it inlined in the component, which is the point of it. The rest of the document is written back as it was, and `--write` and `--out` work as they do for any file, a YAML document's comments included. One fix is held back: `openai/root-object` would wrap a component that is not an object in `{ "result": ... }`, and a component is also what every reference to it means, so the wrap would change the requests and responses the document describes. That finding stays, for you to wrap the schema where you send it.
 
 ### Only the schemas you send strictly
 
@@ -371,7 +371,7 @@ const { value, attached } = readYaml(await readFile("schema.yaml", "utf8"));
 await writeFile("schema.yaml", stringifyYaml(fix(value, { providers: ["openai"] }).schema, attached));
 ```
 
-`openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, and the components it `copied` under `$defs`:
+`openApiSchemas` is what `--openapi` reads: every component under `components.schemas`, with its `name`, its `pointer` in the document, the bundled `schema`, the components it `copied` under `$defs`, and `copiedAs`, the key each copy sits at: the component's name, or `components.schemas.<name>` when the component's own `$defs` already uses that name, so a reference the bundle rewrote never reads as one the component wrote itself:
 
 ```ts
 import { lint, openApiSchemas } from "schemafit";
