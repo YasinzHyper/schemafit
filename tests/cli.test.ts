@@ -663,6 +663,53 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tools.yaml");
+    await writeFile(
+      file,
+      `# Two tools.
+
+- name: search
+  input_schema:
+    type: object
+    properties:
+      query: {type: string}
+
+      limit:
+        type: integer
+        maximum: 50
+
+- name: fetch
+  input_schema:
+    type: object
+    properties: {}
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "anthropic", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`# Two tools.
+
+- name: search
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+
+      limit:
+        type: integer
+        description: Must be at most 50.
+    additionalProperties: false
+
+- name: fetch
+  input_schema:
+    type: object
+    properties: {}
+    additionalProperties: false
+`);
+  });
+
   it("--fix --write refuses to drop a comment on an entry the rewrite removes, and leaves a file it would not change alone", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");

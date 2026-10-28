@@ -157,10 +157,48 @@ description: |- # after a block scalar's header
     expect(stringifyYaml(value, attached)).toBe(text);
   });
 
-  it("reads every YAML example back with its comments", async () => {
+  it("keeps the empty lines between entries, in their place among the comments above an entry", () => {
+    const text = `# The tools.
+
+- name: search
+  description: |
+    Finds things.
+
+  input_schema:
+    type: object
+
+# The second tool.
+- name: fetch
+
+  # its schema
+
+  input_schema:
+    type: object
+
+# The end.
+`;
+    const { value, attached, blanks } = readYaml(text);
+    expect(stringifyYaml(value, attached, blanks)).toBe(text);
+  });
+
+  it("keeps a list of scalars in block style when an empty line separates two of its items", () => {
+    const text = "enum:\n  - open\n\n  - closed\n";
+    const { value, attached, blanks } = readYaml(text);
+    expect(stringifyYaml(value, attached, blanks)).toBe(text);
+  });
+
+  it("leaves out the empty lines with no entry below them, and refuses one on an entry the value does not hold", () => {
+    expect(stringifyYaml({ a: 1 }, [], [{ line: 2, pointer: null }])).toBe("a: 1\n");
+    expect(() => stringifyYaml({ a: 1 }, [], [{ line: 1, pointer: "/b" }])).toThrow(
+      "1 of the empty lines belong to an entry the value does not hold",
+    );
+  });
+
+  it("reads every YAML example back with its comments and its empty lines", async () => {
     for (const name of ["agent-tools.yaml"]) {
-      const { value, attached } = readYaml(await readFile(example(name), "utf8"));
-      const written = readYaml(stringifyYaml(value, attached));
+      const { value, attached, blanks } = readYaml(await readFile(example(name), "utf8"));
+      const written = readYaml(stringifyYaml(value, attached, blanks));
+      expect(written.blanks.map(({ pointer }) => pointer)).toEqual(blanks.map(({ pointer }) => pointer));
       expect(written.value).toEqual(value);
       expect(written.attached.map(({ text, pointer }) => [text, pointer])).toEqual(attached.map(({ text, pointer }) => [text, pointer]));
     }

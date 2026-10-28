@@ -566,4 +566,43 @@ note: 'three
       { line: 10, text: "# The end.", pointer: null, trailing: false },
     ]);
   });
+
+  it("attaches each empty line between two entries to the entry below it", () => {
+    const { blanks } = readYaml(`# The tools.
+
+- name: a
+
+  # its schema
+  schema: {}
+
+# The end.
+
+`);
+    expect(blanks).toEqual([
+      { line: 2, pointer: "/0" },
+      { line: 4, pointer: "/0/schema" },
+      { line: 7, pointer: null },
+      { line: 9, pointer: null },
+    ]);
+  });
+
+  it("leaves out the empty lines inside a scalar or a flow collection, and keeps the ones a block scalar ends on", () => {
+    const { blanks } = readYaml(`block: |
+  one
+
+  two
+
+plain: one
+
+  two
+quoted: "one
+
+  two"
+flow: [a,
+
+  b]
+last: 1
+`);
+    expect(blanks).toEqual([{ line: 5, pointer: "/plain" }]);
+  });
 });
