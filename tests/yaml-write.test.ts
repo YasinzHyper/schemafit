@@ -111,6 +111,43 @@ b: |-
     }
   });
 
+  it("writes a sequence under a key at the key's indentation when the layout says so", () => {
+    const value = {
+      anyOf: [{ type: "string" }, { type: "object", required: ["a"], properties: { a: { anyOf: [{ const: 1 }, { const: 2 }] } } }],
+      items: [{ x: 1 }],
+      tags: [],
+    };
+    const comments = [
+      { line: 1, text: "# a string", pointer: "/anyOf/0", trailing: false },
+      { line: 2, text: "# one", pointer: "/anyOf/1/properties/a/anyOf/0", trailing: true },
+    ];
+    const text = stringifyYaml(value, comments, [], { indentSequences: false });
+    expect(text).toBe(`anyOf:
+# a string
+- type: string
+- type: object
+  required: [a]
+  properties:
+    a:
+      anyOf:
+      - const: 1 # one
+      - const: 2
+items:
+- x: 1
+tags: []
+`);
+    expect(readYaml(text).layout).toEqual({ indentSequences: false });
+    expect(stringifyYaml(value, comments)).toBe(stringifyYaml(value, comments, [], { indentSequences: true }));
+  });
+
+  it("starts a sequence item's first key on the dash's line when that key holds a sequence at its indentation", () => {
+    const value = [{ anyOf: [{ type: "string" }, { type: "null" }] }];
+    expect(stringifyYaml(value, [], [], { indentSequences: false })).toBe(`- anyOf:
+  - type: string
+  - type: "null"
+`);
+  });
+
   it("refuses a value JSON cannot hold", () => {
     expect(() => stringifyYaml(undefined)).toThrow(TypeError);
   });
