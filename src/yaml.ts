@@ -57,6 +57,8 @@ interface State {
   entries: Map<number, string>;
   /** The JSON Pointer of the node being read. */
   at: string;
+  /** How the first block sequence under a key is indented, once one has been read. */
+  indentSequences?: boolean;
 }
 
 /** One line being read left to right, for the scalars and flow collections written on it. */
@@ -164,14 +166,34 @@ export interface YamlBlank {
 }
 
 /**
+ * How a YAML document lays out what the value does not say, so a rewrite can write it the same
+ * way.
+ */
+export interface YamlLayout {
+  /**
+   * Whether a block sequence under a key is indented past the key (`required:` over
+   * `  - title`) rather than at the key's own indentation (`required:` over `- title`). Both
+   * are YAML, and a file is written in one or the other, so the first such sequence decides.
+   * True for a file that holds none, which is how the writer indents one by default.
+   */
+  indentSequences: boolean;
+}
+
+/**
  * Reads a YAML document into the value it describes, together with its comments and its empty
  * lines, which the value has no room for: a rewrite written from the value alone would drop
  * them. `comments` names the lines of the comments, `attached` says where each one belongs, and
- * `blanks` where each empty line between two entries does. A `#` inside a block scalar or a
- * quoted scalar is a character of the string, not a comment, and an empty line inside a scalar
- * or a flow collection is part of it.
+ * `blanks` where each empty line between two entries does, and `layout` how its sequences are
+ * indented. A `#` inside a block scalar or a quoted scalar is a character of the string, not a
+ * comment, and an empty line inside a scalar or a flow collection is part of it.
  */
-export function readYaml(text: string): { value: unknown; comments: number[]; attached: YamlComment[]; blanks: YamlBlank[] } {
+export function readYaml(text: string): {
+  value: unknown;
+  comments: number[];
+  attached: YamlComment[];
+  blanks: YamlBlank[];
+  layout: YamlLayout;
+} {
   const state: State = {
     lines: tokenize(text),
     index: 0,
@@ -196,7 +218,8 @@ export function readYaml(text: string): { value: unknown; comments: number[]; at
     const below = starts.find((line) => line > n);
     return [{ line: n, pointer: below === undefined ? null : (state.entries.get(below) ?? null) }];
   });
-  return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks };
+  const layout = { indentSequences: state.indentSequences ?? true };
+  return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks, layout };
 }
 
 /**
@@ -400,10 +423,11 @@ function parseKey(line: Line, text: string): string {
  */
 function parseNodeBelow(state: State, indent: number): unknown {
   const next = peek(state);
-  if (next !== undefined && !isDocumentMarker(next.text) && next.indent === indent && isSequenceEntry(next.text)) {
-    return parseSequence(state, indent, true);
+  if (next === undefined || isDocumentMarker(next.text) || !isSequenceEntry(next.text) || next.indent < indent) {
+    return parseBlockIndentedBelow(state, indent);
   }
-  return parseBlockIndentedBelow(state, indent);
+  state.indentSequences ??= next.indent > indent;
+  return next.indent === indent ? parseSequence(state, indent, true) : parseBlockIndentedBelow(state, indent);
 }
 
 /**
