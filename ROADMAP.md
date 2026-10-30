@@ -48,7 +48,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Keep the layout of a YAML file a rewrite touches: the sequence at its key's indentation, the folded (`>`) description wrapped where the file wrapped it, which the writer gives up today for its own two-space block style and a literal block
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [x] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
-- [ ] Translate OpenAPI 3.0's `nullable: true` into the `type` array or `anyOf` with `null` that JSON Schema spells it as, under `--openapi`, which reads it as the keyword it is today
+- [x] Translate OpenAPI 3.0's `nullable: true` into the `type` array that JSON Schema spells it as, under `--openapi`, and write it back as the keyword under `--fix --openapi`
+- [ ] Spell the `anyOf` with `{ "type": "null" }` that the fix for `openai/all-required` puts around a `$ref` property in a way an OpenAPI 3.0 document allows, or hold that fix back there: 3.0 has no `null` type, and a `nullable` beside a `$ref` takes no effect, so `--fix --openapi` writes a schema 3.0 tooling rejects today
 - [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
 - [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
 - [ ] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call

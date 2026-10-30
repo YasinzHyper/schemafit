@@ -8,8 +8,8 @@ import { strictObject } from "./helpers.js";
 const tag = strictObject({ name: { type: "string", minLength: 1 } });
 const pet = strictObject({ id: { type: "integer" }, tag: { $ref: "#/components/schemas/Tag" } });
 
-function openApi(schemas: Record<string, unknown>): unknown {
-  return { openapi: "3.1.1", info: { title: "Pets", version: "1" }, paths: {}, components: { schemas } };
+function openApi(schemas: Record<string, unknown>, openapi = "3.1.1"): unknown {
+  return { openapi, info: { title: "Pets", version: "1" }, paths: {}, components: { schemas } };
 }
 
 describe("openApiSchemas", () => {
@@ -84,6 +84,35 @@ describe("openApiSchemas", () => {
   it("refuses a component whose own definitions already use a referenced component's name", () => {
     const clash = { ...pet, $defs: { Tag: { type: "string" } } };
     expect(() => openApiSchemas(openApi({ Tag: tag, Pet: clash }))).toThrow(TypeError);
+  });
+
+  it("reads OpenAPI 3.0's nullable as the type array JSON Schema spells it as", () => {
+    const named = strictObject({
+      name: { type: "string", nullable: true },
+      tags: { type: "array", items: { type: "string", nullable: true } },
+    });
+    const holder = strictObject({ named: { $ref: "#/components/schemas/Named" } });
+    const [found, bundled] = openApiSchemas(openApi({ Named: named, Holder: holder }, "3.0.3"));
+    const translated = strictObject({
+      name: { type: ["string", "null"] },
+      tags: { type: "array", items: { type: ["string", "null"] } },
+    });
+    expect(found?.schema).toEqual(translated);
+    expect((bundled?.schema as { $defs: unknown }).$defs).toEqual({ Named: translated });
+  });
+
+  it("keeps an enum beside a translated nullable, which still rules null out", () => {
+    const status = strictObject({ status: { type: "string", enum: ["open", "closed"], nullable: true } });
+    const [found] = openApiSchemas(openApi({ Status: status }, "3.0.0"));
+    expect(found?.schema).toEqual(strictObject({ status: { type: ["string", "null"], enum: ["open", "closed"] } }));
+  });
+
+  it("leaves a nullable that takes no effect, and every nullable of an OpenAPI 3.1 document, as written", () => {
+    const loose = strictObject({ any: { nullable: true }, never: { type: "string", nullable: false } });
+    const [found] = openApiSchemas(openApi({ Loose: loose }, "3.0.3"));
+    expect(found?.schema).toEqual(loose);
+    const written = strictObject({ name: { type: "string", nullable: true } });
+    expect(openApiSchemas(openApi({ Named: written }))[0]?.schema).toEqual(written);
   });
 
   it("finds nothing in a document without schema components", () => {
@@ -226,6 +255,35 @@ describe("fixOpenApi", () => {
         }
       }
     }
+  });
+
+  it("writes the nullable of an OpenAPI 3.0 document back as the keyword, a fix's own included", () => {
+    const pet = {
+      type: "object",
+      properties: { name: { type: "string", nullable: true }, age: { type: "integer" } },
+      additionalProperties: false,
+    };
+    const document = openApi({ Pet: pet }, "3.0.3");
+    const { document: fixed, components } = fixOpenApi(document, { providers: ["openai"] });
+    expect((fixed as { components: { schemas: unknown } }).components.schemas).toEqual({
+      Pet: {
+        type: "object",
+        properties: { name: { type: "string", nullable: true }, age: { type: "integer", nullable: true } },
+        additionalProperties: false,
+        required: ["name", "age"],
+      },
+    });
+    expect(components[0]?.applied.map((item) => item.title)).toEqual([
+      'Add name, age to "required", and "null" to the type of age.',
+    ]);
+  });
+
+  it("leaves a component of an OpenAPI 3.0 document no fix applied to exactly as it was", () => {
+    const named = strictObject({ name: { nullable: true, type: "string" } });
+    const document = openApi({ Named: named }, "3.0.3");
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    const { components } = fixed as { components: unknown };
+    expect(JSON.stringify(components)).toBe(JSON.stringify({ schemas: { Named: named } }));
   });
 
   it("names a component that is not a JSON object", () => {

@@ -1048,6 +1048,34 @@ $defs:
       expect(written).not.toContain("minLength");
     });
 
+    it("keeps OpenAPI 3.0's nullable when it rewrites a YAML document in place", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.0.3",
+          "components:",
+          "  schemas:",
+          "    Pet:",
+          "      type: object",
+          "      properties:",
+          "        nickname:",
+          "          type: string",
+          "          nullable: true # may be unset",
+          "      additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code, stderr } = await cli(["--openapi", "--fix", "--write", "-p", "openai", file]);
+      expect(code).toBe(0);
+      const written = await readFile(file, "utf8");
+      expect(written).toContain("          type: string\n          nullable: true # may be unset\n");
+      expect(written).toContain("required:");
+      expect(written).not.toContain("null\n");
+      expect(stderr).toContain('Add nickname to "required".');
+    });
+
     it("leaves the root of a component that is not an object unwrapped with --fix", async () => {
       const status = { type: "string", enum: ["available", "sold"] };
       const file = await openApiFile({ Status: status });
