@@ -4,7 +4,7 @@ import { joinPointer, unescapeToken } from "./pointer.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { Finding, FixOptions, FixResult, JsonSchema, LintResult } from "./types.js";
 import type { UnwrappedSchema } from "./unwrap.js";
-import { isJsonSchema } from "./walk.js";
+import { isJsonSchema, walk } from "./walk.js";
 
 /** Where an OpenAPI document keeps "reusable Schema Objects", and how a reference names one. */
 const COMPONENTS = ["components", "schemas"] as const;
@@ -16,6 +16,57 @@ function componentSchemas(document: unknown): JsonSchema | undefined {
   if (!isJsonSchema(document) || !isJsonSchema(document.components)) return undefined;
   const schemas = document.components.schemas;
   return isJsonSchema(schemas) ? schemas : undefined;
+}
+
+/**
+ * True for an OpenAPI 3.0 document, whose Schema Object spells a nullable value with a
+ * `nullable` keyword: `null` "is not supported as a type" there. OpenAPI 3.1 dropped the
+ * keyword for JSON Schema's own `type` array, so a 3.1 document is read as written.
+ */
+function spellsNullAsKeyword(document: unknown): boolean {
+  return isJsonSchema(document) && typeof document.openapi === "string" && /^3\.0(\.|$)/.test(document.openapi);
+}
+
+/**
+ * A copy of the components with OpenAPI 3.0's `nullable: true` written as JSON Schema writes it:
+ * `{ "type": "string", "nullable": true }` becomes `{ "type": ["string", "null"] }`. The keyword
+ * "only takes effect if `type` is explicitly defined within the same Schema Object", and the other
+ * keywords "retain their defined behavior", so an `enum` without `null` still rules it out, as it
+ * does beside a `type` array. A `nullable` without a `type`, or set to `false`, changes nothing
+ * and is left as it is.
+ */
+function nullAsType(components: JsonSchema): JsonSchema {
+  const copy = structuredClone(components);
+  for (const component of Object.values(copy)) {
+    if (!isJsonSchema(component)) continue;
+    for (const { schema } of walk(component)) {
+      if (schema.nullable !== true || typeof schema.type !== "string" || schema.type === "null") continue;
+      schema.type = [schema.type, "null"];
+      delete schema.nullable;
+    }
+  }
+  return copy;
+}
+
+/**
+ * `schema` with every `type` array of one type and `null` written the way OpenAPI 3.0 writes it,
+ * `nullable: true` beside the one type, which is what `nullAsType` reads and what a fix that makes
+ * a property nullable writes in a 3.0 document. Rewrites `schema` in place.
+ */
+function nullAsKeyword(schema: JsonSchema): JsonSchema {
+  for (const node of walk(schema)) {
+    const { type } = node.schema;
+    if (!Array.isArray(type) || type.length !== 2 || !type.includes("null") || "nullable" in node.schema) continue;
+    const [only] = type.filter((name) => name !== "null");
+    if (typeof only !== "string" || only === "null") continue;
+    const entries = Object.entries(node.schema);
+    for (const [key] of entries) delete node.schema[key];
+    for (const [key, value] of entries) {
+      if (key !== "type") node.schema[key] = value;
+      else Object.assign(node.schema, { type: only, nullable: true });
+    }
+  }
+  return schema;
 }
 
 /**
@@ -145,12 +196,14 @@ export interface OpenApiSchema extends UnwrappedSchema {
 /**
  * Every schema under `components.schemas` of an OpenAPI document, each as it would be sent on its
  * own, with the components it references bundled under `$defs`. The pointer is the component's
- * place in the document, and the name is its component name. Returns an empty array when the
- * document declares no schema components.
+ * place in the document, and the name is its component name. In an OpenAPI 3.0 document,
+ * `nullable: true` is read as the `type` array it means: see `nullAsType`. Returns an empty array
+ * when the document declares no schema components.
  */
 export function openApiSchemas(document: unknown): OpenApiSchema[] {
-  const components = componentSchemas(document);
-  if (components === undefined) return [];
+  const declared = componentSchemas(document);
+  if (declared === undefined) return [];
+  const components = spellsNullAsKeyword(document) ? nullAsType(declared) : declared;
   return Object.keys(components).map((name) => {
     const { schema, copied, copiedAs } = bundle(components, name);
     const keys = [...COMPONENTS, name];
@@ -250,6 +303,9 @@ export type FixedComponent = Omit<OpenApiSchema, "schema"> & FixResult;
  * fixes made inside a copy are dropped from its report: they are applied, and reported, on the
  * component the copy was made from. What a fix inlined into the component stays in it.
  *
+ * In an OpenAPI 3.0 document, a `type` of one type and `null` is written back as `nullable: true`,
+ * the fixes' own included, since 3.0 has no `null` type.
+ *
  * The fix for `openai/root-object` is held back: see `HELD_IN_COMPONENTS`. Returns the
  * rewritten document, which is the input left untouched when it declares no schema components,
  * and one result per component. Throws a TypeError for a component that is not a JSON object,
@@ -262,6 +318,7 @@ export function fixOpenApi(
   const components = componentSchemas(document);
   const found = openApiSchemas(document);
   if (components === undefined || found.length === 0) return { document, components: [] };
+  const spelling = spellsNullAsKeyword(document);
 
   const results = found.map((component) => {
     const own = components[component.name as string];
@@ -274,7 +331,12 @@ export function fixOpenApi(
       throw error;
     }
     const applied = result.applied.filter((item) => copiedLocation(item.path, component.copiedAs) === undefined);
-    return { ...result, schema: unbundle(result.schema, component.copiedAs, declared), applied };
+    const schema = unbundle(result.schema, component.copiedAs, declared);
+    // Writing `nullable` back moves it next to `type`, so a component no fix touched is kept as written.
+    if (spelling) {
+      return { ...result, schema: applied.length > 0 ? nullAsKeyword(schema) : structuredClone(own), applied };
+    }
+    return { ...result, schema, applied };
   });
 
   const selected = options.providers ?? PROVIDER_IDS;
