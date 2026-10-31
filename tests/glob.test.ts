@@ -64,9 +64,11 @@ describe("segmentRegex", () => {
   });
 });
 
+// These patterns are written with `/` under a temporary directory and read the way the platform
+// reads them, since a Windows path read with POSIX escapes names a file that is not there.
 describe("expandGlob", () => {
   it("expands a star within one directory, sorted, without the directories it also matches", async () => {
-    expect(under(await expandGlob(`${root}/*.json`, { windows: false }))).toEqual([
+    expect(under(await expandGlob(`${root}/*.json`))).toEqual([
       "a.json",
       "b.json",
       "tool1.json",
@@ -76,16 +78,16 @@ describe("expandGlob", () => {
   });
 
   it("leaves names that start with a dot to a pattern that starts with one", async () => {
-    expect(under(await expandGlob(`${root}/.*.json`, { windows: false }))).toEqual([".hidden.json"]);
+    expect(under(await expandGlob(`${root}/.*.json`))).toEqual([".hidden.json"]);
   });
 
   it("matches one character with ? and a set with brackets", async () => {
-    expect(under(await expandGlob(`${root}/tool?.json`, { windows: false }))).toEqual(["tool1.json", "tool2.json"]);
-    expect(under(await expandGlob(`${root}/[ab].json`, { windows: false }))).toEqual(["a.json", "b.json"]);
+    expect(under(await expandGlob(`${root}/tool?.json`))).toEqual(["tool1.json", "tool2.json"]);
+    expect(under(await expandGlob(`${root}/[ab].json`))).toEqual(["a.json", "b.json"]);
   });
 
   it("expands ** to any number of directories, including none, and skips hidden ones", async () => {
-    expect(under(await expandGlob(`${root}/**/*.json`, { windows: false }))).toEqual([
+    expect(under(await expandGlob(`${root}/**/*.json`))).toEqual([
       "a.json",
       "b.json",
       "nested/d.json",
@@ -94,7 +96,7 @@ describe("expandGlob", () => {
       "tool10.json",
       "tool2.json",
     ]);
-    expect(under(await expandGlob(`${root}/nested/**`, { windows: false }))).toEqual([
+    expect(under(await expandGlob(`${root}/nested/**`))).toEqual([
       "nested/d.json",
       "nested/deeper/e.json",
       "nested/deeper/f.yml",
@@ -102,7 +104,7 @@ describe("expandGlob", () => {
   });
 
   it("puts a wildcard in a directory name as well as in the file name", async () => {
-    expect(under(await expandGlob(`${root}/n*/*/*.y*`, { windows: false }))).toEqual(["nested/deeper/f.yml"]);
+    expect(under(await expandGlob(`${root}/n*/*/*.y*`))).toEqual(["nested/deeper/f.yml"]);
   });
 
   // Creating a symbolic link takes a privilege a Windows account does not have by default.
@@ -111,16 +113,16 @@ describe("expandGlob", () => {
     await writeFile(join(dir, "real.json"), "{}");
     await symlink(join(dir, "real.json"), join(dir, "link.json"));
     await symlink(root, join(dir, "loop"));
-    const matches = (await expandGlob(`${dir}/**/*.json`, { windows: false })).map((m) => m.slice(dir.length + 1));
+    const matches = (await expandGlob(`${dir}/**/*.json`)).map((m) => m.slice(dir.length + 1));
     expect(matches).toEqual(["link.json", "real.json"]);
-    const through = (await expandGlob(`${dir}/lo*/a.json`, { windows: false })).map((m) => m.slice(dir.length + 1));
+    const through = (await expandGlob(`${dir}/lo*/a.json`)).map((m) => m.slice(dir.length + 1));
     expect(through).toEqual(["loop/a.json"]);
   });
 
   it("returns nothing for a pattern that matches no file, and a path as it is", async () => {
-    expect(await expandGlob(`${root}/*.toml`, { windows: false })).toEqual([]);
-    expect(await expandGlob(`${root}/missing/*.json`, { windows: false })).toEqual([]);
-    expect(await expandGlob(`${root}/missing.json`, { windows: false })).toEqual([`${root}/missing.json`]);
+    expect(await expandGlob(`${root}/*.toml`)).toEqual([]);
+    expect(await expandGlob(`${root}/missing/*.json`)).toEqual([]);
+    expect(await expandGlob(`${root}/missing.json`)).toEqual([`${root}/missing.json`]);
   });
 
   // A path with backslashes in it names a different file on any other system.
@@ -131,6 +133,6 @@ describe("expandGlob", () => {
   });
 
   it("keeps the text in front of the first wildcard as it was written", async () => {
-    expect(await expandGlob(`${root}//nested/*.json`, { windows: false })).toEqual([`${root}//nested/d.json`]);
+    expect(await expandGlob(`${root}//nested/*.json`)).toEqual([`${root}//nested/d.json`]);
   });
 });
