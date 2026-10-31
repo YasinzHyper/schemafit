@@ -1,10 +1,11 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
+import { expandGlob, isGlob } from "./glob.js";
 import { fixOpenApi, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
@@ -66,6 +67,14 @@ reported under the index of its own message. A JSON-RPC message that declares no
 schema is named for what it is rather than reported as an empty document: an
 error response names the code and message of the call that failed, a request or
 a notification names its method, and a batch names each of its messages.
+
+A file argument may be a pattern, which schemafit expands itself, so a quoted
+"schemas/**/*.json" and the *.json that cmd.exe and PowerShell pass through as
+written both name every file they match: * and ? within one directory name, [abc]
+for one character of a set, and ** for any number of directories. A name that starts
+with a dot is matched only by a pattern that starts with one too, a path that exists
+is read as that path even when its name holds a * or a [, and a pattern that matches
+no file is an error.
 
 A file whose name ends in .yaml or .yml is read as YAML, and stdin is read as
 JSON first and as YAML if that is not what it holds. Any of the above may be
@@ -134,6 +143,41 @@ Exit codes
 `;
 
 class UsageError extends Error {}
+
+/**
+ * The files the arguments name, with every pattern among them expanded. A shell on Windows
+ * passes `*.json` through as written, and so does a POSIX shell when it is quoted, so a pattern
+ * that reaches schemafit is expanded here. A path that exists is read as the path it is, even
+ * when its name holds a bracket or a star. A pattern that matches nothing is an error rather
+ * than a file that cannot be read, and a file two patterns match is read once.
+ */
+async function expandFiles(args: readonly string[]): Promise<string[]> {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const arg of args) {
+    if (arg === "-" || !isGlob(arg) || (await exists(arg))) {
+      files.push(arg);
+      continue;
+    }
+    const matches = await expandGlob(arg);
+    if (matches.length === 0) throw new UsageError(`No file matches ${arg}.`);
+    for (const match of matches) {
+      if (seen.has(match)) continue;
+      seen.add(match);
+      files.push(match);
+    }
+  }
+  return files;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function parseProviders(values: readonly string[] | undefined): ProviderId[] {
   if (!values || values.length === 0) return [...PROVIDER_IDS];
@@ -572,7 +616,7 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   try {
-    const { values, positionals } = parseArgs({
+    const parsed = parseArgs({
       args: [...argv],
       allowPositionals: true,
       options: {
@@ -590,6 +634,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         version: { type: "boolean", short: "v", default: false },
       },
     });
+    const { values } = parsed;
 
     if (values.help) {
       io.stdout(HELP);
@@ -599,6 +644,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       io.stdout(`${await version()}\n`);
       return EXIT_OK;
     }
+    const positionals = parsed.positionals[0] === "rules" ? parsed.positionals : await expandFiles(parsed.positionals);
 
     const format = values.format;
     if (format !== "pretty" && format !== "json") {
