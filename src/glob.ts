@@ -19,7 +19,8 @@ export interface GlobOptions {
 
 /** Whether `pattern` holds a wildcard, which is what makes it a pattern rather than a path. */
 export function isGlob(pattern: string, options: GlobOptions = {}): boolean {
-  return splitPattern(pattern, isWindows(options)).segments.some((segment) => hasWildcard(segment, isWindows(options)));
+  const windows = isWindows(options);
+  return splitPattern(pattern, windows).segments.some((segment) => hasWildcard(segment, windows));
 }
 
 /**
@@ -29,15 +30,19 @@ export function isGlob(pattern: string, options: GlobOptions = {}): boolean {
  */
 export async function expandGlob(pattern: string, options: GlobOptions = {}): Promise<string[]> {
   const windows = isWindows(options);
-  const { root, segments } = splitPattern(pattern, windows);
-  if (!segments.some((segment) => hasWildcard(segment, windows))) return [pattern];
-
-  // The literal segments in front of the first wildcard are the directory the search starts in,
-  // kept as the user wrote them so every match reads as a path under the one they typed.
+  const { segments, offsets } = splitPattern(pattern, windows);
   const first = segments.findIndex((segment) => hasWildcard(segment, windows));
-  const base = root + segments.slice(0, first).map((segment) => unescape(segment, windows)).join("/");
+  if (first === -1) return [pattern];
+
+  // The text in front of the first wildcard is the directory the search starts in, kept exactly
+  // as the user wrote it, and every match continues it with the separator they used there, so a
+  // match reads as a path under the one they typed.
+  const start = offsets[first]!;
+  const before = pattern.slice(0, start);
+  const separator = start > 0 && isSeparator(pattern[start - 1]!, windows) ? pattern[start - 1]! : windows ? "\\" : "/";
+  const base = unescape(isRoot(before, windows) ? before : before.replace(windows ? /[\\/]+$/ : /\/+$/, ""), windows);
   const found = new Set<string>();
-  await search(base, segments.slice(first), windows, found);
+  await search(base, segments.slice(first), { windows, separator }, found);
   return [...found].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
@@ -45,14 +50,26 @@ function isWindows(options: GlobOptions): boolean {
   return options.windows ?? process.platform === "win32";
 }
 
-function splitPattern(pattern: string, windows: boolean): { root: string; segments: string[] } {
-  const parts = pattern.split(windows ? /[\\/]/ : "/");
-  // A leading separator (`/schemas`) or a drive (`C:\schemas`) is where the path starts, not a
-  // segment to match.
-  if (parts.length > 1 && (parts[0] === "" || (windows && /^[A-Za-z]:$/.test(parts[0]!)))) {
-    return { root: `${parts[0]}/`, segments: parts.slice(1).filter((part) => part !== "") };
+const isSeparator = (char: string, windows: boolean): boolean => char === "/" || (windows && char === "\\");
+
+/** Whether `prefix` is where a path starts (`/`, `C:\`), which keeps its separator, rather than a directory. */
+const isRoot = (prefix: string, windows: boolean): boolean =>
+  /^\/+$/.test(prefix) || (windows && /^([\\/]+|[A-Za-z]:[\\/]*)$/.test(prefix));
+
+/** The pattern's segments, each with the offset it starts at. Empty segments are dropped. */
+function splitPattern(pattern: string, windows: boolean): { segments: string[]; offsets: number[] } {
+  const segments: string[] = [];
+  const offsets: number[] = [];
+  let start = 0;
+  for (let i = 0; i <= pattern.length; i++) {
+    if (i < pattern.length && !isSeparator(pattern[i]!, windows)) continue;
+    if (i > start) {
+      segments.push(pattern.slice(start, i));
+      offsets.push(start);
+    }
+    start = i + 1;
   }
-  return { root: "", segments: parts.filter((part) => part !== "") };
+  return { segments, offsets };
 }
 
 function hasWildcard(segment: string, windows: boolean): boolean {
@@ -140,36 +157,43 @@ async function isFile(dir: string, entry: Dirent): Promise<boolean> {
   }
 }
 
-function join(dir: string, name: string): string {
+interface SearchOptions {
+  windows: boolean;
+  /** What a match puts between a directory and the name under it. */
+  separator: string;
+}
+
+function join(dir: string, name: string, separator = "/"): string {
   if (dir === "") return name;
-  return dir.endsWith("/") ? `${dir}${name}` : `${dir}/${name}`;
+  return /[\\/]$/.test(dir) ? `${dir}${name}` : `${dir}${separator}${name}`;
 }
 
 const hidden = (name: string, segment: string): boolean => name.startsWith(".") && !segment.startsWith(".");
 
-async function search(dir: string, segments: readonly string[], windows: boolean, found: Set<string>): Promise<void> {
+async function search(dir: string, segments: readonly string[], options: SearchOptions, found: Set<string>): Promise<void> {
+  const { windows, separator } = options;
   const [segment, ...rest] = segments;
   if (segment === undefined) return;
 
   if (segment === "**") {
     // Zero directories: the rest of the pattern applies right here.
     if (rest.length === 0) {
-      await search(dir, ["*"], windows, found);
+      await search(dir, ["*"], options, found);
     } else {
-      await search(dir, rest, windows, found);
+      await search(dir, rest, options, found);
     }
     for (const entry of await entries(dir)) {
       // Not through a symbolic link, which could lead back up the tree it came from.
       if (entry.name.startsWith(".") || !entry.isDirectory()) continue;
-      await search(join(dir, entry.name), segments, windows, found);
+      await search(join(dir, entry.name, separator), segments, options, found);
     }
     return;
   }
 
   if (!hasWildcard(segment, windows)) {
-    const next = join(dir, unescape(segment, windows));
+    const next = join(dir, unescape(segment, windows), separator);
     if (rest.length > 0) {
-      await search(next, rest, windows, found);
+      await search(next, rest, options, found);
       return;
     }
     try {
@@ -184,9 +208,9 @@ async function search(dir: string, segments: readonly string[], windows: boolean
   for (const entry of await entries(dir)) {
     if (hidden(entry.name, segment) || !regex.test(entry.name)) continue;
     if (rest.length > 0) {
-      if (await isDirectory(dir, entry)) await search(join(dir, entry.name), rest, windows, found);
+      if (await isDirectory(dir, entry)) await search(join(dir, entry.name, separator), rest, options, found);
     } else if (await isFile(dir, entry)) {
-      found.add(join(dir, entry.name));
+      found.add(join(dir, entry.name, separator));
     }
   }
 }

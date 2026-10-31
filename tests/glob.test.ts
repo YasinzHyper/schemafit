@@ -105,7 +105,8 @@ describe("expandGlob", () => {
     expect(under(await expandGlob(`${root}/n*/*/*.y*`, { windows: false }))).toEqual(["nested/deeper/f.yml"]);
   });
 
-  it("follows a symbolic link to a file or a directory, but not through **", async () => {
+  // Creating a symbolic link takes a privilege a Windows account does not have by default.
+  it.skipIf(process.platform === "win32")("follows a symbolic link to a file or a directory, but not through **", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-glob-link-"));
     await writeFile(join(dir, "real.json"), "{}");
     await symlink(join(dir, "real.json"), join(dir, "link.json"));
@@ -122,8 +123,14 @@ describe("expandGlob", () => {
     expect(await expandGlob(`${root}/missing.json`, { windows: false })).toEqual([`${root}/missing.json`]);
   });
 
-  it("reads backslashes as separators on Windows", async () => {
+  // A path with backslashes in it names a different file on any other system.
+  it.runIf(process.platform === "win32")("reads backslashes as separators on Windows, and keeps them in the matches", async () => {
     const pattern = `${root}\\nested\\*.JSON`;
-    expect(under(await expandGlob(pattern, { windows: true }))).toEqual(["nested/d.json"]);
+    expect(under(await expandGlob(pattern, { windows: true }))).toEqual(["nested\\d.json"]);
+    expect(under(await expandGlob(`${root}\\**\\f.yml`, { windows: true }))).toEqual(["nested\\deeper\\f.yml"]);
+  });
+
+  it("keeps the text in front of the first wildcard as it was written", async () => {
+    expect(await expandGlob(`${root}//nested/*.json`, { windows: false })).toEqual([`${root}//nested/d.json`]);
   });
 });
