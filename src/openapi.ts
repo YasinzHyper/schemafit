@@ -51,17 +51,20 @@ function nullAsType(components: JsonSchema): JsonSchema {
 /**
  * `schema` with every `type` array of one type and `null` written the way OpenAPI 3.0 writes it,
  * `nullable: true` beside the one type, which is what `nullAsType` reads and what a fix that makes
- * a property nullable writes in a 3.0 document. Rewrites `schema` in place.
+ * a property nullable writes in a 3.0 document. A `nullable: false` beside the array is replaced,
+ * since `false` is the default and "leaves the specified or default `type` unmodified", so it says
+ * no more than an absent keyword does. Rewrites `schema` in place.
  */
 function nullAsKeyword(schema: JsonSchema): JsonSchema {
   for (const node of walk(schema)) {
     const { type } = node.schema;
-    if (!Array.isArray(type) || type.length !== 2 || !type.includes("null") || "nullable" in node.schema) continue;
+    if (!Array.isArray(type) || type.length !== 2 || !type.includes("null") || node.schema.nullable === true) continue;
     const [only] = type.filter((name) => name !== "null");
     if (typeof only !== "string" || only === "null") continue;
     const entries = Object.entries(node.schema);
     for (const [key] of entries) delete node.schema[key];
     for (const [key, value] of entries) {
+      if (key === "nullable") continue;
       if (key !== "type") node.schema[key] = value;
       else Object.assign(node.schema, { type: only, nullable: true });
     }

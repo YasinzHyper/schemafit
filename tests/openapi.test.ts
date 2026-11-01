@@ -278,6 +278,25 @@ describe("fixOpenApi", () => {
     ]);
   });
 
+  it("replaces a nullable: false in an OpenAPI 3.0 document when a fix makes the property nullable", () => {
+    const flags = {
+      type: "object",
+      properties: { on: { type: "string" }, off: { type: "integer", nullable: false } },
+      required: ["on"],
+      additionalProperties: false,
+    };
+    const document = openApi({ Flags: flags }, "3.0.3");
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    expect((fixed as { components: { schemas: unknown } }).components.schemas).toEqual({
+      Flags: {
+        type: "object",
+        properties: { on: { type: "string" }, off: { type: "integer", nullable: true } },
+        required: ["on", "off"],
+        additionalProperties: false,
+      },
+    });
+  });
+
   it("leaves a component of an OpenAPI 3.0 document no fix applied to exactly as it was", () => {
     const named = strictObject({ name: { nullable: true, type: "string" } });
     const document = openApi({ Named: named }, "3.0.3");
