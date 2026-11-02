@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
-import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
+import { lint, lintRequests, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
 import { fixOpenApi, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
@@ -110,6 +110,7 @@ A limit a provider states per request rather than per schema — Anthropic allow
 tools, 24 optional parameters, and 16 parameters with union types in one request — is
 measured over every schema the request sends strictly and reported for the request as a
 whole, after the reports on its schemas. A tool that sets "strict": false is left out.
+Each response of a JSON-RPC batch answers a call of its own and is measured on its own.
 
 --fix takes one file and rewrites it for every selected provider at once, so with no
 --provider it produces the most portable schema the rules can reach: the one all of them
@@ -678,7 +679,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       // what the schema says and what the request-wide limits make of it. Several schemas are
       // measured together instead, in one report of their own, so neither is reported twice.
       // Which schemas are reported on does not change that: a request body is still a request,
-      // and `lintRequest` counts the ones it sends strictly whether or not they were reported.
+      // and `lintRequests` counts the ones it sends strictly whether or not they were reported.
       const several = schemas.length > 1;
       for (const found of checked) {
         try {
@@ -692,9 +693,12 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         }
       }
       if (several) {
-        const result = lintRequest(document, { providers: selected });
-        // A request within every limit has nothing to add to the reports on its schemas.
-        if (result.findings.length > 0) reports.push({ file: label, wrapper: null, scope: "request", result });
+        // A request within every limit has nothing to add to the reports on its schemas. A
+        // batch holds one request per message, each reported under the message it is.
+        for (const { pointer, result } of lintRequests(document, { providers: selected })) {
+          if (result.findings.length === 0) continue;
+          reports.push({ file: label, wrapper: null, scope: "request", ...(pointer ? { pointer } : {}), result });
+        }
       }
     }
 

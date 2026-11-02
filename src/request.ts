@@ -1,5 +1,5 @@
 import type { JsonSchema, RequestSchema } from "./types.js";
-import { unwrapAll } from "./unwrap.js";
+import { jsonRpcBatch, unwrapAll } from "./unwrap.js";
 import { isJsonSchema, walk } from "./walk.js";
 
 /**
@@ -24,4 +24,29 @@ export function requestSchemas(document: unknown): RequestSchema[] {
     });
   }
   return schemas;
+}
+
+/** The schemas of one request, and where in the document the request sits. */
+export interface RequestGroup {
+  /** JSON Pointer from the document to the request. `""` when the document is the request. */
+  pointer: string;
+  schemas: RequestSchema[];
+}
+
+/**
+ * The requests a document holds, each with the schemas it sends strictly. A document is one
+ * request, except a JSON-RPC batch: the server answers it with "an Array containing the
+ * corresponding Response objects", one per call, which "MAY be returned in any order", so each
+ * `tools/list` response in it is the tool set of its own call rather than a share of one request
+ * with the others. Each message is a request of its own, then, measured on its own and placed at
+ * its index in the batch. A message that declares no schema holds no request and is left out.
+ */
+export function requestGroups(document: unknown): RequestGroup[] {
+  if (jsonRpcBatch(document) === undefined) return [{ pointer: "", schemas: requestSchemas(document) }];
+  const groups = new Map<string, RequestSchema[]>();
+  for (const schema of requestSchemas(document)) {
+    const pointer = schema.pointer.slice(0, schema.pointer.indexOf("/", 1));
+    groups.set(pointer, [...(groups.get(pointer) ?? []), schema]);
+  }
+  return [...groups].map(([pointer, schemas]) => ({ pointer, schemas }));
 }
