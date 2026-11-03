@@ -18,7 +18,7 @@ const LIMITATIONS = `${DOCS}#json-schema-limitations`;
 const COMPLEXITY = `${DOCS}#schema-complexity-limits`;
 const INVALID_OUTPUTS = `${DOCS}#invalid-outputs`;
 const SDK_TRANSFORM = `${DOCS}#how-sdk-transformation-works`;
-const VERIFIED = "2026-10-03";
+const VERIFIED = "2026-11-03";
 
 const MAX_STRICT_TOOLS = 20;
 const MAX_OPTIONAL_PARAMETERS = 24;
@@ -470,30 +470,58 @@ const unionParametersLimit = requestTotal({
   count: ({ nodes }) => unionParameters(nodes),
 });
 
+/**
+ * The string values a schema offers as alternatives to one another, each with the place it is
+ * spelled: the schema's own `enum`, and the `const` or `enum` of each branch of its `anyOf`,
+ * a union of literals spelled one branch per value.
+ */
+function alternatives(schema: JsonSchema): { value: string; source: number }[] {
+  const found: { value: string; source: number }[] = [];
+  const add = (values: unknown, source: number) => {
+    if (!Array.isArray(values)) return;
+    for (const value of values) if (typeof value === "string") found.push({ value, source });
+  };
+  add(schema.enum, -1);
+  if (Array.isArray(schema.anyOf)) {
+    schema.anyOf.forEach((branch, index) => {
+      if (!isJsonSchema(branch)) return;
+      if (typeof branch.const === "string") found.push({ value: branch.const, source: index });
+      add(branch.enum, index);
+    });
+  }
+  return found;
+}
+
 const enumCasing: Rule = {
   ...meta("enum-casing", {
     severity: "warn",
     source: INVALID_OUTPUTS,
-    summary: "Enum values that differ only in capitalization can be returned with the wrong casing.",
+    summary: "Enum or const values that differ only in capitalization can be returned with the wrong casing.",
+    notes:
+      'The docs say structured outputs "don\'t guarantee the capitalization of string enum and const values", ' +
+      "that the response then completes with no error, and that values differing only in capitalization should " +
+      'be avoided. The rule reports exactly that case: two spellings of one value in an "enum", or across the ' +
+      '"const" and "enum" branches of one "anyOf". It is a warning because the schema is accepted; the casing ' +
+      "drift can affect any string value, so compare enum values case-insensitively in your code either way.",
   }),
   check(ctx) {
     for (const node of ctx.nodes) {
-      const values = node.schema.enum;
-      if (!Array.isArray(values)) continue;
-
-      const byLowercase = new Map<string, string[]>();
-      for (const value of values) {
-        if (typeof value !== "string") continue;
-        const group = byLowercase.get(value.toLowerCase()) ?? [];
-        group.push(value);
-        byLowercase.set(value.toLowerCase(), group);
+      const bySpelling = new Map<string, { spellings: Set<string>; sources: Set<number> }>();
+      for (const { value, source } of alternatives(node.schema)) {
+        const group = bySpelling.get(value.toLowerCase()) ?? { spellings: new Set(), sources: new Set() };
+        group.spellings.add(value);
+        group.sources.add(source);
+        bySpelling.set(value.toLowerCase(), group);
       }
 
-      for (const group of byLowercase.values()) {
-        if (new Set(group).size < 2) continue;
+      for (const { spellings, sources } of bySpelling.values()) {
+        if (spellings.size < 2) continue;
+        // Spellings that all sit in one branch's "enum" are reported at that branch.
+        if (sources.size === 1 && !sources.has(-1)) continue;
+        const listed = [...spellings].map((v) => JSON.stringify(v)).join(", ");
         ctx.report({
           path: node.path,
-          message: `Enum values differ only in capitalization: ${group.map((v) => JSON.stringify(v)).join(", ")}.`,
+          message: `${sources.has(-1) && sources.size === 1 ? "Enum values" : '"anyOf" values'} differ only in capitalization: ${listed}.`,
           hint: "Make the values distinct beyond casing; the model may return either spelling.",
         });
       }
