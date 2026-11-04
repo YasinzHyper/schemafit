@@ -5,7 +5,7 @@ import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequest, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
-import { fixOpenApi, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
+import { fixOpenApi, openApiInlineSchemas, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
@@ -51,7 +51,7 @@ Options
       --all-tools         Check every schema a document declares, including the
                           ones it sends non-strictly ("strict": false)
       --openapi           Read each file as an OpenAPI document and check every
-                          schema under components.schemas
+                          schema under components.schemas and paths
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -98,6 +98,11 @@ With --fix, each component is rewritten as that schema and put back under
 components.schemas without the copies, so a fix lands once, in the component it
 belongs to. A component's root is not wrapped in an object for openai/root-object,
 because every reference to it would change meaning with it.
+The schemas a document declares inline under paths are checked too, each named
+for where it is used ("POST /pets request body, application/json", "GET /pets 200
+response, application/json", "GET /pets parameter limit (query)") and bundled the
+same way. One that is only a "$ref" to a component is left to that component's
+report. --fix leaves them as they are for now, and only rewrites the components.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -360,29 +365,37 @@ function noSchemaReason(label: string, document: unknown): string {
 }
 
 /**
- * Reads one file as an OpenAPI document and finds every schema component in it. A document
- * with none is a usage error, and so is a component whose `$defs` cannot take the components
- * it references.
+ * Reads one file as an OpenAPI document and finds every schema component in it, and with
+ * `inline`, every schema declared inline under `paths` after them. A document with none is a
+ * usage error, and so is a schema whose `$defs` cannot take the components it references.
  */
-async function readOpenApi(file: string, io: CliIo): Promise<ReadDocument & { schemas: OpenApiSchema[] }> {
+async function readOpenApi(
+  file: string,
+  io: CliIo,
+  inline: boolean,
+): Promise<ReadDocument & { schemas: OpenApiSchema[] }> {
   const read = await readDocument(file, io);
   const { label, document } = read;
   let schemas: OpenApiSchema[];
   try {
-    schemas = openApiSchemas(document);
+    schemas = [...openApiSchemas(document), ...(inline ? openApiInlineSchemas(document) : [])];
   } catch (error) {
     if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
     throw error;
   }
   if (schemas.length === 0) {
-    throw new UsageError(`${label} declares no schema under components.schemas, which is where --openapi looks.`);
+    throw new UsageError(
+      inline
+        ? `${label} declares no schema under components.schemas or paths, which is where --openapi looks.`
+        : `${label} declares no schema under components.schemas, which is where --fix --openapi looks.`,
+    );
   }
   return { ...read, schemas };
 }
 
-/** Lints every schema component of an OpenAPI document, each as its own request. */
+/** Lints every schema of an OpenAPI document, its components and the ones under `paths`, each as its own request. */
 async function lintOpenApi(file: string, selected: readonly ProviderId[], io: CliIo): Promise<FileReport[]> {
-  const { label, schemas } = await readOpenApi(file, io);
+  const { label, schemas } = await readOpenApi(file, io, true);
   const results = schemas.map((found) => {
     try {
       return lint(found.schema, { providers: selected });
@@ -429,7 +442,7 @@ interface PlannedFix {
 async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { providers, out, write, pruneUnusedDefs, allTools } = request;
   const { label, document, schemas, comments = [], blanks = [] } = request.openapi
-    ? await readOpenApi(file, io)
+    ? await readOpenApi(file, io, false)
     : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
   const destination = write ? label : (out ?? label);

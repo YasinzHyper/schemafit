@@ -2,7 +2,7 @@ export { fix } from "./fix.js";
 export { lint, lintRequest, lintSchema } from "./lint.js";
 export { providers, requestRules, rules } from "./providers/index.js";
 export { requestSchemas } from "./request.js";
-export { fixOpenApi, openApiSchemas } from "./openapi.js";
+export { fixOpenApi, openApiInlineSchemas, openApiSchemas } from "./openapi.js";
 export type { FixedComponent, OpenApiSchema } from "./openapi.js";
 export { jsonRpcBatch, jsonRpcMessage, rewrap, unwrap, unwrapAll } from "./unwrap.js";
 export { YamlError, parseYaml, readYaml } from "./yaml.js";
