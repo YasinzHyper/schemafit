@@ -92,8 +92,9 @@ components it references are copied under $defs, and every
 how the schema has to be sent for its references to resolve. A finding inside a
 copied component is reported once, on that component's own report, unless only the
 schema around it shows it. A component that is only ever part of another, an enum
-say, is still checked as a root, so expect openai/root-object on it; the schemas are
-checked as written, so an OpenAPI 3.0 "nullable" is read as the keyword it is.
+say, is still checked as a root, so expect openai/root-object on it. In an OpenAPI
+3.0 document, "nullable": true beside a "type" is read as the type array JSON Schema
+spells it as, "type": ["string", "null"], and --fix writes it back as "nullable".
 With --fix, each component is rewritten as that schema and put back under
 components.schemas without the copies, so a fix lands once, in the component it
 belongs to. A component's root is not wrapped in an object for openai/root-object,
