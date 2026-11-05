@@ -36,11 +36,16 @@ function painter(color: boolean): Paint {
  * The line a report opens with. A schema the document holds several of is named by where it
  * sits (`request.json#/tools/1/input_schema`), which is what keeps several reports on one file
  * apart, and every schema a named definition carries is named by that definition as well. The
- * report on the request itself is named by the file alone, because it belongs to no one schema.
+ * report on the request itself is named by the file alone, because it belongs to no one schema,
+ * and by the message it is when a JSON-RPC batch holds one request per message.
  */
 function header(source: SchemaSource, paint: Paint): string {
   const where = source.pointer ? `${source.file}${displayPointer(source.pointer)}` : source.file;
-  if (source.scope === "request") return paint("bold", where) + paint("dim", "  (the request as a whole)");
+  if (source.scope === "request") {
+    // A request that sits somewhere in the document is one message of a JSON-RPC batch.
+    const which = source.pointer ? "the tools of this message, as one request" : "the request as a whole";
+    return paint("bold", where) + paint("dim", `  (${which})`);
+  }
   return (
     paint("bold", where) +
     (source.name ? `  ${source.name}` : "") +

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -224,6 +224,34 @@ describe("cli", () => {
     // "additionalProperties", and before batches were read as batches both were reported as one.
     expect(stdout).not.toContain("#/0  ");
     expect(stdout).not.toContain("#/1  ");
+  });
+
+  it("measures the request-wide limits of a batch per message", async () => {
+    const tool = (name: string, count: number) => ({
+      name,
+      inputSchema: {
+        type: "object",
+        properties: Object.fromEntries(Array.from({ length: count }, (_, i) => [`p${i}`, { type: "string" }])),
+        additionalProperties: false,
+      },
+    });
+    const within = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { tools: [tool("a", 13)] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [tool("b", 13)] } },
+    ]);
+    const quiet = await cli(["-p", "anthropic", "-"], within);
+    expect(quiet.code).toBe(0);
+    expect(quiet.stdout).not.toContain("optional-parameters-limit");
+
+    const over = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { tools: [tool("a", 13)] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [tool("b", 13), tool("c", 13)] } },
+    ]);
+    const { code, stdout } = await cli(["-p", "anthropic", "-"], over);
+    expect(code).toBe(1);
+    expect(stdout).toContain("<stdin>#/1  (the tools of this message, as one request)");
+    expect(stdout).toContain("2 strict schemas have 26 optional parameters; the request-wide limit is 24 (b 13, c 13)");
+    expect(stdout).not.toContain("<stdin>#/0  (");
   });
 
   it("--fix rewrites every response of a batch and leaves the batch whole", async () => {
@@ -510,6 +538,56 @@ describe("cli", () => {
     expect(await readFile(loose, "utf8")).toBe('{"type":"object","properties":{}}');
   });
 
+  it("expands a file pattern the shell passed through as written", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "a.json"), '{"type":"object","properties":{},"additionalProperties":false}');
+    await writeFile(join(dir, "b.json"), '{"type":"object","properties":{}}');
+    await writeFile(join(dir, "notes.txt"), "not a schema");
+
+    const { code, stdout } = await cli(["-p", "openai", "-f", "json", `${dir}/*.json`, `${dir}/[ab].json`]);
+    expect(code).toBe(1);
+    // Sorted, and a file both patterns match is reported once.
+    expect(JSON.parse(stdout).files.map((file: { file: string }) => file.file)).toEqual([`${dir}/a.json`, `${dir}/b.json`]);
+  });
+
+  it("reads a path that exists as that path, even when its name holds a wildcard", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "tool[1].json"), '{"type":"object","properties":{},"additionalProperties":false}');
+    await writeFile(join(dir, "t.json"), '{"type":"object","properties":{}}');
+
+    const { code, stdout } = await cli(["-p", "openai", "-f", "json", join(dir, "tool[1].json")]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).files.map((file: { file: string }) => file.file)).toEqual([join(dir, "tool[1].json")]);
+  });
+
+  it("fails on a pattern that matches no file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const { code, stderr } = await cli([`${dir}/*.json`]);
+    expect(code).toBe(2);
+    expect(stderr).toContain(`No file matches ${dir}/*.json.`);
+  });
+
+  it("--fix --write rewrites every file a pattern matches", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await mkdir(join(dir, "tools"));
+    await writeFile(join(dir, "tools", "a.json"), '{"type":"object","properties":{}}');
+    await writeFile(join(dir, "b.json"), '{"type":"object","properties":{}}');
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", `${dir}/**/*.json`]);
+    expect(code).toBe(0);
+    expect(stderr).toContain("rewrote 2 of 2 files");
+    expect(JSON.parse(await readFile(join(dir, "tools", "a.json"), "utf8")).additionalProperties).toBe(false);
+  });
+
+  it("--fix without --write still takes one file when a pattern matches several", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "a.json"), "{}");
+    await writeFile(join(dir, "b.json"), "{}");
+    const { code, stderr } = await cli(["--fix", `${dir}/*.json`]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("add --write to rewrite several in place");
+  });
+
   it("--fix --prune-unused-defs drops a definition nothing references", async () => {
     const schema = JSON.stringify({
       type: "object",
@@ -608,7 +686,7 @@ describe("cli", () => {
     expect((await cli([out])).code).toBe(0);
   });
 
-  it("--fix --write rewrites a YAML file in place as YAML", async () => {
+  it("--fix --write rewrites a YAML file in place as YAML, its sequences at their keys' indentation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");
     await writeFile(file, "type: object\nproperties:\n  status:\n    oneOf:\n    - const: open\n    - const: closed\nrequired: [status]\n");
@@ -621,8 +699,8 @@ describe("cli", () => {
 properties:
   status:
     anyOf:
-      - const: open
-      - const: closed
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
@@ -790,9 +868,9 @@ properties:
   status:
     # One of two.
     anyOf: # exclusive
-      # The ticket is still open.
-      - const: open
-      - const: closed
+    # The ticket is still open.
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
@@ -1155,6 +1233,34 @@ $defs:
       expect(written).toContain("name: # never empty");
       expect(written).toContain("description: Must be at least 1 character long.");
       expect(written).not.toContain("minLength");
+    });
+
+    it("keeps OpenAPI 3.0's nullable when it rewrites a YAML document in place", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.0.3",
+          "components:",
+          "  schemas:",
+          "    Pet:",
+          "      type: object",
+          "      properties:",
+          "        nickname:",
+          "          type: string",
+          "          nullable: true # may be unset",
+          "      additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code, stderr } = await cli(["--openapi", "--fix", "--write", "-p", "openai", file]);
+      expect(code).toBe(0);
+      const written = await readFile(file, "utf8");
+      expect(written).toContain("          type: string\n          nullable: true # may be unset\n");
+      expect(written).toContain("required:");
+      expect(written).not.toContain("null\n");
+      expect(stderr).toContain('Add nickname to "required".');
     });
 
     it("leaves the root of a component that is not an object unwrapped with --fix", async () => {

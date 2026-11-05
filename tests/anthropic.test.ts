@@ -152,4 +152,25 @@ describe("anthropic", () => {
     expect(finding?.severity).toBe("warn");
     expect(ids(strictObject({ a: { enum: ["same", "same", "Other"] } }))).toEqual([]);
   });
+
+  it("enum-casing compares the const and enum branches of one anyOf", () => {
+    const literals = { anyOf: [{ type: "string", const: "Open" }, { type: "string", const: "open" }] };
+    const [finding] = findingsFor("anthropic", strictObject({ status: literals }));
+    expect(finding?.ruleId).toBe("anthropic/enum-casing");
+    expect(finding?.path).toBe("/properties/status");
+    expect(finding?.message).toBe('"anyOf" values differ only in capitalization: "Open", "open".');
+
+    const mixed = { anyOf: [{ enum: ["Closed", "Open"] }, { const: "OPEN" }, { type: "null" }] };
+    expect(ids(strictObject({ status: mixed }))).toEqual(["anthropic/enum-casing"]);
+
+    const distinct = { anyOf: [{ const: "open" }, { const: "closed" }, { const: "open" }] };
+    expect(ids(strictObject({ status: distinct }))).toEqual([]);
+  });
+
+  it("enum-casing reports a branch's own enum once, at the branch", () => {
+    const schema = strictObject({ status: { anyOf: [{ enum: ["Open", "open"] }, { type: "null" }] } });
+    expect(findingsFor("anthropic", schema).map((finding) => [finding.ruleId, finding.path])).toEqual([
+      ["anthropic/enum-casing", "/properties/status/anyOf/0"],
+    ]);
+  });
 });
