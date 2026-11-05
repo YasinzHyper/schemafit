@@ -54,7 +54,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Translate OpenAPI 3.0's `nullable: true` into the `type` array that JSON Schema spells it as, under `--openapi`, and write it back as the keyword under `--fix --openapi`
 - [ ] Spell the `{ "type": "null" }` branch that the fix for `openai/all-required` adds to an `anyOf` property, or puts around a `$ref` property in a new `anyOf`, in a way an OpenAPI 3.0 document allows, or hold that fix back there: 3.0 has no `null` type, and a `nullable` beside a `$ref` takes no effect, so `--fix --openapi` writes a schema 3.0 tooling rejects today
 - [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
-- [ ] Glob expansion on Windows shells, where the shell does not expand `*.json`
+- [x] Glob expansion on Windows shells, where the shell does not expand `*.json`
+- [ ] Brace expansion in a file pattern (`{tools,schemas}/*.json`), which a POSIX shell performs and the expansion `schemafit` does itself leaves out, so the pattern matches only a directory named that
 - [ ] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call
 - [ ] Mark a schema the request sends non-strictly in the report header under `--all-tools`, so a finding against a tool that opted out of strict decoding reads as advisory rather than as something the provider would reject
 - [ ] Report how many tools in a request body declared no schema and were skipped, so a file whose tools are all server tools says so rather than failing with "holds no schema to check"

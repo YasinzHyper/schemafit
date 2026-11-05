@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -508,6 +508,56 @@ describe("cli", () => {
     expect(code).toBe(2);
     expect(stderr).toContain("not valid JSON");
     expect(await readFile(loose, "utf8")).toBe('{"type":"object","properties":{}}');
+  });
+
+  it("expands a file pattern the shell passed through as written", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "a.json"), '{"type":"object","properties":{},"additionalProperties":false}');
+    await writeFile(join(dir, "b.json"), '{"type":"object","properties":{}}');
+    await writeFile(join(dir, "notes.txt"), "not a schema");
+
+    const { code, stdout } = await cli(["-p", "openai", "-f", "json", `${dir}/*.json`, `${dir}/[ab].json`]);
+    expect(code).toBe(1);
+    // Sorted, and a file both patterns match is reported once.
+    expect(JSON.parse(stdout).files.map((file: { file: string }) => file.file)).toEqual([`${dir}/a.json`, `${dir}/b.json`]);
+  });
+
+  it("reads a path that exists as that path, even when its name holds a wildcard", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "tool[1].json"), '{"type":"object","properties":{},"additionalProperties":false}');
+    await writeFile(join(dir, "t.json"), '{"type":"object","properties":{}}');
+
+    const { code, stdout } = await cli(["-p", "openai", "-f", "json", join(dir, "tool[1].json")]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).files.map((file: { file: string }) => file.file)).toEqual([join(dir, "tool[1].json")]);
+  });
+
+  it("fails on a pattern that matches no file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const { code, stderr } = await cli([`${dir}/*.json`]);
+    expect(code).toBe(2);
+    expect(stderr).toContain(`No file matches ${dir}/*.json.`);
+  });
+
+  it("--fix --write rewrites every file a pattern matches", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await mkdir(join(dir, "tools"));
+    await writeFile(join(dir, "tools", "a.json"), '{"type":"object","properties":{}}');
+    await writeFile(join(dir, "b.json"), '{"type":"object","properties":{}}');
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", `${dir}/**/*.json`]);
+    expect(code).toBe(0);
+    expect(stderr).toContain("rewrote 2 of 2 files");
+    expect(JSON.parse(await readFile(join(dir, "tools", "a.json"), "utf8")).additionalProperties).toBe(false);
+  });
+
+  it("--fix without --write still takes one file when a pattern matches several", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await writeFile(join(dir, "a.json"), "{}");
+    await writeFile(join(dir, "b.json"), "{}");
+    const { code, stderr } = await cli(["--fix", `${dir}/*.json`]);
+    expect(code).toBe(2);
+    expect(stderr).toContain("add --write to rewrite several in place");
   });
 
   it("--fix --prune-unused-defs drops a definition nothing references", async () => {
