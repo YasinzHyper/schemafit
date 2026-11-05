@@ -658,7 +658,7 @@ describe("cli", () => {
     expect((await cli([out])).code).toBe(0);
   });
 
-  it("--fix --write rewrites a YAML file in place as YAML", async () => {
+  it("--fix --write rewrites a YAML file in place as YAML, its sequences at their keys' indentation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");
     await writeFile(file, "type: object\nproperties:\n  status:\n    oneOf:\n    - const: open\n    - const: closed\nrequired: [status]\n");
@@ -671,8 +671,8 @@ describe("cli", () => {
 properties:
   status:
     anyOf:
-      - const: open
-      - const: closed
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
@@ -840,9 +840,9 @@ properties:
   status:
     # One of two.
     anyOf: # exclusive
-      # The ticket is still open.
-      - const: open
-      - const: closed
+    # The ticket is still open.
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
@@ -1096,6 +1096,34 @@ $defs:
       expect(written).toContain("name: # never empty");
       expect(written).toContain("description: Must be at least 1 character long.");
       expect(written).not.toContain("minLength");
+    });
+
+    it("keeps OpenAPI 3.0's nullable when it rewrites a YAML document in place", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.0.3",
+          "components:",
+          "  schemas:",
+          "    Pet:",
+          "      type: object",
+          "      properties:",
+          "        nickname:",
+          "          type: string",
+          "          nullable: true # may be unset",
+          "      additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code, stderr } = await cli(["--openapi", "--fix", "--write", "-p", "openai", file]);
+      expect(code).toBe(0);
+      const written = await readFile(file, "utf8");
+      expect(written).toContain("          type: string\n          nullable: true # may be unset\n");
+      expect(written).toContain("required:");
+      expect(written).not.toContain("null\n");
+      expect(stderr).toContain('Add nickname to "required".');
     });
 
     it("leaves the root of a component that is not an object unwrapped with --fix", async () => {

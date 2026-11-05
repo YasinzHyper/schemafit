@@ -45,10 +45,14 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Carry a comment over an entry a fix renames or moves, which `--write` refuses today: the `oneOf` that becomes `anyOf`, and the keys of a root `openai/root-object` wraps, whose new pointers are known
 - [x] Carry a comment over an entry a fix folds into `description`, which `--write` still refuses: the `minimum`, `maxLength`, or `format` the comment could go with to the `description` entry, which may not have existed before the fix and so has no line of its own yet
 - [x] Keep the blank lines between the entries of a YAML file a rewrite touches, which the writer drops today, so two tool definitions a file kept apart stay apart
-- [ ] Keep the layout of a YAML file a rewrite touches: the sequence at its key's indentation, the folded (`>`) description wrapped where the file wrapped it, which the writer gives up today for its own two-space block style and a literal block
+- [x] Keep the sequence of a YAML file a rewrite touches at its key's indentation, where the file writes it there, which the writer gave up for its own two-space block style
+- [ ] Keep the folded (`>`) description of a YAML file a rewrite touches wrapped where the file wrapped it, which the writer gives up today for a literal block
+- [ ] Keep the indentation of each sequence where a YAML file mixes the two styles, which the writer reads off the file's first block sequence under a key today and applies to all of them. `examples/agent-tools.yaml` writes `required` both ways
+- [ ] Keep a list of scalars a YAML file writes in block style in block style, which the writer puts on one line in flow style today when it fits, so `required:` over `- status` comes out of a rewrite as `required: [status]`
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`
 - [x] `--fix --openapi`: rewrite each component and put it back under `components.schemas`, with the copies the bundle made under `$defs` taken out again, so a fix lands once in the component it belongs to
-- [ ] Translate OpenAPI 3.0's `nullable: true` into the `type` array or `anyOf` with `null` that JSON Schema spells it as, under `--openapi`, which reads it as the keyword it is today
+- [x] Translate OpenAPI 3.0's `nullable: true` into the `type` array that JSON Schema spells it as, under `--openapi`, and write it back as the keyword under `--fix --openapi`
+- [ ] Spell the `{ "type": "null" }` branch that the fix for `openai/all-required` adds to an `anyOf` property, or puts around a `$ref` property in a new `anyOf`, in a way an OpenAPI 3.0 document allows, or hold that fix back there: 3.0 has no `null` type, and a `nullable` beside a `$ref` takes no effect, so `--fix --openapi` writes a schema 3.0 tooling rejects today
 - [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
 - [x] Glob expansion on Windows shells, where the shell does not expand `*.json`
 - [ ] Brace expansion in a file pattern (`{tools,schemas}/*.json`), which a POSIX shell performs and the expansion `schemafit` does itself leaves out, so the pattern matches only a directory named that

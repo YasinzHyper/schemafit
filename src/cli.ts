@@ -15,7 +15,7 @@ import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
-import type { YamlBlank, YamlComment } from "./yaml.js";
+import type { YamlBlank, YamlComment, YamlLayout } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -101,8 +101,9 @@ components it references are copied under $defs, and every
 how the schema has to be sent for its references to resolve. A finding inside a
 copied component is reported once, on that component's own report, unless only the
 schema around it shows it. A component that is only ever part of another, an enum
-say, is still checked as a root, so expect openai/root-object on it; the schemas are
-checked as written, so an OpenAPI 3.0 "nullable" is read as the keyword it is.
+say, is still checked as a root, so expect openai/root-object on it. In an OpenAPI
+3.0 document, "nullable": true beside a "type" is read as the type array JSON Schema
+spells it as, "type": ["string", "null"], and --fix writes it back as "nullable".
 With --fix, each component is rewritten as that schema and put back under
 components.schemas without the copies, so a fix lands once, in the component it
 belongs to. A component's root is not wrapped in an object for openai/root-object,
@@ -230,6 +231,7 @@ interface ReadDocument {
   document: unknown;
   comments?: YamlComment[];
   blanks?: YamlBlank[];
+  layout?: YamlLayout;
 }
 
 /**
@@ -267,9 +269,9 @@ async function readDocument(file: string, io: CliIo): Promise<ReadDocument> {
   }
 }
 
-function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[] } {
-  const { value, attached, blanks } = readYaml(text);
-  return { document: value, comments: attached, blanks };
+function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[]; layout: YamlLayout } {
+  const { value, attached, blanks, layout } = readYaml(text);
+  return { document: value, comments: attached, blanks, layout };
 }
 
 /** Names a schema inside a document, for an error about that schema alone. */
@@ -472,7 +474,7 @@ interface PlannedFix {
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
 async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { providers, out, write, pruneUnusedDefs, allTools } = request;
-  const { label, document, schemas, comments = [], blanks = [] } = request.openapi
+  const { label, document, schemas, comments = [], blanks = [], layout } = request.openapi
     ? await readOpenApi(file, io)
     : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
@@ -533,7 +535,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const unwritten = write && !changed;
   // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, layout) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 
