@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fixOpenApi, lint, openApiSchemas } from "../src/index.js";
+import { fixOpenApi, lint, openApiInlineSchemas, openApiSchemas } from "../src/index.js";
 import type { Finding, LintResult } from "../src/index.js";
 import { summarize } from "../src/lint.js";
 import { withoutCopiedFindings } from "../src/openapi.js";
@@ -118,6 +118,124 @@ describe("openApiSchemas", () => {
   it("finds nothing in a document without schema components", () => {
     expect(openApiSchemas({ openapi: "3.1.1", paths: {} })).toEqual([]);
     expect(openApiSchemas({ type: "object" })).toEqual([]);
+  });
+});
+
+describe("openApiInlineSchemas", () => {
+  const order = strictObject({ quantity: { type: "integer", minimum: 1 } });
+  const json = (schema: unknown) => ({ content: { "application/json": { schema } } });
+  const withPaths = (paths: Record<string, unknown>, schemas: Record<string, unknown> = {}) => ({
+    ...(openApi(schemas) as object),
+    paths,
+  });
+
+  it("finds the request body and responses of every operation, named for where they are used", () => {
+    const document = withPaths({
+      "/orders": {
+        post: {
+          requestBody: json(order),
+          responses: { "201": { description: "Created", ...json(order) } },
+        },
+      },
+    });
+    expect(openApiInlineSchemas(document).map(({ name, pointer, wrapper }) => [name, pointer, wrapper])).toEqual([
+      [
+        "POST /orders request body, application/json",
+        "/paths/~1orders/post/requestBody/content/application~1json/schema",
+        "OpenAPI request body",
+      ],
+      [
+        "POST /orders 201 response, application/json",
+        "/paths/~1orders/post/responses/201/content/application~1json/schema",
+        "OpenAPI response",
+      ],
+    ]);
+  });
+
+  it("leaves out parameters, whose schemas are never sent on their own", () => {
+    const document = withPaths({
+      "/pets": {
+        parameters: [{ name: "store", in: "query", schema: { type: "string" } }],
+        get: {
+          parameters: [
+            { name: "limit", in: "query", schema: { type: "integer" } },
+            { name: "X-Trace", in: "header", content: { "text/plain": { schema: { type: "string" } } } },
+          ],
+          responses: { "200": json(order) },
+        },
+      },
+    });
+    expect(openApiInlineSchemas(document).map(({ name }) => name)).toEqual(["GET /pets 200 response, application/json"]);
+  });
+
+  it("returns the schema as declared, with the keys that lead to it", () => {
+    const [found] = openApiInlineSchemas(withPaths({ "/orders": { post: { requestBody: json(order) } } }));
+    expect(found?.schema).toEqual(order);
+    expect(found?.keys).toEqual(["paths", "/orders", "post", "requestBody", "content", "application/json", "schema"]);
+    expect(found?.copied).toEqual([]);
+  });
+
+  it("copies the components an inline schema references under $defs", () => {
+    const body = strictObject({ tag: { $ref: "#/components/schemas/Tag" } });
+    const [found] = openApiInlineSchemas(withPaths({ "/pets": { put: { requestBody: json(body) } } }, { Tag: tag }));
+    expect(found?.copied).toEqual(["Tag"]);
+    expect(found?.wrapper).toBe("OpenAPI request body, with the components it references under $defs");
+    expect(found?.schema).toEqual({ ...body, properties: { tag: { $ref: "#/$defs/Tag" } }, $defs: { Tag: tag } });
+  });
+
+  it("leaves out a schema that is only a reference to a component, and Reference Objects", () => {
+    const document = withPaths(
+      {
+        "/pets": {
+          parameters: [{ $ref: "#/components/parameters/Limit" }],
+          get: {
+            requestBody: { $ref: "#/components/requestBodies/Pet" },
+            responses: {
+              "200": { description: "A pet", ...json({ $ref: "#/components/schemas/Tag" }) },
+              "404": { $ref: "#/components/responses/NotFound" },
+            },
+          },
+        },
+      },
+      { Tag: tag },
+    );
+    expect(openApiInlineSchemas(document)).toEqual([]);
+  });
+
+  it("keeps a schema that references part of a component, which no component report covers as a root", () => {
+    const response = json({ $ref: "#/components/schemas/Tag/properties/name" });
+    const document = withPaths({ "/pets": { get: { responses: { "200": response } } } }, { Tag: tag });
+    expect(openApiInlineSchemas(document).map(({ name }) => name)).toEqual(["GET /pets 200 response, application/json"]);
+  });
+
+  it("reads only the fields of a path item that hold an operation", () => {
+    const item = { summary: "Pets", servers: [], "x-internal": { requestBody: json(order) } };
+    const document = withPaths({ "/pets": item });
+    expect(openApiInlineSchemas(document)).toEqual([]);
+  });
+
+  it("returns nothing for a document without paths", () => {
+    expect(openApiInlineSchemas({ openapi: "3.1.1", components: { schemas: { Tag: tag } } })).toEqual([]);
+  });
+
+  it("reports a finding in a component an inline schema references once, on the component", () => {
+    const body = strictObject({ tag: { $ref: "#/components/schemas/Tag" } });
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Tag: tag });
+    const schemas = [...openApiSchemas(document), ...openApiInlineSchemas(document)];
+    const results = schemas.map((found) => lint(found.schema, { providers: ["anthropic"] }));
+    const counted = (findings: readonly Finding[]) => summarize(findings, ["anthropic"]);
+    const [component, inline] = withoutCopiedFindings(schemas, results, counted);
+    expect(component?.findings.map((item) => item.ruleId)).toEqual(["anthropic/no-string-length"]);
+    expect(inline?.findings).toEqual([]);
+  });
+
+  it("does not take an inline schema for a component that happens to share its name", () => {
+    const name = "POST /pets request body, application/json";
+    const document = withPaths({ "/pets": { post: { requestBody: json(tag) } } }, { [name]: { type: "object" } });
+    const schemas = [...openApiSchemas(document), ...openApiInlineSchemas(document)];
+    const results = schemas.map((found) => lint(found.schema, { providers: ["anthropic"] }));
+    const [, inline] = withoutCopiedFindings(schemas, results, (findings) => summarize(findings, ["anthropic"]));
+    expect(inline?.findings.map((item) => item.ruleId)).toEqual(["anthropic/no-string-length"]);
   });
 });
 

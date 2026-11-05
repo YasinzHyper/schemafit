@@ -1076,6 +1076,115 @@ $defs:
       expect(stderr).toContain("declares no schema under components.schemas");
     });
 
+    it("reports the schemas declared inline under paths, named for where they are used", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.json");
+      const tagRef = "#/components/schemas/Tag";
+      const body = {
+        type: "object",
+        properties: { tag: { $ref: tagRef }, note: { type: "string", maxLength: 80 } },
+        required: ["tag", "note"],
+        additionalProperties: false,
+      };
+      await writeFile(
+        file,
+        JSON.stringify({
+          openapi: "3.1.1",
+          paths: {
+            "/pets": {
+              post: {
+                requestBody: { content: { "application/json": { schema: body } } },
+                responses: {
+                  "200": { description: "OK", content: { "application/json": { schema: { $ref: tagRef } } } },
+                },
+              },
+            },
+          },
+          components: { schemas: { Tag: tag } },
+        }),
+      );
+      const { code, stdout } = await cli(["--openapi", "-p", "anthropic", file]);
+      expect(code).toBe(1);
+      expect(stdout).toContain(
+        `${file}#/paths/~1pets/post/requestBody/content/application~1json/schema  ` +
+          "POST /pets request body, application/json  (OpenAPI request body, with the components it references under $defs)",
+      );
+      expect(stdout).not.toContain("200 response");
+      // The shared Tag's finding is reported on Tag alone; the body's own one on the body.
+      expect(stdout.match(/anthropic\/no-string-length/g)).toHaveLength(2);
+      expect(stdout).not.toContain("#/$defs/Tag");
+    });
+
+    it("reads a document that declares schemas only under paths", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.json");
+      const schema = { type: "string", maxLength: 10 };
+      await writeFile(
+        file,
+        JSON.stringify({
+          openapi: "3.1.1",
+          paths: { "/pets": { get: { responses: { "200": { content: { "text/plain": { schema } } } } } } },
+        }),
+      );
+      const lintRun = await cli(["--openapi", "-p", "anthropic", file]);
+      expect(lintRun.code).toBe(1);
+      expect(lintRun.stdout).toContain("GET /pets 200 response, text/plain");
+      const fixRun = await cli(["--openapi", "--fix", "-p", "anthropic", file]);
+      expect(fixRun.code).toBe(2);
+      expect(fixRun.stderr).toContain(
+        "declares no schema under components.schemas, which is where --fix --openapi looks.",
+      );
+    });
+
+    it("does not report a scalar parameter as a root that is not an object", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.0.3",
+          "paths:",
+          "  /pets:",
+          "    get:",
+          "      parameters:",
+          "        - name: limit",
+          "          in: query",
+          "          schema:",
+          "            type: integer",
+          "      responses:",
+          "        '200':",
+          "          description: OK",
+          "          content:",
+          "            application/json:",
+          "              schema:",
+          "                type: object",
+          "                properties:",
+          "                  count:",
+          "                    type: integer",
+          "                required: [count]",
+          "                additionalProperties: false",
+          "",
+        ].join("\n"),
+      );
+      const { code, stdout } = await cli(["--openapi", "-p", "openai", file]);
+      expect(stdout).not.toContain("openai/root-object");
+      expect(stdout).not.toContain("parameter");
+      expect(stdout).toContain("GET /pets 200 response, application/json");
+      expect(code).toBe(0);
+    });
+
+    it("says where it looked when a document declares only parameters", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.json");
+      const parameters = [{ name: "limit", in: "query", schema: { type: "integer" } }];
+      await writeFile(file, JSON.stringify({ openapi: "3.0.3", paths: { "/pets": { get: { parameters } } } }));
+      const { code, stderr } = await cli(["--openapi", "-p", "openai", file]);
+      expect(code).toBe(2);
+      expect(stderr).toContain(
+        "declares no schema under components.schemas or in a request body or response under paths",
+      );
+    });
+
     it("names the component whose definitions cannot take a copy", async () => {
       const file = await openApiFile({ Tag: tag, Pet: { ...pet, $defs: { Tag: { type: "string" } } } });
       const { code, stderr } = await cli(["--openapi", file]);

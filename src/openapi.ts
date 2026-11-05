@@ -1,6 +1,7 @@
 import { fixExcept } from "./fix.js";
 import { summarize } from "./lint.js";
 import { joinPointer, unescapeToken } from "./pointer.js";
+import { refOnly } from "./refs.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { Finding, FixOptions, FixResult, JsonSchema, LintResult } from "./types.js";
 import type { UnwrappedSchema } from "./unwrap.js";
@@ -122,10 +123,10 @@ function references(value: unknown, into: Set<string>): Set<string> {
   return into;
 }
 
-/** Every component `start` reaches through its references, `start` excluded unless it refers back to itself. */
-function reachable(components: JsonSchema, start: string): string[] {
+/** Every component `schema` reaches through its references, a component itself only when it refers back to itself. */
+function reachable(components: JsonSchema, schema: unknown): string[] {
   const seen = new Set<string>();
-  const queue = [...references(components[start], new Set())];
+  const queue = [...references(schema, new Set())];
   while (queue.length > 0) {
     const name = queue.shift() as string;
     if (seen.has(name) || !(name in components)) continue;
@@ -152,13 +153,21 @@ const RENAMED_COPY = "components.schemas.";
  * different schema under one of those names, because the bundle could not hold both.
  */
 function bundle(components: JsonSchema, name: string): { schema: unknown; copied: string[]; copiedAs: Record<string, string> } {
-  const component = components[name];
-  const copied = reachable(components, name);
+  return bundleSchema(components, components[name], `Component "${name}"`);
+}
+
+/** `bundle` for any schema of the document, `label` naming it in an error. */
+function bundleSchema(
+  components: JsonSchema,
+  component: unknown,
+  label: string,
+): { schema: unknown; copied: string[]; copiedAs: Record<string, string> } {
+  const copied = reachable(components, component);
   if (!isJsonSchema(component) || copied.length === 0) return { schema: component, copied, copiedAs: {} };
 
   const own = component.$defs;
   if (own !== undefined && !isJsonSchema(own)) {
-    throw new TypeError(`Component "${name}": "$defs" must be an object to bundle the components it references into.`);
+    throw new TypeError(`${label}: "$defs" must be an object to bundle the components it references into.`);
   }
   const copiedAs: Record<string, string> = {};
   const to = new Map<string, string>();
@@ -174,10 +183,10 @@ function bundle(components: JsonSchema, name: string): { schema: unknown; copied
     const definition = retarget(components[copy], to);
     const key = copiedAs[copy] as string;
     if (key !== copy && JSON.stringify(defs[copy]) !== JSON.stringify(definition)) {
-      throw new TypeError(`Component "${name}": "$defs" already defines "${copy}", the name of a component it references.`);
+      throw new TypeError(`${label}: "$defs" already defines "${copy}", the name of a component it references.`);
     }
     if (key in defs) {
-      throw new TypeError(`Component "${name}": "$defs" already defines "${key}", the name its copy of "${copy}" needs.`);
+      throw new TypeError(`${label}: "$defs" already defines "${key}", the name its copy of "${copy}" needs.`);
     }
     defs[key] = definition;
   }
@@ -223,6 +232,112 @@ export function openApiSchemas(document: unknown): OpenApiSchema[] {
   });
 }
 
+/** Where the component `name` sits in the document. */
+function componentPointer(name: string): string {
+  return joinPointer("", ...COMPONENTS, name);
+}
+
+/** True for a reference to a whole component, `#/components/schemas/Pet`, rather than to a part of one. */
+function wholeComponent(ref: string | null): boolean {
+  return ref !== null && referencedName(ref) !== undefined && !ref.slice(COMPONENT_REF.length).includes("/");
+}
+
+/** The fields of a Path Item Object that hold an Operation Object, in the order the specification lists them. */
+const OPERATIONS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
+
+/** A schema an OpenAPI document declares inline under `paths`, before it is bundled. */
+interface InlineSchema {
+  schema: JsonSchema;
+  keys: string[];
+  name: string;
+  wrapper: string;
+}
+
+/**
+ * The schema of each Media Type Object of a `content` map, named after its media type. A
+ * Reference Object in place of the object that holds the map is no inline declaration, and is
+ * skipped by the caller.
+ */
+function contentSchemas(content: unknown, keys: readonly string[], name: string, wrapper: string): InlineSchema[] {
+  if (!isJsonSchema(content)) return [];
+  return Object.entries(content).flatMap(([mediaType, media]) =>
+    isJsonSchema(media) && isJsonSchema(media.schema)
+      ? [
+          {
+            schema: media.schema,
+            keys: [...keys, "content", mediaType, "schema"],
+            name: `${name}, ${mediaType}`,
+            wrapper,
+          },
+        ]
+      : [],
+  );
+}
+
+/**
+ * The schemas one Operation Object declares inline: its request body and its responses. Its
+ * parameters are left out. A parameter's schema is never sent to a provider on its own: a tool
+ * built from an operation makes its parameters the properties of one object, and how it does so
+ * (which `in` they come from, which are required) is the tool's choice, not the document's.
+ */
+function operationSchemas(operation: JsonSchema, keys: readonly string[], scope: string): InlineSchema[] {
+  const found: InlineSchema[] = [];
+  const body = operation.requestBody;
+  if (isJsonSchema(body) && !("$ref" in body)) {
+    const name = `${scope} request body`;
+    found.push(...contentSchemas(body.content, [...keys, "requestBody"], name, "OpenAPI request body"));
+  }
+  if (isJsonSchema(operation.responses)) {
+    for (const [status, response] of Object.entries(operation.responses)) {
+      if (!isJsonSchema(response) || "$ref" in response) continue;
+      const at = [...keys, "responses", status];
+      found.push(...contentSchemas(response.content, at, `${scope} ${status} response`, "OpenAPI response"));
+    }
+  }
+  return found;
+}
+
+/**
+ * Every schema an OpenAPI document declares inline under `paths`: the `schema` of each media
+ * type of an operation's request body and responses, each as it would be sent on its own, with
+ * the components it references bundled under `$defs` the way `openApiSchemas` bundles a
+ * component's. The name says where the schema is used, such as `POST /pets request body,
+ * application/json`.
+ *
+ * A schema that is only a `$ref` to a component is left out, since the component is checked
+ * under its own name, and so is a Reference Object in place of a request body or response, which
+ * names a declaration under `components` rather than making one. Parameters are left out too.
+ */
+export function openApiInlineSchemas(document: unknown): OpenApiSchema[] {
+  if (!isJsonSchema(document) || !isJsonSchema(document.paths)) return [];
+  const components = componentSchemas(document) ?? {};
+  const found: InlineSchema[] = [];
+  for (const [path, item] of Object.entries(document.paths)) {
+    if (!isJsonSchema(item)) continue;
+    for (const method of OPERATIONS) {
+      const operation = item[method];
+      if (isJsonSchema(operation)) {
+        found.push(...operationSchemas(operation, ["paths", path, method], `${method.toUpperCase()} ${path}`));
+      }
+    }
+  }
+  return found
+    .filter(({ schema }) => !wholeComponent(refOnly(schema)))
+    .map(({ schema: declared, keys, name, wrapper }) => {
+      const { schema, copied, copiedAs } = bundleSchema(components, declared, name);
+      return {
+        schema,
+        wrapper: copied.length > 0 ? `${wrapper}, with the components it references under $defs` : wrapper,
+        keys,
+        kind: null,
+        pointer: joinPointer("", ...keys),
+        name,
+        copied,
+        copiedAs,
+      };
+    });
+}
+
 /** The component a finding in a bundle sits in, and its path inside that component. */
 function copiedLocation(path: string, copiedAs: Readonly<Record<string, string>>): { name: string; path: string } | undefined {
   if (!path.startsWith("/$defs/")) return undefined;
@@ -249,7 +364,8 @@ export function withoutCopiedFindings(
   const own = new Map<string, Set<string>>();
   components.forEach((component, index) => {
     const result = results[index];
-    if (component.name !== undefined && result !== undefined) {
+    // Only a component is copied into other schemas; a schema declared inline under `paths` is not.
+    if (component.name !== undefined && result !== undefined && component.pointer === componentPointer(component.name)) {
       own.set(component.name, new Set(result.findings.map((item) => `${item.ruleId} ${item.path}`)));
     }
   });
