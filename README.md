@@ -164,7 +164,7 @@ request.json  (the request as a whole)
            fix: List more properties in "required". Each optional parameter roughly doubles part of the compiled grammar.
 ```
 
-A tool that sets `"strict": false` is left out of those totals, and only the tools that carry `"strict": true` count toward the limit of 20, because the documentation says non-strict tools do not count. A file that holds one schema is measured as a request that holds one.
+A tool that sets `"strict": false` is left out of those totals, and only the tools that carry `"strict": true` count toward the limit of 20, because the documentation says non-strict tools do not count. A file that holds one schema is measured as a request that holds one. A JSON-RPC batch holds one request per message rather than one in all, since each response in it answers a call of its own, so the tools of each `tools/list` response are counted on their own and a message over a limit is reported under its index (`batch.json#/1  (the tools of this message, as one request)`).
 
 `--fix` rewrites every schema the document holds and puts each one back where it came from, so a fixed request body keeps its model, its messages, and the tools it had nothing to change in.
 
@@ -404,7 +404,7 @@ for (const { schema } of unwrapAll(body)) lintSchema(schema, { providers: ["anth
 const { findings } = lintRequest(body, { providers: ["anthropic"] });
 ```
 
-Each of those findings has a `path` that points from the document, and `""` means the request as a whole. `lintSchema` is `lint` without them, which is what keeps a request body from being reported twice; `lint` on its own is both, measuring a request that holds one schema.
+Each of those findings has a `path` that points from the document, and `""` means the request as a whole; in a JSON-RPC batch, which is measured per message, it is the message (`/1`). `lintSchema` is `lint` without them, which is what keeps a request body from being reported twice; `lint` on its own is both, measuring a request that holds one schema.
 
 ## Roadmap
 

@@ -226,6 +226,34 @@ describe("cli", () => {
     expect(stdout).not.toContain("#/1  ");
   });
 
+  it("measures the request-wide limits of a batch per message", async () => {
+    const tool = (name: string, count: number) => ({
+      name,
+      inputSchema: {
+        type: "object",
+        properties: Object.fromEntries(Array.from({ length: count }, (_, i) => [`p${i}`, { type: "string" }])),
+        additionalProperties: false,
+      },
+    });
+    const within = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { tools: [tool("a", 13)] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [tool("b", 13)] } },
+    ]);
+    const quiet = await cli(["-p", "anthropic", "-"], within);
+    expect(quiet.code).toBe(0);
+    expect(quiet.stdout).not.toContain("optional-parameters-limit");
+
+    const over = JSON.stringify([
+      { jsonrpc: "2.0", id: 1, result: { tools: [tool("a", 13)] } },
+      { jsonrpc: "2.0", id: 2, result: { tools: [tool("b", 13), tool("c", 13)] } },
+    ]);
+    const { code, stdout } = await cli(["-p", "anthropic", "-"], over);
+    expect(code).toBe(1);
+    expect(stdout).toContain("<stdin>#/1  (the tools of this message, as one request)");
+    expect(stdout).toContain("2 strict schemas have 26 optional parameters; the request-wide limit is 24 (b 13, c 13)");
+    expect(stdout).not.toContain("<stdin>#/0  (");
+  });
+
   it("--fix rewrites every response of a batch and leaves the batch whole", async () => {
     const batch = JSON.stringify([
       { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } },

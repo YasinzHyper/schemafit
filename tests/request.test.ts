@@ -157,3 +157,43 @@ describe("the two scopes together", () => {
     expect(lintRequest(request([{ name: "t", input_schema: strictObject({}), strict: true }])).findings).toEqual([]);
   });
 });
+
+describe("a JSON-RPC batch", () => {
+  /** A `tools/list` response whose one tool has `count` optional parameters. */
+  function response(id: number, count: number): unknown {
+    return { jsonrpc: "2.0", id, result: { tools: [{ name: `t${id}`, inputSchema: optional(count) }] } };
+  }
+
+  it("measures each response on its own, not the batch as one request", () => {
+    // 13 and 13 are 26 together, over the limit of 24, but no one call sends more than 13.
+    expect(ids([response(1, 13), response(2, 13)])).toEqual([]);
+  });
+
+  it("points a finding at the message whose tools are over a limit", () => {
+    const batch = [{ jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Method not found" } }, response(2, 25)];
+    const [finding, ...rest] = findings(batch);
+    expect(rest).toEqual([]);
+    expect(finding?.ruleId).toBe("anthropic/optional-parameters-limit");
+    expect(finding?.path).toBe("/1");
+    expect(finding?.message).toContain("The schema has 25 optional parameters");
+  });
+
+  it("counts every tool of one response together", () => {
+    const message = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { tools: [{ name: "a", inputSchema: optional(13) }, { name: "b", inputSchema: optional(13) }] },
+    };
+    expect(findings([message]).map(({ path, message: text }) => `${path} ${text}`)).toEqual([
+      "/0 The request's 2 strict schemas have 26 optional parameters; the request-wide limit is 24 (a 13, b 13).",
+    ]);
+  });
+
+  it("still measures a request body as one request", () => {
+    const body = request([
+      { name: "a", input_schema: optional(13) },
+      { name: "b", input_schema: optional(13) },
+    ]);
+    expect(findings(body).map(({ path }) => path)).toEqual([""]);
+  });
+});

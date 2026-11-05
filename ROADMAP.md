@@ -56,7 +56,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [ ] Lint the schemas an OpenAPI document declares inline under `paths` (request bodies, responses, parameters), which `--openapi` leaves alone today because only `components.schemas` is named for reuse
 - [x] Glob expansion on Windows shells, where the shell does not expand `*.json`
 - [ ] Brace expansion in a file pattern (`{tools,schemas}/*.json`), which a POSIX shell performs and the expansion `schemafit` does itself leaves out, so the pattern matches only a directory named that
-- [ ] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call
+- [x] Measure the request-wide limits per message of a JSON-RPC batch rather than over the batch as a whole. A batch holds several independent responses, so the tools of all of them are counted as one request today, which is right for a client that means to send them together and wrong for one picking a server per call
+- [ ] Measure a JSON-RPC batch as the one request a client sends all of its tools in, behind a flag, for a client that merges the `tools/list` responses of several calls into one request, which the per-message measurement now leaves uncounted
 - [ ] Mark a schema the request sends non-strictly in the report header under `--all-tools`, so a finding against a tool that opted out of strict decoding reads as advisory rather than as something the provider would reject
 - [ ] Report how many tools in a request body declared no schema and were skipped, so a file whose tools are all server tools says so rather than failing with "holds no schema to check"
 - [ ] `$ref` resolution for `$id`/`$anchor`-based local references
