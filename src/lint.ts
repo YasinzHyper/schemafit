@@ -1,5 +1,5 @@
 import { providers } from "./providers/index.js";
-import { requestSchemas } from "./request.js";
+import { requestGroups } from "./request.js";
 import { PROVIDER_IDS } from "./types.js";
 import type {
   Finding,
@@ -85,17 +85,43 @@ export function lint(schema: unknown, options: LintOptions = {}): LintResult {
   return { findings, summary: summarize(findings, selected) };
 }
 
+/** What the request-wide rules report about each request of a document, and where it sits. */
+export interface RequestResult {
+  /** JSON Pointer from the document to the request. `""` when the document is the request. */
+  pointer: string;
+  result: LintResult;
+}
+
+/**
+ * `lintRequest` for each request a document holds. Every document is one request except a
+ * JSON-RPC batch, whose messages are measured one by one: each response answers a call of its
+ * own, so its tools are counted toward no one else's limit. A finding about a request as a
+ * whole points at the request, which is the message in a batch.
+ */
+export function lintRequests(document: unknown, options: LintOptions = {}): RequestResult[] {
+  const selected = options.providers ?? PROVIDER_IDS;
+  return requestGroups(document).map(({ pointer, schemas }) => {
+    const findings = requestFindings(schemas, selected).map((item) =>
+      item.path === "" ? { ...item, path: pointer } : item,
+    );
+    return { pointer, result: { findings, summary: summarize(findings, selected) } };
+  });
+}
+
 /**
  * Checks a whole document — a request body, an array of tool definitions, or a single schema —
  * against the rules that measure a request rather than one schema, such as Anthropic's limit on
  * the optional parameters of all its strict schemas together. Every schema the document sends
  * strictly is counted, so a request can be over the limit without any one schema being near it.
+ * A JSON-RPC batch is measured per message instead, since each response in it is the tool set
+ * of a call of its own.
  *
  * The `path` of each finding is a JSON Pointer from the document, and `""` is the request as a
- * whole. Lint the schemas themselves with `lintSchema`, which this deliberately leaves alone.
+ * whole; in a batch, the pointer to the message (`/1`) is. Lint the schemas themselves with
+ * `lintSchema`, which this deliberately leaves alone.
  */
 export function lintRequest(document: unknown, options: LintOptions = {}): LintResult {
   const selected = options.providers ?? PROVIDER_IDS;
-  const findings = requestFindings(requestSchemas(document), selected);
+  const findings = lintRequests(document, options).flatMap(({ result }) => result.findings);
   return { findings, summary: summarize(findings, selected) };
 }
