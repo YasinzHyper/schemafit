@@ -1,10 +1,11 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequests, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
+import { expandGlob, isGlob } from "./glob.js";
 import { fixOpenApi, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
@@ -14,7 +15,7 @@ import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
-import type { YamlBlank, YamlComment } from "./yaml.js";
+import type { YamlBlank, YamlComment, YamlLayout } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -67,6 +68,14 @@ schema is named for what it is rather than reported as an empty document: an
 error response names the code and message of the call that failed, a request or
 a notification names its method, and a batch names each of its messages.
 
+A file argument may be a pattern, which schemafit expands itself, so a quoted
+"schemas/**/*.json" and the *.json that cmd.exe and PowerShell pass through as
+written both name every file they match: * and ? within one directory name, [abc]
+for one character of a set, and ** for any number of directories. A name that starts
+with a dot is matched only by a pattern that starts with one too, a path that exists
+is read as that path even when its name holds a * or a [, and a pattern that matches
+no file is an error.
+
 A file whose name ends in .yaml or .yml is read as YAML, and stdin is read as
 JSON first and as YAML if that is not what it holds. Any of the above may be
 written in it. The YAML schemafit reads is the plain kind a schema is written in
@@ -92,8 +101,9 @@ components it references are copied under $defs, and every
 how the schema has to be sent for its references to resolve. A finding inside a
 copied component is reported once, on that component's own report, unless only the
 schema around it shows it. A component that is only ever part of another, an enum
-say, is still checked as a root, so expect openai/root-object on it; the schemas are
-checked as written, so an OpenAPI 3.0 "nullable" is read as the keyword it is.
+say, is still checked as a root, so expect openai/root-object on it. In an OpenAPI
+3.0 document, "nullable": true beside a "type" is read as the type array JSON Schema
+spells it as, "type": ["string", "null"], and --fix writes it back as "nullable".
 With --fix, each component is rewritten as that schema and put back under
 components.schemas without the copies, so a fix lands once, in the component it
 belongs to. A component's root is not wrapped in an object for openai/root-object,
@@ -135,6 +145,41 @@ Exit codes
 `;
 
 class UsageError extends Error {}
+
+/**
+ * The files the arguments name, with every pattern among them expanded. A shell on Windows
+ * passes `*.json` through as written, and so does a POSIX shell when it is quoted, so a pattern
+ * that reaches schemafit is expanded here. A path that exists is read as the path it is, even
+ * when its name holds a bracket or a star. A pattern that matches nothing is an error rather
+ * than a file that cannot be read, and a file two patterns match is read once.
+ */
+async function expandFiles(args: readonly string[]): Promise<string[]> {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const arg of args) {
+    if (arg === "-" || !isGlob(arg) || (await exists(arg))) {
+      files.push(arg);
+      continue;
+    }
+    const matches = await expandGlob(arg);
+    if (matches.length === 0) throw new UsageError(`No file matches ${arg}.`);
+    for (const match of matches) {
+      if (seen.has(match)) continue;
+      seen.add(match);
+      files.push(match);
+    }
+  }
+  return files;
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function parseProviders(values: readonly string[] | undefined): ProviderId[] {
   if (!values || values.length === 0) return [...PROVIDER_IDS];
@@ -187,6 +232,7 @@ interface ReadDocument {
   document: unknown;
   comments?: YamlComment[];
   blanks?: YamlBlank[];
+  layout?: YamlLayout;
 }
 
 /**
@@ -224,9 +270,9 @@ async function readDocument(file: string, io: CliIo): Promise<ReadDocument> {
   }
 }
 
-function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[] } {
-  const { value, attached, blanks } = readYaml(text);
-  return { document: value, comments: attached, blanks };
+function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[]; layout: YamlLayout } {
+  const { value, attached, blanks, layout } = readYaml(text);
+  return { document: value, comments: attached, blanks, layout };
 }
 
 /** Names a schema inside a document, for an error about that schema alone. */
@@ -429,7 +475,7 @@ interface PlannedFix {
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
 async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { providers, out, write, pruneUnusedDefs, allTools } = request;
-  const { label, document, schemas, comments = [], blanks = [] } = request.openapi
+  const { label, document, schemas, comments = [], blanks = [], layout } = request.openapi
     ? await readOpenApi(file, io)
     : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
@@ -490,7 +536,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const unwritten = write && !changed;
   // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, layout) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 
@@ -573,7 +619,7 @@ async function runFix(files: readonly string[], request: FixRequest, io: CliIo):
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   try {
-    const { values, positionals } = parseArgs({
+    const parsed = parseArgs({
       args: [...argv],
       allowPositionals: true,
       options: {
@@ -591,6 +637,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
         version: { type: "boolean", short: "v", default: false },
       },
     });
+    const { values } = parsed;
 
     if (values.help) {
       io.stdout(HELP);
@@ -600,6 +647,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
       io.stdout(`${await version()}\n`);
       return EXIT_OK;
     }
+    const positionals = parsed.positionals[0] === "rules" ? parsed.positionals : await expandFiles(parsed.positionals);
 
     const format = values.format;
     if (format !== "pretty" && format !== "json") {
