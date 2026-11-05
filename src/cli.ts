@@ -14,7 +14,7 @@ import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
-import type { YamlBlank, YamlComment } from "./yaml.js";
+import type { YamlBlank, YamlComment, YamlLayout } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -186,6 +186,7 @@ interface ReadDocument {
   document: unknown;
   comments?: YamlComment[];
   blanks?: YamlBlank[];
+  layout?: YamlLayout;
 }
 
 /**
@@ -223,9 +224,9 @@ async function readDocument(file: string, io: CliIo): Promise<ReadDocument> {
   }
 }
 
-function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[] } {
-  const { value, attached, blanks } = readYaml(text);
-  return { document: value, comments: attached, blanks };
+function yamlDocument(text: string): { document: unknown; comments: YamlComment[]; blanks: YamlBlank[]; layout: YamlLayout } {
+  const { value, attached, blanks, layout } = readYaml(text);
+  return { document: value, comments: attached, blanks, layout };
 }
 
 /** Names a schema inside a document, for an error about that schema alone. */
@@ -428,7 +429,7 @@ interface PlannedFix {
 /** Rewrites every schema of one file for the selected providers, without writing anything. */
 async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { providers, out, write, pruneUnusedDefs, allTools } = request;
-  const { label, document, schemas, comments = [], blanks = [] } = request.openapi
+  const { label, document, schemas, comments = [], blanks = [], layout } = request.openapi
     ? await readOpenApi(file, io)
     : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
@@ -489,7 +490,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const unwritten = write && !changed;
   // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, layout) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 

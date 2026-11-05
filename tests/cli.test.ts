@@ -608,7 +608,7 @@ describe("cli", () => {
     expect((await cli([out])).code).toBe(0);
   });
 
-  it("--fix --write rewrites a YAML file in place as YAML", async () => {
+  it("--fix --write rewrites a YAML file in place as YAML, its sequences at their keys' indentation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");
     await writeFile(file, "type: object\nproperties:\n  status:\n    oneOf:\n    - const: open\n    - const: closed\nrequired: [status]\n");
@@ -621,8 +621,8 @@ describe("cli", () => {
 properties:
   status:
     anyOf:
-      - const: open
-      - const: closed
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
@@ -790,9 +790,9 @@ properties:
   status:
     # One of two.
     anyOf: # exclusive
-      # The ticket is still open.
-      - const: open
-      - const: closed
+    # The ticket is still open.
+    - const: open
+    - const: closed
 required: [status]
 additionalProperties: false
 `);
