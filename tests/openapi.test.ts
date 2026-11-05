@@ -100,24 +100,16 @@ describe("openApiInlineSchemas", () => {
     paths,
   });
 
-  it("finds the parameters, request body, and responses of every operation, named for where they are used", () => {
+  it("finds the request body and responses of every operation, named for where they are used", () => {
     const document = withPaths({
       "/orders": {
-        parameters: [{ name: "store", in: "query", schema: { type: "string" } }],
         post: {
-          parameters: [{ name: "X-Trace", in: "header", content: { "text/plain": { schema: { type: "string" } } } }],
           requestBody: json(order),
           responses: { "201": { description: "Created", ...json(order) } },
         },
       },
     });
     expect(openApiInlineSchemas(document).map(({ name, pointer, wrapper }) => [name, pointer, wrapper])).toEqual([
-      ["/orders parameter store (query)", "/paths/~1orders/parameters/0/schema", "OpenAPI parameter"],
-      [
-        "POST /orders parameter X-Trace (header), text/plain",
-        "/paths/~1orders/post/parameters/0/content/text~1plain/schema",
-        "OpenAPI parameter",
-      ],
       [
         "POST /orders request body, application/json",
         "/paths/~1orders/post/requestBody/content/application~1json/schema",
@@ -129,6 +121,22 @@ describe("openApiInlineSchemas", () => {
         "OpenAPI response",
       ],
     ]);
+  });
+
+  it("leaves out parameters, whose schemas are never sent on their own", () => {
+    const document = withPaths({
+      "/pets": {
+        parameters: [{ name: "store", in: "query", schema: { type: "string" } }],
+        get: {
+          parameters: [
+            { name: "limit", in: "query", schema: { type: "integer" } },
+            { name: "X-Trace", in: "header", content: { "text/plain": { schema: { type: "string" } } } },
+          ],
+          responses: { "200": json(order) },
+        },
+      },
+    });
+    expect(openApiInlineSchemas(document).map(({ name }) => name)).toEqual(["GET /pets 200 response, application/json"]);
   });
 
   it("returns the schema as declared, with the keys that lead to it", () => {

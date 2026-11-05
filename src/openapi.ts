@@ -218,23 +218,14 @@ function contentSchemas(content: unknown, keys: readonly string[], name: string,
   );
 }
 
-/** The schemas of a `parameters` list: each Parameter Object's `schema`, or the one entry of its `content`. */
-function parameterSchemas(parameters: unknown, keys: readonly string[], scope: string): InlineSchema[] {
-  if (!Array.isArray(parameters)) return [];
-  return parameters.flatMap((parameter, index) => {
-    if (!isJsonSchema(parameter) || "$ref" in parameter) return [];
-    const at = [...keys, "parameters", String(index)];
-    const where = typeof parameter.in === "string" ? ` (${parameter.in})` : "";
-    const name = `${scope} parameter ${typeof parameter.name === "string" ? parameter.name : index}${where}`;
-    const wrapper = "OpenAPI parameter";
-    if (isJsonSchema(parameter.schema)) return [{ schema: parameter.schema, keys: [...at, "schema"], name, wrapper }];
-    return contentSchemas(parameter.content, at, name, wrapper);
-  });
-}
-
-/** The schemas one Operation Object declares inline: its parameters, its request body, and its responses. */
+/**
+ * The schemas one Operation Object declares inline: its request body and its responses. Its
+ * parameters are left out. A parameter's schema is never sent to a provider on its own: a tool
+ * built from an operation makes its parameters the properties of one object, and how it does so
+ * (which `in` they come from, which are required) is the tool's choice, not the document's.
+ */
 function operationSchemas(operation: JsonSchema, keys: readonly string[], scope: string): InlineSchema[] {
-  const found = parameterSchemas(operation.parameters, keys, scope);
+  const found: InlineSchema[] = [];
   const body = operation.requestBody;
   if (isJsonSchema(body) && !("$ref" in body)) {
     const name = `${scope} request body`;
@@ -251,15 +242,15 @@ function operationSchemas(operation: JsonSchema, keys: readonly string[], scope:
 }
 
 /**
- * Every schema an OpenAPI document declares inline under `paths`: the `schema` of each parameter
- * of a path or an operation, and of each media type of an operation's request body and
- * responses, each as it would be sent on its own, with the components it references bundled
- * under `$defs` the way `openApiSchemas` bundles a component's. The name says where the schema
- * is used, such as `POST /pets request body, application/json`.
+ * Every schema an OpenAPI document declares inline under `paths`: the `schema` of each media
+ * type of an operation's request body and responses, each as it would be sent on its own, with
+ * the components it references bundled under `$defs` the way `openApiSchemas` bundles a
+ * component's. The name says where the schema is used, such as `POST /pets request body,
+ * application/json`.
  *
  * A schema that is only a `$ref` to a component is left out, since the component is checked
- * under its own name, and so is a Reference Object in place of a parameter, request body, or
- * response, which names a declaration under `components` rather than making one.
+ * under its own name, and so is a Reference Object in place of a request body or response, which
+ * names a declaration under `components` rather than making one. Parameters are left out too.
  */
 export function openApiInlineSchemas(document: unknown): OpenApiSchema[] {
   if (!isJsonSchema(document) || !isJsonSchema(document.paths)) return [];
@@ -267,7 +258,6 @@ export function openApiInlineSchemas(document: unknown): OpenApiSchema[] {
   const found: InlineSchema[] = [];
   for (const [path, item] of Object.entries(document.paths)) {
     if (!isJsonSchema(item)) continue;
-    found.push(...parameterSchemas(item.parameters, ["paths", path], path));
     for (const method of OPERATIONS) {
       const operation = item[method];
       if (isJsonSchema(operation)) {

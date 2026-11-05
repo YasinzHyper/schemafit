@@ -51,7 +51,8 @@ Options
       --all-tools         Check every schema a document declares, including the
                           ones it sends non-strictly ("strict": false)
       --openapi           Read each file as an OpenAPI document and check every
-                          schema under components.schemas and paths
+                          schema under components.schemas, and the request
+                          bodies and responses of the operations under paths
   -h, --help              Show this help
   -v, --version           Show the version
 
@@ -98,11 +99,12 @@ With --fix, each component is rewritten as that schema and put back under
 components.schemas without the copies, so a fix lands once, in the component it
 belongs to. A component's root is not wrapped in an object for openai/root-object,
 because every reference to it would change meaning with it.
-The schemas a document declares inline under paths are checked too, each named
-for where it is used ("POST /pets request body, application/json", "GET /pets 200
-response, application/json", "GET /pets parameter limit (query)") and bundled the
+The schemas of the request bodies and responses of each operation under paths
+are checked too, each named for where it is used ("POST /pets request body,
+application/json", "GET /pets 200 response, application/json") and bundled the
 same way. One that is only a "$ref" to a component is left to that component's
-report. --fix leaves them as they are for now, and only rewrites the components.
+report. Parameters, response headers, and callbacks are not read. --fix leaves
+these schemas as they are for now, and only rewrites the components.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -386,7 +388,8 @@ async function readOpenApi(
   if (schemas.length === 0) {
     throw new UsageError(
       inline
-        ? `${label} declares no schema under components.schemas or paths, which is where --openapi looks.`
+        ? `${label} declares no schema under components.schemas or in a request body or response under paths, ` +
+          "which is where --openapi looks."
         : `${label} declares no schema under components.schemas, which is where --fix --openapi looks.`,
     );
   }
