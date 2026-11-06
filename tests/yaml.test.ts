@@ -612,7 +612,7 @@ last: 1
     ["first, over a later one written the other way", "a:\n- 1\nb:\n  - 2\n", false],
     ["first, nested in a sequence item", "- anyOf:\n  - type: string\n", false],
   ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences });
+    expect(readYaml(text).layout).toEqual({ indentSequences, folds: [] });
   });
 
   it.each([
@@ -620,6 +620,6 @@ last: 1
     ["only a root sequence and one in a sequence item", "- - a\n"],
     ["only flow sequences", "required: [a, b]\n"],
   ])("takes a file with %s for one that indents its sequences", (_, text) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences: true });
+    expect(readYaml(text).layout).toEqual({ indentSequences: true, folds: [] });
   });
 });

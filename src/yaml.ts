@@ -59,6 +59,8 @@ interface State {
   at: string;
   /** How the first block sequence under a key is indented, once one has been read. */
   indentSequences?: boolean;
+  /** The folded block scalars read so far, with the lines each one was written on. */
+  folds: YamlFold[];
 }
 
 /** One line being read left to right, for the scalars and flow collections written on it. */
@@ -177,6 +179,20 @@ export interface YamlLayout {
    * True for a file that holds none, which is how the writer indents one by default.
    */
   indentSequences: boolean;
+  /** Every folded block scalar (`>`) of the document, with the lines the file wrapped it on. */
+  folds: YamlFold[];
+}
+
+/**
+ * A folded block scalar (`>`), which reads as one string however the file wrapped it, and the
+ * lines it was written on, so a rewrite can wrap it the same way instead of putting it on one
+ * line.
+ */
+export interface YamlFold {
+  /** The JSON Pointer of the string. */
+  pointer: string;
+  /** Its lines of content, past the block's indentation, without the empty lines chomping drops. */
+  lines: string[];
 }
 
 /**
@@ -201,6 +217,7 @@ export function readYaml(text: string): {
     comments: new Map(),
     entries: new Map(),
     at: "",
+    folds: [],
   };
   const value = parseDocument(state);
   const found = state.lines.flatMap(({ n, raw, text: content, comment, remark }) => {
@@ -218,7 +235,7 @@ export function readYaml(text: string): {
     const below = starts.find((line) => line > n);
     return [{ line: n, pointer: below === undefined ? null : (state.entries.get(below) ?? null) }];
   });
-  const layout = { indentSequences: state.indentSequences ?? true };
+  const layout = { indentSequences: state.indentSequences ?? true, folds: state.folds };
   return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks, layout };
 }
 
@@ -745,6 +762,7 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
   }
   if (content.length === 0) return "";
 
+  if (style === ">") state.folds.push({ pointer: state.at, lines: [...content] });
   const text = style === "|" ? content.join("\n") : fold(content);
   return chomping === "-" ? text : `${text}\n`;
 }

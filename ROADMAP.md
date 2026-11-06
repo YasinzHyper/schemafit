@@ -46,7 +46,8 @@ Want one of these sooner, or something that is not listed? [Open an issue](https
 - [x] Carry a comment over an entry a fix folds into `description`, which `--write` still refuses: the `minimum`, `maxLength`, or `format` the comment could go with to the `description` entry, which may not have existed before the fix and so has no line of its own yet
 - [x] Keep the blank lines between the entries of a YAML file a rewrite touches, which the writer drops today, so two tool definitions a file kept apart stay apart
 - [x] Keep the sequence of a YAML file a rewrite touches at its key's indentation, where the file writes it there, which the writer gave up for its own two-space block style
-- [ ] Keep the folded (`>`) description of a YAML file a rewrite touches wrapped where the file wrapped it, which the writer gives up today for a literal block
+- [x] Keep the folded (`>`) description of a YAML file a rewrite touches wrapped where the file wrapped it, which the writer gives up today for a literal block
+- [ ] Keep a plain or quoted description a YAML file continues over several lines wrapped where the file wrapped it, which the writer puts on one line today. `examples/agent-tools.yaml` writes the `query` description that way
 - [ ] Keep the indentation of each sequence where a YAML file mixes the two styles, which the writer reads off the file's first block sequence under a key today and applies to all of them. `examples/agent-tools.yaml` writes `required` both ways
 - [ ] Keep a list of scalars a YAML file writes in block style in block style, which the writer puts on one line in flow style today when it fits, so `required:` over `- status` comes out of a rewrite as `required: [status]`
 - [x] OpenAPI documents: lint `components.schemas.*` with `--openapi`

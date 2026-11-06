@@ -788,6 +788,52 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps a folded description wrapped where the file wrapped it, through a fix that adds to it and one that renames its entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tools.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  limit:
+    type: integer
+    description: >
+      How many tickets to return, counted
+      from the most recent one.
+    maximum: 50
+  status:
+    oneOf:
+      - const: open
+        description: >-
+          A ticket nobody has answered
+          yet.
+      - const: closed
+required: [limit, status]
+additionalProperties: false
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "anthropic", "-p", "openai", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  limit:
+    type: integer
+    description: >-
+      How many tickets to return, counted
+      from the most recent one. Must be
+      at most 50.
+  status:
+    anyOf:
+      - const: open
+        description: >-
+          A ticket nobody has answered
+          yet.
+      - const: closed
+required: [limit, status]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write refuses to drop a comment on an entry the rewrite removes, and leaves a file it would not change alone", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");

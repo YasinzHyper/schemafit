@@ -136,7 +136,7 @@ items:
 - x: 1
 tags: []
 `);
-    expect(readYaml(text).layout).toEqual({ indentSequences: false });
+    expect(readYaml(text).layout).toEqual({ indentSequences: false, folds: [] });
     expect(stringifyYaml(value, comments)).toBe(stringifyYaml(value, comments, [], { indentSequences: true }));
   });
 
@@ -239,6 +239,64 @@ description: |- # after a block scalar's header
       expect(written.value).toEqual(value);
       expect(written.attached.map(({ text, pointer }) => [text, pointer])).toEqual(attached.map(({ text, pointer }) => [text, pointer]));
     }
+  });
+
+  it("writes a folded block scalar back on the lines the file wrapped it on", () => {
+    const text = `description: >-
+  Find tickets by text, so the agent can point at an existing one
+  instead of opening a duplicate. Two words beat one:
+
+    billing refund      good
+
+  The more indented line above keeps its line breaks.
+note: |
+  Kept as it is.
+`;
+    const { value, layout } = readYaml(text);
+    expect(layout.folds).toEqual([
+      {
+        pointer: "/description",
+        lines: [
+          "Find tickets by text, so the agent can point at an existing one",
+          "instead of opening a duplicate. Two words beat one:",
+          "",
+          "  billing refund      good",
+          "",
+          "The more indented line above keeps its line breaks.",
+        ],
+      },
+    ]);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("wraps a sentence a fix added to a folded string at the width of the file's longest line", () => {
+    const { layout } = readYaml("d: >\n  The number of results to return, counted\n  from the first match.\n");
+    const description = "The number of results to return, counted from the first match. Must be at least 1. Must be at most 50.";
+    expect(stringifyYaml({ d: description }, [], [], layout)).toBe(`d: >-
+  The number of results to return, counted
+  from the first match. Must be at least
+  1. Must be at most 50.
+`);
+  });
+
+  it("puts a sentence a fix added to a folded string on its one line when the file did not wrap it", () => {
+    const { layout } = readYaml("d: >\n  How many.\n");
+    expect(stringifyYaml({ d: "How many. Must be at least 1." }, [], [], layout)).toBe("d: >-\n  How many. Must be at least 1.\n");
+  });
+
+  it.each([
+    ["a string the fix did not extend", "Something else entirely."],
+    ["a string that runs on over lines of its own", "The number of results to return, counted from the first match.\nMust be at least 1."],
+  ])("writes %s that a folded block cannot hold as any other string", (_, d) => {
+    const { layout } = readYaml("d: >\n  The number of results to return, counted\n  from the first match.\n");
+    const written = stringifyYaml({ d }, [], [], layout);
+    expect(written).toBe(stringifyYaml({ d }));
+    expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it("keeps a fold that no longer matches the value out of the way of a value that is not a string", () => {
+    const { layout } = readYaml("d: >\n  one\n  two\n");
+    expect(stringifyYaml({ d: { type: "string" } }, [], [], layout)).toBe("d:\n  type: string\n");
   });
 
   it("refuses a comment on an entry the value does not hold, or one that is not a comment", () => {

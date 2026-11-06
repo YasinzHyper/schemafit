@@ -505,10 +505,11 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const components = request.openapi ? fixComponents(label, document, { providers, pruneUnusedDefs }) : undefined;
 
   const reports: FixReport[] = [];
-  // Each comment and empty line follows its entry through the fixes that move one, a rename or
-  // a wrapped root.
+  // Each comment, empty line, and folded string follows its entry through the fixes that move
+  // one, a rename or a wrapped root.
   let moved = comments;
   let movedBlanks = blanks;
+  let movedFolds = layout?.folds ?? [];
   let rewritten: unknown = document;
   for (const [index, found] of checked.entries()) {
     let result: FixResult;
@@ -524,6 +525,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
     for (const applied of result.applied) {
       moved = moved.map((comment) => follow(comment, found.pointer, applied));
       movedBlanks = movedBlanks.map((blank) => follow(blank, found.pointer, applied));
+      movedFolds = movedFolds.map((folded) => follow(folded, found.pointer, applied));
     }
     reports.push({ ...sourceOf(destination, found, request.openapi || schemas.length > 1), ...result });
   }
@@ -552,7 +554,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const unwritten = write && !changed;
   // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, layout) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, { ...layout, folds: movedFolds }) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 
@@ -574,7 +576,7 @@ function fixComponents(label: string, document: unknown, options: Pick<FixReques
   }
 }
 
-/** A comment or an empty line, moved to where `applied` put its entry. */
+/** A comment, an empty line, or a folded string, moved to where `applied` put its entry. */
 function follow<T extends { pointer: string | null }>(item: T, schema: string, applied: AppliedFix): T {
   return item.pointer === null ? item : { ...item, pointer: movedPointer(item.pointer, schema, applied) };
 }

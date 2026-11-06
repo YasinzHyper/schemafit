@@ -5,8 +5,9 @@
  * It writes block mappings and block sequences indented by two spaces, a sequence under a key
  * at the key's own indentation instead when the file it came from wrote it there, a list of
  * scalars that fits on its line in flow style (`type: [string, "null"]`), `{}` and `[]` for the
- * empty collections, a literal block scalar (`|`) for a string over several lines, and every other
- * string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
+ * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, on the
+ * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
+ * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
  * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
@@ -42,13 +43,16 @@ interface Layout {
   above: Map<string, string[]>;
   after: Map<string, string>;
   indentSequences: boolean;
+  /** The lines each folded block scalar of the file was written on, by the pointer of its string. */
+  folds: Map<string, readonly string[]>;
 }
 
 /**
  * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
  * `readYaml` reads off a file as `attached` and `blanks`, and its sequences indented as the
- * `layout` `readYaml` reads off a file says. An empty line with no entry below it is left out,
- * since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
+ * `layout` `readYaml` reads off a file says, and the folded block scalars it names wrapped on the
+ * lines the file wrapped them on, where the string still reads that way. An empty line with no
+ * entry below it is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
  * either, or for a comment or an empty line whose entry the value does not hold, and an `Error`
  * if what it wrote does not read back as the value and the comments, which would be a bug in
  * the writer.
@@ -61,7 +65,12 @@ export function stringifyYaml(
 ): string {
   const json = JSON.stringify(value);
   if (json === undefined) throw new TypeError("stringifyYaml takes a JSON value");
-  const placed: Layout = { above: new Map(), after: new Map(), indentSequences: layout.indentSequences ?? true };
+  const placed: Layout = {
+    above: new Map(),
+    after: new Map(),
+    indentSequences: layout.indentSequences ?? true,
+    folds: new Map((layout.folds ?? []).map(({ pointer, lines }) => [pointer, lines])),
+  };
   const end: string[] = [];
   for (const comment of comments) {
     if (!comment.text.startsWith("#") || /[\r\n]/.test(comment.text)) {
@@ -157,10 +166,11 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
     return [...hoisted, `${prefix} ${first.slice(child)}`, ...rest];
   }
   if (typeof value === "string") {
-    const literal = literalBlock(value);
-    if (literal !== undefined) {
+    const wrapped = layout.folds.get(pointer);
+    const scalarBlock = (wrapped && foldedBlock(value, wrapped)) ?? literalBlock(value);
+    if (scalarBlock !== undefined) {
       const pad = " ".repeat(child);
-      return [`${prefix} ${literal.header}`, ...literal.lines.map((line) => (line === "" ? "" : `${pad}${line}`))];
+      return [`${prefix} ${scalarBlock.header}`, ...scalarBlock.lines.map((line) => (line === "" ? "" : `${pad}${line}`))];
     }
   }
   return [`${prefix} ${inline(value)}`];
@@ -229,6 +239,66 @@ function literalBlock(text: string): { header: string; lines: string[] } | undef
   const header = clipped ? "|" : "|-";
   const written = `k: ${header}\n${lines.map((line) => (line === "" ? "" : `  ${line}`)).join("\n")}\n`;
   return readsBack(written, { k: text }) ? { header, lines } : undefined;
+}
+
+/**
+ * A string as the folded block scalar a file wrote it in, on the lines the file wrapped it on:
+ * the same lines for the same string, and for one a fix added a sentence to — what `withNote`
+ * does to a `description` — those lines with the sentence after the last of them, wrapped at
+ * the width of the file's longest line. A file that kept the block on one line gave no width to
+ * wrap at, so the sentence goes on that line. Undefined for any other string, and for one the
+ * block would not read back as, which is then written as any other string is.
+ */
+function foldedBlock(text: string, wrapped: readonly string[]): { header: string; lines: string[] } | undefined {
+  if (UNPRINTABLE_IN_BLOCK.test(text)) return undefined;
+  const clipped = text.endsWith("\n");
+  const body = clipped ? text.slice(0, -1) : text;
+  if (body.endsWith("\n") || body === "" || wrapped.length === 0) return undefined;
+  const header = clipped ? ">" : ">-";
+  const same = [...wrapped];
+  if (foldsTo(header, same, text)) return { header, lines: same };
+  const before = foldValue(wrapped);
+  if (before === undefined || !body.startsWith(`${before} `)) return undefined;
+  const sentence = body.slice(before.length + 1);
+  const width = wrapped.length > 1 ? Math.max(...wrapped.map((line) => line.length)) : Infinity;
+  const extended = [...wrapped.slice(0, -1), ...wrapWords(wrapped[wrapped.length - 1] ?? "", sentence, width)];
+  if (foldsTo(header, extended, text)) return { header, lines: extended };
+  // Words a single space does not separate cannot be wrapped apart, so they stay on the last line.
+  const appended = [...wrapped.slice(0, -1), `${wrapped[wrapped.length - 1] ?? ""} ${sentence}`];
+  return foldsTo(header, appended, text) ? { header, lines: appended } : undefined;
+}
+
+/** `line` with the words of `sentence` after it, onto new lines where they would pass `width`. */
+function wrapWords(line: string, sentence: string, width: number): string[] {
+  const lines: string[] = [];
+  let current = line;
+  for (const word of sentence.split(" ")) {
+    if (current !== "" && current.length + 1 + word.length > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current === "" ? word : `${current} ${word}`;
+    }
+  }
+  return [...lines, current];
+}
+
+/** The string the lines of a folded block scalar stand for, with no final line break. */
+function foldValue(lines: readonly string[]): string | undefined {
+  try {
+    const value = parseYaml(blockText(">-", lines));
+    return isObject(value) && typeof value.k === "string" ? value.k : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function foldsTo(header: string, lines: readonly string[], text: string): boolean {
+  return readsBack(blockText(header, lines), { k: text });
+}
+
+function blockText(header: string, lines: readonly string[]): string {
+  return `k: ${header}\n${lines.map((line) => (line === "" ? "" : `  ${line}`)).join("\n")}\n`;
 }
 
 function readsBack(text: string, expected: unknown): boolean {
