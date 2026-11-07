@@ -256,6 +256,7 @@ note: |
     expect(layout.folds).toEqual([
       {
         pointer: "/description",
+        style: "folded",
         lines: [
           "Find tickets by text, so the agent can point at an existing one",
           "instead of opening a duplicate. Two words beat one:",
@@ -292,6 +293,82 @@ note: |
     const written = stringifyYaml({ d }, [], [], layout);
     expect(written).toBe(stringifyYaml({ d }));
     expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it("writes a plain or quoted scalar the file continued below its key back on the lines the file wrapped it on", () => {
+    const text = `tools:
+  - description: Words to look for in the title and the body, which
+      the server matches case-insensitively.
+
+      A blank line is a line break.
+    note: "Quoted, with a \\"quote\\" and an escaped
+      line break that\\
+      \\ keeps its space."
+    other: 'It''s single-quoted,
+      over two lines.'
+`;
+    const { value, layout } = readYaml(text);
+    expect(layout.folds).toEqual([
+      {
+        pointer: "/tools/0/description",
+        style: "plain",
+        lines: [
+          "Words to look for in the title and the body, which",
+          "the server matches case-insensitively.",
+          "",
+          "A blank line is a line break.",
+        ],
+      },
+      {
+        pointer: "/tools/0/note",
+        style: "double",
+        lines: ['"Quoted, with a \\"quote\\" and an escaped', "line break that\\", '\\ keeps its space."'],
+      },
+      { pointer: "/tools/0/other", style: "single", lines: ["'It''s single-quoted,", "over two lines.'"] },
+    ]);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it.each([
+    [
+      "plain",
+      "d: How many results to return, counted\n  from the first match.\n",
+      "d: How many results to return, counted\n  from the first match. Must be at\n  least 1.\n",
+    ],
+    [
+      "double-quoted",
+      'd: "How many results to return, counted\n  from the first match."\n',
+      'd: "How many results to return, counted\n  from the first match. Must be at\n  least 1."\n',
+    ],
+    [
+      "single-quoted",
+      "d: 'How many results to return, counted\n  from the first match.'\n",
+      "d: 'How many results to return, counted\n  from the first match. Must be at\n  least 1.'\n",
+    ],
+  ])("wraps a sentence a fix added to a %s string continued below its key, inside its quotes", (_, file, expected) => {
+    const { layout } = readYaml(file);
+    const d = "How many results to return, counted from the first match. Must be at least 1.";
+    expect(stringifyYaml({ d }, [], [], layout)).toBe(expected);
+  });
+
+  it("escapes the sentence a fix adds inside the quotes a string was written in", () => {
+    const { layout } = readYaml("d: 'The kind of ticket it is, in a word or two,\n  in short.'\nq: \"The kind of ticket it is, in a word or two,\n  in short.\"\n");
+    const d = "The kind of ticket it is, in a word or two, in short. Say 'a' or \"b\".";
+    const q = "The kind of ticket it is, in a word or two, in short. Say \"b\".";
+    expect(stringifyYaml({ d, q }, [], [], layout)).toBe(
+      "d: 'The kind of ticket it is, in a word or two,\n  in short. Say ''a'' or \"b\".'\nq: \"The kind of ticket it is, in a word or two,\n  in short. Say \\\"b\\\".\"\n",
+    );
+  });
+
+  it.each([
+    ["a string the fix did not extend", { d: "Something else entirely." }, []],
+    ["a word that would start a line as a comment", { d: "One two three four. #five" }, []],
+    ["a comment after the string's first line", { d: "One two three four." }, [{ line: 1, text: "# note", pointer: "/d", trailing: true }]],
+  ])("writes %s that a continued plain scalar cannot hold on one line", (_, value, comments) => {
+    const { layout } = readYaml("d: One two\n  three four.\n");
+    const written = stringifyYaml(value, comments, [], layout);
+    expect(written).toBe(stringifyYaml(value, comments));
+    expect(parseYaml(written)).toEqual(value);
   });
 
   it("keeps a fold that no longer matches the value out of the way of a value that is not a string", () => {

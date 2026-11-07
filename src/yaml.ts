@@ -179,19 +179,32 @@ export interface YamlLayout {
    * True for a file that holds none, which is how the writer indents one by default.
    */
   indentSequences: boolean;
-  /** Every folded block scalar (`>`) of the document, with the lines the file wrapped it on. */
+  /**
+   * Every string of the document the file folded, with the lines the file wrapped it on: each
+   * folded block scalar (`>`), and each plain or quoted scalar continued on the lines below it.
+   */
   folds: YamlFold[];
 }
 
 /**
- * A folded block scalar (`>`), which reads as one string however the file wrapped it, and the
+ * A string the file folded, which reads as one string however the file wrapped it, and the
  * lines it was written on, so a rewrite can wrap it the same way instead of putting it on one
  * line.
  */
 export interface YamlFold {
   /** The JSON Pointer of the string. */
   pointer: string;
-  /** Its lines of content, past the block's indentation, without the empty lines chomping drops. */
+  /**
+   * How the string was written: a folded block scalar (`>`), a plain scalar, or a single- or
+   * double-quoted one, the last three continued on the lines below the one they start on.
+   */
+  style: "folded" | "plain" | "single" | "double";
+  /**
+   * The lines it was written on. For a block scalar, its lines of content past the block's
+   * indentation, without the empty lines chomping drops; for a plain or quoted scalar, each
+   * line without its indentation, from the first character of the scalar, quote included, to
+   * its last.
+   */
   lines: string[];
 }
 
@@ -480,7 +493,10 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
   if (text.startsWith("[") || text.startsWith("{")) return parseFlowOnLines(state, line, text, minIndent);
   const continuation = takeContinuation(state, minIndent);
   if (continuation[0] === undefined) return parseInline(text, line);
-  return resolvePlain(foldPlain(line, text, continuation), line);
+  const content = plainLines(line, text, continuation);
+  const value = resolvePlain(fold(content), line);
+  if (typeof value === "string") state.folds.push({ pointer: state.at, style: "plain", lines: content });
+  return value;
 }
 
 /**
@@ -531,6 +547,7 @@ function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: n
     const written = line.raw.slice(line.raw.trimEnd().length - text.length);
     const scanner: Scanner = { text: written, pos: 0, line };
     value = readQuoted(scanner, { state, minIndent, opened: line });
+    if (scanner.line !== line) state.folds.push(quotedFold(state, line, written, scanner));
     const after = scanner.text.slice(scanner.pos);
     if (/^[ \t]+#/.test(after)) state.comments.set(scanner.line.n, after.trim());
     if (!/^([ \t]*|[ \t]+#.*)$/.test(after)) {
@@ -551,6 +568,19 @@ function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: n
     );
   }
   return value;
+}
+
+/**
+ * The lines a quoted scalar opened on `line` was written on, which `scanner` has read up to its
+ * closing quote: `written` from its opening quote on, each line after it without its
+ * indentation, and the last one up to the closing quote. Trailing white space stays, because
+ * an escape before it can make it part of the string.
+ */
+function quotedFold(state: State, line: Line, written: string, scanner: Scanner): YamlFold {
+  // A line's `n` is its index in `state.lines` plus one.
+  const between = state.lines.slice(line.n, scanner.line.n - 1).map((next) => next.raw.replace(/^[ \t]+/, ""));
+  const lines = [written, ...between, scanner.text.slice(0, scanner.pos)];
+  return { pointer: state.at, style: written.startsWith('"') ? "double" : "single", lines };
 }
 
 /**
@@ -583,10 +613,10 @@ function takeContinuation(state: State, minIndent: number): Line[] {
 }
 
 /**
- * A plain scalar and the lines continuing it, folded into one string the way `>` folds a block
- * scalar: one line break becomes a space, and a run of them becomes one fewer newline. Every
- * line gives up its indentation and its trailing spaces, which section 7.3.3 leaves out of the
- * content, so a line of nothing but spaces counts as an empty one.
+ * The lines of a plain scalar and those continuing it, which fold into one string the way `>`
+ * folds a block scalar: one line break becomes a space, and a run of them becomes one fewer
+ * newline. Every line gives up its indentation and its trailing spaces, which section 7.3.3
+ * leaves out of the content, so a line of nothing but spaces counts as an empty one.
  *
  * A continuation line may hold what a plain scalar cannot start with — the `*` of `the
  * *important* part` is a character of the string rather than an alias — because only the first
@@ -594,7 +624,7 @@ function takeContinuation(state: State, minIndent: number): Line[] {
  * indented under a value that is already there continues it, so `things` over `- one` is the
  * string "things - one" and not a sequence, which is what every YAML reader makes of it.
  */
-function foldPlain(line: Line, first: string, continuation: readonly Line[]): string {
+function plainLines(line: Line, first: string, continuation: readonly Line[]): string[] {
   if (line.comment) throw commentInsidePlain(line);
   rejectPlainColon(line, first);
   const content: string[] = [first];
@@ -610,7 +640,7 @@ function foldPlain(line: Line, first: string, continuation: readonly Line[]): st
     rejectPlainColon(next, next.text);
     content.push(next.text);
   }
-  return fold(content);
+  return content;
 }
 
 /**
@@ -762,7 +792,7 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
   }
   if (content.length === 0) return "";
 
-  if (style === ">") state.folds.push({ pointer: state.at, lines: [...content] });
+  if (style === ">") state.folds.push({ pointer: state.at, style: "folded", lines: [...content] });
   const text = style === "|" ? content.join("\n") : fold(content);
   return chomping === "-" ? text : `${text}\n`;
 }

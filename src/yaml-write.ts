@@ -5,8 +5,9 @@
  * It writes block mappings and block sequences indented by two spaces, a sequence under a key
  * at the key's own indentation instead when the file it came from wrote it there, a list of
  * scalars that fits on its line in flow style (`type: [string, "null"]`), `{}` and `[]` for the
- * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, on the
- * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
+ * empty collections, a string the file folded over several lines on the lines the file wrapped
+ * it on, in the same style — a folded block scalar (`>`), or a plain or quoted scalar continued
+ * on the lines below its key — a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
  * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
@@ -19,7 +20,7 @@
  */
 
 import { joinPointer } from "./pointer.js";
-import { type YamlBlank, type YamlComment, type YamlLayout, parseYaml, readYaml } from "./yaml.js";
+import { type YamlBlank, type YamlComment, type YamlFold, type YamlLayout, parseYaml, readYaml } from "./yaml.js";
 
 const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
@@ -43,14 +44,14 @@ interface Layout {
   above: Map<string, string[]>;
   after: Map<string, string>;
   indentSequences: boolean;
-  /** The lines each folded block scalar of the file was written on, by the pointer of its string. */
-  folds: Map<string, readonly string[]>;
+  /** How each string the file folded was written, and on what lines, by the pointer of the string. */
+  folds: Map<string, Pick<YamlFold, "style" | "lines">>;
 }
 
 /**
  * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
  * `readYaml` reads off a file as `attached` and `blanks`, and its sequences indented as the
- * `layout` `readYaml` reads off a file says, and the folded block scalars it names wrapped on the
+ * `layout` `readYaml` reads off a file says, and the folded strings it names wrapped on the
  * lines the file wrapped them on, where the string still reads that way. An empty line with no
  * entry below it is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
  * either, or for a comment or an empty line whose entry the value does not hold, and an `Error`
@@ -69,7 +70,7 @@ export function stringifyYaml(
     above: new Map(),
     after: new Map(),
     indentSequences: layout.indentSequences ?? true,
-    folds: new Map((layout.folds ?? []).map(({ pointer, lines }) => [pointer, lines])),
+    folds: new Map((layout.folds ?? []).map(({ pointer, style, lines }) => [pointer, { style, lines }])),
   };
   const end: string[] = [];
   for (const comment of comments) {
@@ -167,7 +168,17 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
   }
   if (typeof value === "string") {
     const wrapped = layout.folds.get(pointer);
-    const scalarBlock = (wrapped && foldedBlock(value, wrapped)) ?? literalBlock(value);
+    // A comment goes after an entry's first line, which a plain or quoted scalar runs on past.
+    if (wrapped && wrapped.style !== "folded" && !layout.after.has(pointer)) {
+      const continued = continuedScalar(value, wrapped.style, wrapped.lines);
+      if (continued !== undefined) {
+        const [first = "", ...rest] = continued;
+        const pad = " ".repeat(child);
+        return [`${prefix} ${first}`, ...rest.map((line) => (line === "" ? "" : `${pad}${line}`))];
+      }
+    }
+    const folded = wrapped?.style === "folded" ? foldedBlock(value, wrapped.lines) : undefined;
+    const scalarBlock = folded ?? literalBlock(value);
     if (scalarBlock !== undefined) {
       const pad = " ".repeat(child);
       return [`${prefix} ${scalarBlock.header}`, ...scalarBlock.lines.map((line) => (line === "" ? "" : `${pad}${line}`))];
@@ -266,6 +277,53 @@ function foldedBlock(text: string, wrapped: readonly string[]): { header: string
   // Words a single space does not separate cannot be wrapped apart, so they stay on the last line.
   const appended = [...wrapped.slice(0, -1), `${wrapped[wrapped.length - 1] ?? ""} ${sentence}`];
   return foldsTo(header, appended, text) ? { header, lines: appended } : undefined;
+}
+
+/**
+ * A string as the plain or quoted scalar a file continued over several lines, on the lines the
+ * file wrapped it on: the same lines for the same string, and for one a fix added a sentence to,
+ * those lines with the sentence after the last of them, before a closing quote, wrapped at the
+ * width of the file's longest line, as `foldedBlock` does. Undefined for any other string, and
+ * for one the lines would not read back as.
+ */
+function continuedScalar(text: string, style: YamlFold["style"], wrapped: readonly string[]): string[] | undefined {
+  if (wrapped.length < 2) return undefined;
+  if (continuesTo(wrapped, text)) return [...wrapped];
+  const before = continuedValue(wrapped);
+  if (before === undefined || !text.startsWith(`${before} `)) return undefined;
+  const rest = text.slice(before.length + 1);
+  const sentence = style === "double" ? quote(rest).slice(1, -1) : style === "single" ? rest.replaceAll("'", "''") : rest;
+  const close = style === "double" ? '"' : style === "single" ? "'" : "";
+  const last = (wrapped[wrapped.length - 1] ?? "").trimEnd();
+  if (!last.endsWith(close)) return undefined;
+  const open = last.slice(0, last.length - close.length).trimEnd();
+  const width = Math.max(...wrapped.map((line) => line.trimEnd().length));
+  const words = wrapWords(open, sentence, width - close.length);
+  const extended = [...wrapped.slice(0, -1), ...words.slice(0, -1), `${words[words.length - 1] ?? ""}${close}`];
+  if (continuesTo(extended, text)) return extended;
+  // A word that would start a line as a comment, or that a single space does not separate,
+  // stays on the last line.
+  const appended = [...wrapped.slice(0, -1), `${open === "" ? "" : `${open} `}${sentence}${close}`];
+  return continuesTo(appended, text) ? appended : undefined;
+}
+
+/** The string the lines of a plain or quoted scalar continued below its key stand for. */
+function continuedValue(lines: readonly string[]): string | undefined {
+  try {
+    const value = parseYaml(continuedText(lines));
+    return isObject(value) && typeof value.k === "string" ? value.k : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function continuesTo(lines: readonly string[], text: string): boolean {
+  return readsBack(continuedText(lines), { k: text });
+}
+
+function continuedText(lines: readonly string[]): string {
+  const [first = "", ...rest] = lines;
+  return `k: ${first}\n${rest.map((line) => (line === "" ? "" : `  ${line}`)).join("\n")}\n`;
 }
 
 /** `line` with the words of `sentence` after it, onto new lines where they would pass `width`. */
