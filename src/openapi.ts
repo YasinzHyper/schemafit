@@ -50,27 +50,52 @@ function nullAsType(components: JsonSchema): JsonSchema {
 }
 
 /**
+ * The type a schema that allows nothing but `null` is given in an OpenAPI 3.0 document, where
+ * `nullable` "only takes effect if `type` is explicitly defined within the same Schema Object".
+ * The `enum: [null]` beside it rules every string out again, so any type would do; a string is
+ * the one no rule asks more of, where an object would need `additionalProperties: false`.
+ */
+const NULL_CARRIER = "string";
+
+/**
  * `schema` with every `type` array of one type and `null` written the way OpenAPI 3.0 writes it,
  * `nullable: true` beside the one type, which is what `nullAsType` reads and what a fix that makes
  * a property nullable writes in a 3.0 document. A `nullable: false` beside the array is replaced,
  * since `false` is the default and "leaves the specified or default `type` unmodified", so it says
- * no more than an absent keyword does. Rewrites `schema` in place.
+ * no more than an absent keyword does.
+ *
+ * A `type: "null"`, which a fix adds as an `anyOf` branch, has no spelling of its own there: 3.0
+ * has no `null` type, and a `nullable` beside the `$ref` of a Reference Object is ignored. It
+ * becomes `{ "type": "string", "nullable": true, "enum": [null] }`, which allows `null` and,
+ * since the other keywords "retain their defined behavior", only `null`. `nullAsType` reads it
+ * back as `{ "type": ["string", "null"], "enum": [null] }`. Rewrites `schema` in place.
  */
 function nullAsKeyword(schema: JsonSchema): JsonSchema {
   for (const node of walk(schema)) {
     const { type } = node.schema;
+    if (type === "null") {
+      if (!("enum" in node.schema) && !("const" in node.schema)) {
+        respell(node.schema, { type: NULL_CARRIER, nullable: true, enum: [null] });
+      }
+      continue;
+    }
     if (!Array.isArray(type) || type.length !== 2 || !type.includes("null") || node.schema.nullable === true) continue;
     const [only] = type.filter((name) => name !== "null");
     if (typeof only !== "string" || only === "null") continue;
-    const entries = Object.entries(node.schema);
-    for (const [key] of entries) delete node.schema[key];
-    for (const [key, value] of entries) {
-      if (key === "nullable") continue;
-      if (key !== "type") node.schema[key] = value;
-      else Object.assign(node.schema, { type: only, nullable: true });
-    }
+    respell(node.schema, { type: only, nullable: true });
   }
   return schema;
+}
+
+/** Replaces the `type` of `schema` with `spelling`, where `type` stood, and drops any `nullable` it had. */
+function respell(schema: JsonSchema, spelling: JsonSchema): void {
+  const entries = Object.entries(schema);
+  for (const [key] of entries) delete schema[key];
+  for (const [key, value] of entries) {
+    if (key === "nullable") continue;
+    if (key !== "type") schema[key] = value;
+    else Object.assign(schema, spelling);
+  }
 }
 
 /**
@@ -423,7 +448,8 @@ export type FixedComponent = Omit<OpenApiSchema, "schema"> & FixResult;
  * component the copy was made from. What a fix inlined into the component stays in it.
  *
  * In an OpenAPI 3.0 document, a `type` of one type and `null` is written back as `nullable: true`,
- * the fixes' own included, since 3.0 has no `null` type.
+ * the fixes' own included, since 3.0 has no `null` type, and the `null` branch of an `anyOf` as a
+ * string that allows only `null`: see `nullAsKeyword`.
  *
  * The fix for `openai/root-object` is held back: see `HELD_IN_COMPONENTS`. Returns the
  * rewritten document, which is the input left untouched when it declares no schema components,
