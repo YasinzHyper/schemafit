@@ -5,7 +5,8 @@
  * It writes block mappings and block sequences indented by two spaces, a sequence under a key
  * at the key's own indentation instead when the file it came from wrote it there, a list of
  * scalars that fits on its line in flow style (`type: [string, "null"]`), `{}` and `[]` for the
- * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, on the
+ * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, and a plain
+ * scalar continued on the lines below its key for one the file wrapped that way, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
  * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
@@ -19,7 +20,7 @@
  */
 
 import { joinPointer } from "./pointer.js";
-import { type YamlBlank, type YamlComment, type YamlLayout, parseYaml, readYaml } from "./yaml.js";
+import { type YamlBlank, type YamlComment, type YamlFold, type YamlLayout, parseYaml, readYaml } from "./yaml.js";
 
 const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
@@ -43,15 +44,16 @@ interface Layout {
   above: Map<string, string[]>;
   after: Map<string, string>;
   indentSequences: boolean;
-  /** The lines each folded block scalar of the file was written on, by the pointer of its string. */
-  folds: Map<string, readonly string[]>;
+  /** How each string the file wrapped over lines was written, by the pointer of the string. */
+  folds: Map<string, YamlFold>;
 }
 
 /**
  * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
  * `readYaml` reads off a file as `attached` and `blanks`, and its sequences indented as the
- * `layout` `readYaml` reads off a file says, and the folded block scalars it names wrapped on the
- * lines the file wrapped them on, where the string still reads that way. An empty line with no
+ * `layout` `readYaml` reads off a file says, and the strings it names as folded or as plain
+ * scalars spread over lines wrapped on the lines the file wrapped them on, where the string still
+ * reads that way. An empty line with no
  * entry below it is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
  * either, or for a comment or an empty line whose entry the value does not hold, and an `Error`
  * if what it wrote does not read back as the value and the comments, which would be a bug in
@@ -69,7 +71,7 @@ export function stringifyYaml(
     above: new Map(),
     after: new Map(),
     indentSequences: layout.indentSequences ?? true,
-    folds: new Map((layout.folds ?? []).map(({ pointer, lines }) => [pointer, lines])),
+    folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
   };
   const end: string[] = [];
   for (const comment of comments) {
@@ -147,8 +149,9 @@ function isLayout(line: string): boolean {
 /** One mapping entry or sequence item: `prefix` is its key and colon, or its dash. */
 function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): string[] {
   const child = indent + INDENT;
-  // A flow list has no line of its own for a comment on one of its items, or an empty line between two.
-  const flow = commentsWithin(pointer, layout) ? undefined : flowList(value);
+  // A flow list has no line of its own for a comment on one of its items, or an empty line
+  // between two, and puts an item the file wrapped over lines on one.
+  const flow = commentsWithin(pointer, layout) || foldsWithin(pointer, layout) ? undefined : flowList(value);
   if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return [`${prefix} ${flow}`];
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
     // A sequence under a key may sit at the key's own indentation, where its dashes count as
@@ -167,7 +170,15 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
   }
   if (typeof value === "string") {
     const wrapped = layout.folds.get(pointer);
-    const scalarBlock = (wrapped && foldedBlock(value, wrapped)) ?? literalBlock(value);
+    // A comment goes after an entry's first line, which would end a plain scalar spread over lines there.
+    if (wrapped?.style === "plain" && !layout.after.has(pointer)) {
+      const lines = plainLines(value, wrapped.lines, prefix.length + 1, child);
+      if (lines !== undefined) {
+        const [first, ...rest] = lines;
+        return [`${prefix} ${first}`, ...rest.map((line) => (line === "" ? "" : `${" ".repeat(child)}${line}`))];
+      }
+    }
+    const scalarBlock = (wrapped?.style === ">" ? foldedBlock(value, wrapped.lines) : undefined) ?? literalBlock(value);
     if (scalarBlock !== undefined) {
       const pad = " ".repeat(child);
       return [`${prefix} ${scalarBlock.header}`, ...scalarBlock.lines.map((line) => (line === "" ? "" : `${pad}${line}`))];
@@ -179,6 +190,11 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
 /** Whether a comment belongs to an entry inside the node at `pointer`. */
 function commentsWithin(pointer: string, layout: Layout): boolean {
   return [...layout.above.keys(), ...layout.after.keys()].some((at) => at.startsWith(`${pointer}/`));
+}
+
+/** Whether a string the file wrapped over lines sits inside the node at `pointer`. */
+function foldsWithin(pointer: string, layout: Layout): boolean {
+  return [...layout.folds.keys()].some((at) => at.startsWith(`${pointer}/`));
 }
 
 /** A list of nothing but scalars as a flow sequence, or undefined for any other value. */
@@ -266,6 +282,47 @@ function foldedBlock(text: string, wrapped: readonly string[]): { header: string
   // Words a single space does not separate cannot be wrapped apart, so they stay on the last line.
   const appended = [...wrapped.slice(0, -1), `${wrapped[wrapped.length - 1] ?? ""} ${sentence}`];
   return foldsTo(header, appended, text) ? { header, lines: appended } : undefined;
+}
+
+/**
+ * A string as the plain scalar a file spread over lines, on the lines the file wrapped it on,
+ * the first of them after the key at column `start` and the rest at column `indent`: the same
+ * lines for the same string, and for one a fix added a sentence to, those lines with the
+ * sentence after the last of them, wrapped where the file's longest line ends. Undefined for any
+ * other string, and for one those lines would not read back as.
+ */
+function plainLines(text: string, wrapped: readonly string[], start: number, indent: number): string[] | undefined {
+  const [first = ""] = wrapped;
+  // What the first line starts with is read as an indicator, which `- ` would make a sequence of under a dash.
+  if (wrapped.length < 2 || !isPlain(first, false) || UNPRINTABLE_IN_BLOCK.test(text)) return undefined;
+  if (plainReadsAs(wrapped, text)) return [...wrapped];
+  const before = plainValue(wrapped);
+  if (before === undefined || !text.startsWith(`${before} `)) return undefined;
+  const sentence = text.slice(before.length + 1);
+  const width = Math.max(...wrapped.map((line, index) => (index === 0 ? start : indent) + line.length)) - indent;
+  const extended = [...wrapped.slice(0, -1), ...wrapWords(wrapped[wrapped.length - 1] ?? "", sentence, width)];
+  if (plainReadsAs(extended, text)) return extended;
+  const appended = [...wrapped.slice(0, -1), `${wrapped[wrapped.length - 1] ?? ""} ${sentence}`];
+  return plainReadsAs(appended, text) ? appended : undefined;
+}
+
+function plainText(lines: readonly string[]): string {
+  const [first = "", ...rest] = lines;
+  return `k: ${first}\n${rest.map((line) => (line === "" ? "" : `  ${line}`)).join("\n")}\n`;
+}
+
+function plainReadsAs(lines: readonly string[], text: string): boolean {
+  return readsBack(plainText(lines), { k: text });
+}
+
+/** The string the lines of a plain scalar spread over lines stand for. */
+function plainValue(lines: readonly string[]): string | undefined {
+  try {
+    const value = parseYaml(plainText(lines));
+    return isObject(value) && typeof value.k === "string" ? value.k : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `line` with the words of `sentence` after it, onto new lines where they would pass `width`. */
