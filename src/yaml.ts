@@ -179,19 +179,27 @@ export interface YamlLayout {
    * True for a file that holds none, which is how the writer indents one by default.
    */
   indentSequences: boolean;
-  /** Every folded block scalar (`>`) of the document, with the lines the file wrapped it on. */
+  /**
+   * Every folded block scalar (`>`) and every plain scalar spread over lines of the document,
+   * with the lines the file wrapped it on.
+   */
   folds: YamlFold[];
 }
 
 /**
- * A folded block scalar (`>`), which reads as one string however the file wrapped it, and the
- * lines it was written on, so a rewrite can wrap it the same way instead of putting it on one
- * line.
+ * A string the file wrapped over lines that reads as one string however it is wrapped — a folded
+ * block scalar (`>`) or a plain scalar continued on the lines below its key — and the lines it
+ * was written on, so a rewrite can wrap it the same way instead of putting it on one line.
  */
 export interface YamlFold {
   /** The JSON Pointer of the string. */
   pointer: string;
-  /** Its lines of content, past the block's indentation, without the empty lines chomping drops. */
+  /** How the file wrote it: as a `>` block, or as a plain scalar. */
+  style: ">" | "plain";
+  /**
+   * Its lines of content: for a `>` block, past the block's indentation, without the empty lines
+   * chomping drops; for a plain scalar, without their indentation, from the line it starts on.
+   */
   lines: string[];
 }
 
@@ -480,7 +488,12 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
   if (text.startsWith("[") || text.startsWith("{")) return parseFlowOnLines(state, line, text, minIndent);
   const continuation = takeContinuation(state, minIndent);
   if (continuation[0] === undefined) return parseInline(text, line);
-  return resolvePlain(foldPlain(line, text, continuation), line);
+  const value = resolvePlain(foldPlain(line, text, continuation), line);
+  if (typeof value === "string") {
+    const lines = [text, ...continuation.map((next) => (next.raw.trim() === "" ? "" : next.text))];
+    state.folds.push({ pointer: state.at, style: "plain", lines });
+  }
+  return value;
 }
 
 /**
@@ -762,7 +775,7 @@ function parseBlockScalar(state: State, line: Line, header: string, indent: numb
   }
   if (content.length === 0) return "";
 
-  if (style === ">") state.folds.push({ pointer: state.at, lines: [...content] });
+  if (style === ">") state.folds.push({ pointer: state.at, style: ">", lines: [...content] });
   const text = style === "|" ? content.join("\n") : fold(content);
   return chomping === "-" ? text : `${text}\n`;
 }
