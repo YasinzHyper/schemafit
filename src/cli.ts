@@ -5,7 +5,7 @@ import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequests, lintSchema, summarize } from "./lint.js";
 import { movedPointer } from "./moves.js";
-import { expandGlob, isGlob } from "./glob.js";
+import { expandPattern, isGlob } from "./glob.js";
 import { fixOpenApi, openApiInlineSchemas, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
@@ -72,10 +72,11 @@ a notification names its method, and a batch names each of its messages.
 A file argument may be a pattern, which schemafit expands itself, so a quoted
 "schemas/**/*.json" and the *.json that cmd.exe and PowerShell pass through as
 written both name every file they match: * and ? within one directory name, [abc]
-for one character of a set, and ** for any number of directories. A name that starts
-with a dot is matched only by a pattern that starts with one too, a path that exists
-is read as that path even when its name holds a * or a [, and a pattern that matches
-no file is an error.
+for one character of a set, ** for any number of directories, and {a,b} for each of
+its alternatives in turn, so "{tools,schemas}/*.json" reads both directories. A name
+that starts with a dot is matched only by a pattern that starts with one too, a path
+that exists is read as that path even when its name holds a * or a [, and a pattern
+that matches no file is an error, as is each alternative of {a,b} that matches none.
 
 A file whose name ends in .yaml or .yml is read as YAML, and stdin is read as
 JSON first and as YAML if that is not what it holds. Any of the above may be
@@ -158,7 +159,8 @@ class UsageError extends Error {}
  * passes `*.json` through as written, and so does a POSIX shell when it is quoted, so a pattern
  * that reaches schemafit is expanded here. A path that exists is read as the path it is, even
  * when its name holds a bracket or a star. A pattern that matches nothing is an error rather
- * than a file that cannot be read, and a file two patterns match is read once.
+ * than a file that cannot be read, and so is each alternative of a brace expression that matches
+ * nothing, so a typo in one of them is not passed over. A file two patterns match is read once.
  */
 async function expandFiles(args: readonly string[]): Promise<string[]> {
   const files: string[] = [];
@@ -168,12 +170,15 @@ async function expandFiles(args: readonly string[]): Promise<string[]> {
       files.push(arg);
       continue;
     }
-    const matches = await expandGlob(arg);
-    if (matches.length === 0) throw new UsageError(`No file matches ${arg}.`);
-    for (const match of matches) {
-      if (seen.has(match)) continue;
-      seen.add(match);
-      files.push(match);
+    for (const { pattern, matches } of await expandPattern(arg)) {
+      if (matches.length === 0) {
+        throw new UsageError(pattern === arg ? `No file matches ${arg}.` : `No file matches ${pattern}, which ${arg} expands to.`);
+      }
+      for (const match of matches) {
+        if (seen.has(match)) continue;
+        seen.add(match);
+        files.push(match);
+      }
     }
   }
   return files;
