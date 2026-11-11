@@ -858,6 +858,43 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps a plain description the file continues over lines wrapped where the file wrapped it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  query:
+    type: string
+    description: Words to look for in the title and the body, which
+      the server matches case-insensitively.
+  limit:
+    type: integer
+    description: How many tickets to return, counted from the
+      most recent one.
+    maximum: 50
+required: [query, limit]
+additionalProperties: false
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "anthropic", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  query:
+    type: string
+    description: Words to look for in the title and the body, which
+      the server matches case-insensitively.
+  limit:
+    type: integer
+    description: How many tickets to return, counted from the
+      most recent one. Must be at most 50.
+required: [query, limit]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write refuses to drop a comment on an entry the rewrite removes, and leaves a file it would not change alone", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");

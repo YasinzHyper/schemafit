@@ -256,6 +256,7 @@ note: |
     expect(layout.folds).toEqual([
       {
         pointer: "/description",
+        style: ">",
         lines: [
           "Find tickets by text, so the agent can point at an existing one",
           "instead of opening a duplicate. Two words beat one:",
@@ -297,6 +298,48 @@ note: |
   it("keeps a fold that no longer matches the value out of the way of a value that is not a string", () => {
     const { layout } = readYaml("d: >\n  one\n  two\n");
     expect(stringifyYaml({ d: { type: "string" } }, [], [], layout)).toBe("d:\n  type: string\n");
+  });
+
+  it("writes a plain scalar spread over lines back on the lines the file wrapped it on", () => {
+    const text = `query:
+  description: Words to look for in the title and the body, which
+    the server matches case-insensitively.
+tags:
+- one tag that runs on
+  over a second line
+
+  and a paragraph after it
+`;
+    const { value, layout } = readYaml(text);
+    expect(layout.folds).toEqual([
+      {
+        pointer: "/query/description",
+        style: "plain",
+        lines: ["Words to look for in the title and the body, which", "the server matches case-insensitively."],
+      },
+      { pointer: "/tags/0", style: "plain", lines: ["one tag that runs on", "over a second line", "", "and a paragraph after it"] },
+    ]);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("wraps a sentence a fix added to a plain scalar spread over lines where the file's longest line ends", () => {
+    const { layout } = readYaml("d: The number of results to return, counted\n  from the first match.\n");
+    const description = "The number of results to return, counted from the first match. Must be at least 1. Must be at most 50.";
+    expect(stringifyYaml({ d: description }, [], [], layout)).toBe(`d: The number of results to return, counted
+  from the first match. Must be at least 1.
+  Must be at most 50.
+`);
+  });
+
+  it.each([
+    ["a string the fix did not extend", "Something else entirely.", []],
+    ["a string whose first line would read as an indicator", "- one two", []],
+    ["a string with a comment after it, which would end the scalar on its first line", "one two", [{ line: 2, text: "# note", pointer: "/d", trailing: true }]],
+  ])("writes %s that the file's lines cannot hold as any other string", (_, d, comments) => {
+    const layout = { folds: [{ pointer: "/d", style: "plain" as const, lines: d.startsWith("-") ? ["- one", "two"] : ["one", "two"] }] };
+    const written = stringifyYaml({ d }, comments, [], layout);
+    expect(written).toBe(stringifyYaml({ d }, comments));
+    expect(parseYaml(written)).toEqual({ d });
   });
 
   it("refuses a comment on an entry the value does not hold, or one that is not a comment", () => {

@@ -396,6 +396,50 @@ describe("fixOpenApi", () => {
     ]);
   });
 
+  it("writes the null branch a fix adds as a nullable string that allows only null in an OpenAPI 3.0 document", () => {
+    const owner = {
+      type: "object",
+      properties: {
+        id: { type: "integer" },
+        tag: { $ref: "#/components/schemas/Tag" },
+        size: { anyOf: [{ type: "string" }, { type: "integer" }] },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    };
+    const document = openApi({ Tag: strictObject({ name: { type: "string" } }), Owner: owner }, "3.0.3");
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    const onlyNull = { type: "string", nullable: true, enum: [null] };
+    const { schemas } = (fixed as { components: { schemas: Record<string, unknown> } }).components;
+    expect(schemas.Owner).toEqual({
+      type: "object",
+      properties: {
+        id: { type: "integer" },
+        tag: { anyOf: [{ $ref: "#/components/schemas/Tag" }, onlyNull] },
+        size: { anyOf: [{ type: "string" }, { type: "integer" }, onlyNull] },
+      },
+      required: ["id", "tag", "size"],
+      additionalProperties: false,
+    });
+    expect(JSON.stringify(fixed)).not.toContain('"null"');
+
+    // Read back, the branch is the null it stands for, so nothing is left to fix or to report.
+    const [, bundled] = openApiSchemas(fixed);
+    const reread = bundled?.schema as { properties: { tag: { anyOf: unknown[] } } };
+    expect(reread.properties.tag.anyOf[1]).toEqual({ type: ["string", "null"], enum: [null] });
+    const again = fixOpenApi(fixed, { providers: ["openai"] });
+    expect(again.components.flatMap(({ applied }) => applied)).toEqual([]);
+    expect(again.components.flatMap(({ findings }) => findings)).toEqual([]);
+    expect(again.document).toEqual(fixed);
+  });
+
+  it("keeps the null branch a fix adds as type null in an OpenAPI 3.1 document", () => {
+    const owner = strictObject({ tag: { $ref: "#/components/schemas/Tag" } }, { required: [] });
+    const { document: fixed } = fixOpenApi(openApi({ Tag: tag, Owner: owner }), { providers: ["openai"] });
+    const { schemas } = (fixed as { components: { schemas: Record<string, { properties: unknown }> } }).components;
+    expect(schemas.Owner?.properties).toEqual({ tag: { anyOf: [{ $ref: "#/components/schemas/Tag" }, { type: "null" }] } });
+  });
+
   it("replaces a nullable: false in an OpenAPI 3.0 document when a fix makes the property nullable", () => {
     const flags = {
       type: "object",
