@@ -342,6 +342,58 @@ tags:
     expect(parseYaml(written)).toEqual({ d });
   });
 
+  it("writes a quoted scalar spread over lines back on the lines the file wrapped it on, escapes and all", () => {
+    const text = `query:
+  description: "Words to look for, \\"quoted\\" or\\tnot, which
+    the server   matches\\
+    case-insensitively.
+
+    A second paragraph."
+tags:
+- 'one tag that''s
+  wrapped'
+`;
+    const { value, layout } = readYaml(text);
+    expect(value).toEqual({
+      query: { description: 'Words to look for, "quoted" or\tnot, which the server   matchescase-insensitively.\nA second paragraph.' },
+      tags: ["one tag that's wrapped"],
+    });
+    expect(layout.folds).toEqual([
+      {
+        pointer: "/query/description",
+        style: '"',
+        lines: ['"Words to look for, \\"quoted\\" or\\tnot, which', "the server   matches\\", "case-insensitively.", "", 'A second paragraph."'],
+      },
+      { pointer: "/tags/0", style: "'", lines: ["'one tag that''s", "wrapped'"] },
+    ]);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("leaves a quoted scalar that closes on the line it opens on out of the folds", () => {
+    expect(readYaml('d: "one # two" # three\ne: \'x\'\n').layout.folds).toEqual([]);
+  });
+
+  it.each([
+    ['"', 'd: "The number of results to return, counted\n  from the first match."\n', ' Must be "at least" 1. Must be at most 50.', 'd: "The number of results to return, counted\n  from the first match. Must be \\"at least\\"\n  1. Must be at most 50."\n'],
+    ["'", "d: 'The number of results to return, counted\n  from the first match.'\n", " Must be 'at least' 1. Must be at most 50.", "d: 'The number of results to return, counted\n  from the first match. Must be ''at least''\n  1. Must be at most 50.'\n"],
+  ])("wraps a sentence a fix added to a %s-quoted scalar before its closing quote, escaped for those quotes", (_, text, sentence, expected) => {
+    const { value, layout } = readYaml(text);
+    const d = `${(value as { d: string }).d}${sentence}`;
+    const written = stringifyYaml({ d }, [], [], layout);
+    expect(written).toBe(expected);
+    expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it.each([
+    ["a string the fix did not extend", "Something else entirely.", []],
+    ["a string with a comment after it, which would be read as part of the quotes", "one two", [{ line: 2, text: "# note", pointer: "/d", trailing: true }]],
+  ])("writes %s that the file's quoted lines cannot hold as any other string", (_, d, comments) => {
+    const layout = { folds: [{ pointer: "/d", style: '"' as const, lines: ['"one', 'two"'] }] };
+    const written = stringifyYaml({ d }, comments, [], layout);
+    expect(written).toBe(stringifyYaml({ d }, comments));
+    expect(parseYaml(written)).toEqual({ d });
+  });
+
   it("refuses a comment on an entry the value does not hold, or one that is not a comment", () => {
     expect(() => stringifyYaml({ a: 1 }, [{ line: 1, text: "# gone", pointer: "/b", trailing: false }])).toThrow(
       "1 of the comments belong to an entry the value does not hold",
