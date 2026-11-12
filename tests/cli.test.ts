@@ -567,6 +567,30 @@ describe("cli", () => {
     expect(stderr).toContain(`No file matches ${dir}/*.json.`);
   });
 
+  it("expands a brace expression into a pattern per alternative", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await mkdir(join(dir, "tools"));
+    await mkdir(join(dir, "schemas"));
+    await writeFile(join(dir, "tools", "a.json"), '{"type":"object","properties":{},"additionalProperties":false}');
+    await writeFile(join(dir, "schemas", "b.json"), '{"type":"object","properties":{}}');
+
+    const { code, stdout } = await cli(["-p", "openai", "-f", "json", `${dir}/{tools,schemas}/*.json`]);
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout).files.map((file: { file: string }) => file.file)).toEqual([
+      `${dir}/tools/a.json`,
+      `${dir}/schemas/b.json`,
+    ]);
+  });
+
+  it("fails on an alternative of a brace expression that matches no file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    await mkdir(join(dir, "tools"));
+    await writeFile(join(dir, "tools", "a.json"), "{}");
+    const { code, stderr } = await cli([`${dir}/{tools,tool}/*.json`]);
+    expect(code).toBe(2);
+    expect(stderr).toContain(`No file matches ${dir}/tool/*.json, which ${dir}/{tools,tool}/*.json expands to.`);
+  });
+
   it("--fix --write rewrites every file a pattern matches", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     await mkdir(join(dir, "tools"));

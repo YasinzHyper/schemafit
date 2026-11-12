@@ -103,9 +103,12 @@ schemafit --fix --write tools/*.json
 
 # Quote a pattern to let schemafit expand it, which also works in cmd.exe and PowerShell
 schemafit --fix --write "schemas/**/*.json"
+
+# ... braces included, so one pattern can name several directories or extensions
+schemafit "{tools,schemas}/*.{json,yaml}"
 ```
 
-A file argument may be a pattern, and `schemafit` expands one that reaches it unexpanded: cmd.exe and PowerShell pass `*.json` to a program as written, and so does a POSIX shell when the pattern is quoted. The syntax is the shell's: `*` and `?` within one directory name, `[abc]`, `[a-z]` and `[!a]` for one character, and `**` for any number of directories, the current one included. A name that starts with a dot is matched only by a pattern that starts with one, `**` does not descend into a hidden directory or through a symbolic link, and on Windows `\` separates directories and names match without regard to case. A path that exists is read as that path even when its name holds a `*` or a `[`, a file two patterns match is read once, and a pattern that matches no file is an error rather than a file that cannot be read.
+A file argument may be a pattern, and `schemafit` expands one that reaches it unexpanded: cmd.exe and PowerShell pass `*.json` to a program as written, and so does a POSIX shell when the pattern is quoted. The syntax is the shell's: `*` and `?` within one directory name, `[abc]`, `[a-z]` and `[!a]` for one character, `**` for any number of directories, the current one included, and `{a,b}` for each of its comma-separated alternatives in turn, as in bash, so `{tools,schemas}/*.json` is `tools/*.json` followed by `schemas/*.json`. A group may hold another, a brace with no comma in its group is a literal character, and a sequence such as `{1..3}` is not expanded. A name that starts with a dot is matched only by a pattern that starts with one, `**` does not descend into a hidden directory or through a symbolic link, and on Windows `\` separates directories and names match without regard to case. A path that exists is read as that path even when its name holds a `*` or a `[`, a file two patterns match is read once, and a pattern that matches no file is an error rather than a file that cannot be read, as is each alternative of a brace expression that matches none, so a misspelled directory in one of them is not passed over.
 
 Files can hold a bare JSON Schema or a whole tool / response-format definition. `schemafit` finds the schema inside OpenAI tools (`function.parameters`), OpenAI `response_format`, Anthropic tools (`input_schema`), and MCP tools (`inputSchema`).
 

@@ -7,7 +7,8 @@ import type { Dirent } from "node:fs";
  * expands what reaches it itself. The syntax is the shell's: `*` and `?` within one path
  * segment, `[abc]` / `[a-z]` / `[!a]` for one character, and `**` as a segment of its own for
  * any number of directories. A name that starts with `.` is matched only by a segment that
- * starts with `.` too, as in a shell.
+ * starts with `.` too, as in a shell. Braces come first, as in bash and zsh: `{a,b}` stands
+ * for each of its comma-separated alternatives in turn, and each one is then matched on its own.
  */
 export interface GlobOptions {
   /**
@@ -17,22 +18,109 @@ export interface GlobOptions {
   windows?: boolean;
 }
 
-/** Whether `pattern` holds a wildcard, which is what makes it a pattern rather than a path. */
+/**
+ * Whether `pattern` holds a wildcard or a brace expression, which is what makes it a pattern
+ * rather than a path.
+ */
 export function isGlob(pattern: string, options: GlobOptions = {}): boolean {
   const windows = isWindows(options);
-  return splitPattern(pattern, windows).segments.some((segment) => hasWildcard(segment, windows));
+  return expandBraces(pattern, options).length > 1 || hasWildcards(pattern, windows);
 }
 
 /**
- * Every file `pattern` matches, sorted. A pattern without a wildcard is returned as it is,
- * whether or not it exists, so reading it reports the error a path deserves. Directories
- * are never matched, because a schema is a file.
+ * The patterns `pattern` stands for once its brace expressions are expanded, in the order bash
+ * writes them: `{a,b}{1,2}` is `a1`, `a2`, `b1`, `b2`, and a group may hold another, so
+ * `{a,b{c,d}}` is `a`, `bc`, `bd`. A brace with no comma inside its group, or one that never
+ * closes, is a literal character, and outside Windows `\` keeps the brace or comma after it
+ * from being read as part of a group. Escapes are left in place for the matching that follows.
+ * Sequence expressions (`{1..3}`) are not expanded.
+ */
+export function expandBraces(pattern: string, options: GlobOptions = {}): string[] {
+  const windows = isWindows(options);
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === "\\" && !windows) {
+      i++;
+      continue;
+    }
+    if (pattern[i] !== "{") continue;
+    const group = braceGroup(pattern, i, windows);
+    if (group === undefined) continue;
+    const prefix = pattern.slice(0, i);
+    const suffixes = expandBraces(pattern.slice(group.end + 1), options);
+    return group.parts
+      .flatMap((part) => expandBraces(part, options))
+      .flatMap((alternative) => suffixes.map((suffix) => prefix + alternative + suffix));
+  }
+  return [pattern];
+}
+
+/**
+ * The alternatives of the group opened at `start` and where it closes, or nothing when the
+ * brace there is a literal one: it never closes, or no comma separates alternatives in it.
+ */
+function braceGroup(pattern: string, start: number, windows: boolean): { parts: string[]; end: number } | undefined {
+  const commas: number[] = [];
+  let depth = 0;
+  for (let i = start; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === "\\" && !windows) i++;
+    else if (char === "{") depth++;
+    else if (char === "," && depth === 1) commas.push(i);
+    else if (char === "}" && --depth === 0) {
+      if (commas.length === 0) return undefined;
+      const bounds = [start, ...commas, i];
+      return { parts: bounds.slice(1).map((bound, k) => pattern.slice(bounds[k]! + 1, bound)), end: i };
+    }
+  }
+  return undefined;
+}
+
+/** One alternative of a pattern and the files it names. */
+export interface GlobExpansion {
+  /** The alternative, after brace expansion, as `expandBraces` returns it. */
+  pattern: string;
+  /**
+   * The files it matches, sorted, and empty when it matches none. An alternative without a
+   * wildcard names the one path it spells, whether or not that exists, as in a shell.
+   */
+  matches: string[];
+}
+
+/** Every alternative of `pattern`, in order, each with the files it matches. */
+export async function expandPattern(pattern: string, options: GlobOptions = {}): Promise<GlobExpansion[]> {
+  const windows = isWindows(options);
+  const alternatives = expandBraces(pattern, options);
+  const expansions: GlobExpansion[] = [];
+  for (const alternative of alternatives) {
+    // A pattern that had no braces is returned exactly as written, which is what it always was;
+    // an alternative brace expansion produced loses the escapes the expansion left in it.
+    const literal = alternatives.length === 1 ? alternative : unescape(alternative, windows);
+    const matches = hasWildcards(alternative, windows) ? await matchGlob(alternative, windows) : [literal];
+    expansions.push({ pattern: alternative, matches });
+  }
+  return expansions;
+}
+
+/**
+ * Every file `pattern` matches: the matches of each alternative of its brace expressions in
+ * turn, each sorted, and a file two alternatives match once. A pattern without a wildcard is
+ * returned as it is, whether or not it exists, so reading it reports the error a path deserves.
+ * Directories are never matched, because a schema is a file.
  */
 export async function expandGlob(pattern: string, options: GlobOptions = {}): Promise<string[]> {
-  const windows = isWindows(options);
+  const found = new Set<string>();
+  for (const { matches } of await expandPattern(pattern, options)) for (const match of matches) found.add(match);
+  return [...found];
+}
+
+function hasWildcards(pattern: string, windows: boolean): boolean {
+  return splitPattern(pattern, windows).segments.some((segment) => hasWildcard(segment, windows));
+}
+
+/** The files a pattern without brace expressions matches, sorted. */
+async function matchGlob(pattern: string, windows: boolean): Promise<string[]> {
   const { segments, offsets } = splitPattern(pattern, windows);
   const first = segments.findIndex((segment) => hasWildcard(segment, windows));
-  if (first === -1) return [pattern];
 
   // The text in front of the first wildcard is the directory the search starts in, kept exactly
   // as the user wrote it, and every match continues it with the separator they used there, so a

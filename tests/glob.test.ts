@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { expandGlob, isGlob, segmentRegex } from "../src/glob.js";
+import { expandBraces, expandGlob, expandPattern, isGlob, segmentRegex } from "../src/glob.js";
 
 let root: string;
 
@@ -44,6 +44,39 @@ describe("isGlob", () => {
   it("reads an escaped wildcard as a literal character, except on Windows", () => {
     expect(isGlob("schemas/\\*.json", { windows: false })).toBe(false);
     expect(isGlob("schemas\\*.json", { windows: true })).toBe(true);
+  });
+});
+
+describe("expandBraces", () => {
+  it("expands each alternative of a group in the order bash writes them", () => {
+    expect(expandBraces("{tools,schemas}/*.json")).toEqual(["tools/*.json", "schemas/*.json"]);
+    expect(expandBraces("{a,b}{1,2}")).toEqual(["a1", "a2", "b1", "b2"]);
+    expect(expandBraces("x{a,b{c,d}}y")).toEqual(["xay", "xbcy", "xbdy"]);
+    expect(expandBraces("tool{,s}.json")).toEqual(["tool.json", "tools.json"]);
+    expect(expandBraces("{a/b,c}/*.json")).toEqual(["a/b/*.json", "c/*.json"]);
+  });
+
+  it("reads a brace with no comma in its group, or one that never closes, as a literal", () => {
+    expect(expandBraces("{a}.json")).toEqual(["{a}.json"]);
+    expect(expandBraces("{}a")).toEqual(["{}a"]);
+    expect(expandBraces("{a,b")).toEqual(["{a,b"]);
+    expect(expandBraces("{{a,b}")).toEqual(["{a", "{b"]);
+    expect(expandBraces("{a,{b}}")).toEqual(["a", "{b}"]);
+    expect(expandBraces("{a,b}}")).toEqual(["a}", "b}"]);
+    expect(expandBraces("{1..3}.json")).toEqual(["{1..3}.json"]);
+  });
+
+  it("keeps an escaped brace or comma out of a group, except on Windows", () => {
+    expect(expandBraces("{a\\,b}", { windows: false })).toEqual(["{a\\,b}"]);
+    expect(expandBraces("\\{a,b\\}", { windows: false })).toEqual(["\\{a,b\\}"]);
+    expect(expandBraces("{a,b\\}c}", { windows: false })).toEqual(["a", "b\\}c"]);
+    expect(expandBraces("x\\{a,b}", { windows: true })).toEqual(["x\\a", "x\\b"]);
+  });
+
+  it("makes a pattern of a path that holds a group, and of no other brace", () => {
+    expect(isGlob("{a,b}.json")).toBe(true);
+    expect(isGlob("{a}.json")).toBe(false);
+    expect(isGlob("{a,b.json")).toBe(false);
   });
 });
 
@@ -130,6 +163,28 @@ describe("expandGlob", () => {
     const pattern = `${root}\\nested\\*.JSON`;
     expect(under(await expandGlob(pattern, { windows: true }))).toEqual(["nested\\d.json"]);
     expect(under(await expandGlob(`${root}\\**\\f.yml`, { windows: true }))).toEqual(["nested\\deeper\\f.yml"]);
+  });
+
+  it("matches each alternative of a brace expression in turn, each sorted, and a file two match once", async () => {
+    expect(under(await expandGlob(`${root}/{nested/deeper,nested}/*.{json,yml}`))).toEqual([
+      "nested/deeper/e.json",
+      "nested/deeper/f.yml",
+      "nested/d.json",
+    ]);
+    expect(under(await expandGlob(`${root}/{tool?,tool1}.json`))).toEqual(["tool1.json", "tool2.json"]);
+  });
+
+  it("reports what each alternative matches, and names a path one spells without a wildcard", async () => {
+    const expansions = await expandPattern(`${root}/{c.yaml,missing.json,*.toml}`);
+    expect(expansions.map(({ pattern, matches }) => ({ pattern: pattern.slice(root.length + 1), matches: under(matches) }))).toEqual([
+      { pattern: "c.yaml", matches: ["c.yaml"] },
+      { pattern: "missing.json", matches: ["missing.json"] },
+      { pattern: "*.toml", matches: [] },
+    ]);
+  });
+
+  it.skipIf(process.platform === "win32")("drops the escapes of a path a brace expansion spells", async () => {
+    expect(await expandGlob("{a,b\\}c}.json")).toEqual(["a.json", "b}c.json"]);
   });
 
   it("keeps the text in front of the first wildcard as it was written", async () => {
