@@ -932,6 +932,47 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write puts a fix's sentence before a closing quote the file put on a line of its own", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  code:
+    type: string
+    description: "The ticket's code, as the printer stamps
+      it on the label of each parcel.
+      "
+    maxLength: 8
+  limit:
+    type: integer
+    description: 'How many tickets to return, counted from the
+      most recent one.
+      '
+    minimum: 1
+required: [code, limit]
+additionalProperties: false
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "anthropic", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  code:
+    type: string
+    description: "The ticket's code, as the printer stamps
+      it on the label of each parcel. Must be at most 8
+      characters long."
+  limit:
+    type: integer
+    description: 'How many tickets to return, counted from the
+      most recent one. Must be at least 1.'
+required: [code, limit]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write refuses to drop a comment on an entry the rewrite removes, and leaves a file it would not change alone", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const loose = join(dir, "loose.yaml");

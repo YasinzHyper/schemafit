@@ -315,24 +315,36 @@ function plainLines(text: string, wrapped: readonly string[], start: number, ind
  * A string as the quoted scalar a file spread over lines, on the lines the file wrapped it on,
  * spelled as the file spelled them: the same lines for the same string, and for one a fix added
  * a sentence to, those lines with the sentence before the closing quote, escaped for the quotes
- * the file used and wrapped where the file's longest line ends. Undefined for any other string,
- * and for one those lines would not read back as.
+ * the file used and wrapped where the file's longest line ends. A string that ends in white space,
+ * as one does when its closing quote sits on a line of its own, may have had that white space
+ * trimmed before the sentence was added, as a fix does, and then the lines that held only it go.
+ * Undefined for any other string, and for one those lines would not read back as.
  */
 function quotedLines(text: string, wrapped: readonly string[], mark: '"' | "'", start: number, indent: number): string[] | undefined {
   const last = wrapped[wrapped.length - 1] ?? "";
   if (wrapped.length < 2 || !wrapped[0]?.startsWith(mark) || !last.endsWith(mark)) return undefined;
   if (plainReadsAs(wrapped, text)) return [...wrapped];
   const before = plainValue(wrapped);
-  if (before === undefined || !text.startsWith(`${before} `)) return undefined;
-  const added = text.slice(before.length + 1);
+  if (before === undefined) return undefined;
+  // A fix trims a description before it adds its sentence, which takes off the space the line
+  // break before a closing quote on a line of its own folds into, and any spaces before the quote.
+  const kept = text.startsWith(`${before} `) ? before : before.trimEnd();
+  if (kept === "" || !text.startsWith(`${kept} `)) return undefined;
+  const added = text.slice(kept.length + 1);
   const sentence = mark === '"' ? quote(added).slice(1, -1) : added.replaceAll("'", "''");
   const width = Math.max(...wrapped.map((line, index) => (index === 0 ? start : indent) + line.length)) - indent;
-  const open = last.slice(0, -1);
-  // A line that holds nothing but the closing quote takes the sentence's first word, as a line of its own would.
-  const lines = open === "" ? wrapWords("", sentence, width) : wrapWords(open, sentence, width);
-  const extended = [...wrapped.slice(0, -1), ...lines.slice(0, -1), `${lines[lines.length - 1] ?? ""}${mark}`];
+  // The lines up to the closing quote, without what the trimmed string no longer holds: a line
+  // that held nothing but the quote, the empty lines above it, and the spaces that end the last.
+  const body = [...wrapped.slice(0, -1), last.slice(0, -1)];
+  if (kept !== before) {
+    while (body.length > 1 && body[body.length - 1]!.trim() === "") body.pop();
+    body[body.length - 1] = body[body.length - 1]!.trimEnd();
+  }
+  const open = body[body.length - 1]!;
+  const lines = wrapWords(open, sentence, width);
+  const extended = [...body.slice(0, -1), ...lines.slice(0, -1), `${lines[lines.length - 1] ?? ""}${mark}`];
   if (plainReadsAs(extended, text)) return extended;
-  const appended = [...wrapped.slice(0, -1), `${open === "" ? "" : `${open} `}${sentence}${mark}`];
+  const appended = [...body.slice(0, -1), `${open === "" ? "" : `${open} `}${sentence}${mark}`];
   return plainReadsAs(appended, text) ? appended : undefined;
 }
 

@@ -385,6 +385,19 @@ tags:
   });
 
   it.each([
+    ['"', "its closing quote on a line of its own", 'd: "The number of results to return, counted\n  from the first match.\n  "\n', 'd: "The number of results to return, counted\n  from the first match. Must be at least 1.\n  Must be at most 50."\n'],
+    ["'", "an empty line above its closing quote", "d: 'The number of results to return, counted\n  from the first match.\n\n  '\n", "d: 'The number of results to return, counted\n  from the first match. Must be at least 1.\n  Must be at most 50.'\n"],
+    ['"', "spaces before its closing quote", 'd: "The number of results to return, counted\n  from the first match.   "\n', 'd: "The number of results to return, counted\n  from the first match. Must be at least 1.\n  Must be at most 50."\n'],
+  ])("puts a sentence a fix added to a %s-quoted scalar with %s before that quote", (_, __, text, expected) => {
+    const { value, layout } = readYaml(text);
+    // A fix trims the description before it adds its sentence, which takes off the white space it ends in.
+    const d = `${(value as { d: string }).d.trim()} Must be at least 1. Must be at most 50.`;
+    const written = stringifyYaml({ d }, [], [], layout);
+    expect(written).toBe(expected);
+    expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it.each([
     ["a string the fix did not extend", "Something else entirely.", []],
     ["a string with a comment after it, which would be read as part of the quotes", "one two", [{ line: 2, text: "# note", pointer: "/d", trailing: true }]],
   ])("writes %s that the file's quoted lines cannot hold as any other string", (_, d, comments) => {
