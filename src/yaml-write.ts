@@ -16,8 +16,9 @@
  *
  * Comments read off a file go back to the entries they belong to: one that sat on a line of its
  * own goes on a line above its entry, at the entry's indentation, and one that sat after a value
- * goes after the entry's first line. An empty line between two entries goes back above the entry
- * below it, in its place among that entry's comments.
+ * goes after the line that value ends on: the entry's first line, or the last line of a plain or
+ * quoted scalar that starts there and is spread over lines. An empty line between two entries goes
+ * back above the entry below it, in its place among that entry's comments.
  */
 
 import { joinPointer } from "./pointer.js";
@@ -47,6 +48,17 @@ interface Layout {
   indentSequences: boolean;
   /** How each string the file wrapped over lines was written, by the pointer of the string. */
   folds: Map<string, YamlFold>;
+}
+
+/**
+ * The lines written for a node, and the index of the one a comment after it goes on: the line
+ * the value its first line starts ends on, which is the last line of a plain or quoted scalar
+ * spread over lines — after the first, the comment would end a plain one there and be read as
+ * part of a quoted one — and the first line for any other value.
+ */
+interface Written {
+  lines: string[];
+  trail: number;
 }
 
 /**
@@ -91,7 +103,7 @@ export function stringifyYaml(
   while (end[end.length - 1] === "") end.pop();
   const ending = end.filter((text) => text === "").length;
   // What JSON would make of it — no undefined members, no functions — is what is written.
-  const written = [...block(JSON.parse(json) as unknown, 0, "", placed), ...end];
+  const written = [...block(JSON.parse(json) as unknown, 0, "", placed).lines, ...end];
   const text = `${written.join("\n")}\n`;
   const read = readYaml(text);
   if (JSON.stringify(read.value) !== json) {
@@ -112,31 +124,57 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** The lines of a node that starts on a line of its own, at `indent`. */
-function block(value: unknown, indent: number, pointer: string, layout: Layout): string[] {
+function block(value: unknown, indent: number, pointer: string, layout: Layout): Written {
   const pad = " ".repeat(indent);
   if (Array.isArray(value) && value.length > 0) {
-    return value.flatMap((item, index) => {
-      const at = joinPointer(pointer, index);
-      return commented(entry(`${pad}-`, item, indent, true, at, layout), pad, at, layout);
-    });
+    return concat(
+      value.map((item, index) => {
+        const at = joinPointer(pointer, index);
+        return commented(entry(`${pad}-`, item, indent, true, at, layout), pad, at, layout);
+      }),
+    );
   }
   if (isObject(value) && Object.keys(value).length > 0) {
-    return Object.entries(value).flatMap(([key, item]) => {
-      const at = joinPointer(pointer, key);
-      return commented(entry(`${pad}${scalar(key, true)}:`, item, indent, false, at, layout), pad, at, layout);
-    });
+    return concat(
+      Object.entries(value).map(([key, item]) => {
+        const at = joinPointer(pointer, key);
+        return commented(entry(`${pad}${scalar(key, true)}:`, item, indent, false, at, layout), pad, at, layout);
+      }),
+    );
   }
-  return [`${pad}${inline(value)}`];
+  return { lines: [`${pad}${inline(value)}`], trail: 0 };
 }
 
-/** The lines of an entry with its comments: those above it, and the one after its first line. */
-function commented(lines: readonly string[], pad: string, pointer: string, layout: Layout): string[] {
+/** The entries of a collection one after the other, whose first line is the first entry's. */
+function concat(entries: readonly Written[]): Written {
+  return { lines: entries.flatMap(({ lines }) => lines), trail: entries[0]?.trail ?? 0 };
+}
+
+/**
+ * The lines of an entry, at the indentation `pad`, with its comments: those above it, and the one
+ * after the line its value ends on.
+ */
+function commented({ lines, trail }: Written, pad: string, pointer: string, layout: Layout): Written {
   const above = (layout.above.get(pointer) ?? []).map((text) => (text === "" ? "" : `${pad}${text}`));
   const after = layout.after.get(pointer);
-  if (after === undefined) return [...above, ...lines];
-  // The entry's own first line, below any comment its first key brought up above the dash.
-  const first = lines.findIndex((line) => !isLayout(line));
-  return [...above, ...lines.map((line, index) => (index === first ? `${line} ${after}` : line))];
+  if (after === undefined) return { lines: [...above, ...lines], trail: above.length + trail };
+  const trailed = lines.map((line, index) => (index === trail ? `${line} ${after}` : line));
+  // Where the reader would take the comment into the value before it, the comment goes on a line
+  // of its own above the entry instead, rather than be lost or change the value.
+  if (!readsAlike(lines, trailed, pad.length)) {
+    return { lines: [...above, `${pad}${after}`, ...lines], trail: above.length + 1 + trail };
+  }
+  return { lines: [...above, ...trailed], trail: above.length + trail };
+}
+
+/** Whether two versions of an entry's lines at `indent` read as the same value. */
+function readsAlike(lines: readonly string[], other: readonly string[], indent: number): boolean {
+  const text = (written: readonly string[]): string => `${written.map((line) => line.slice(indent)).join("\n")}\n`;
+  try {
+    return readsBack(text(other), parseYaml(text(lines)));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -148,48 +186,54 @@ function isLayout(line: string): boolean {
 }
 
 /** One mapping entry or sequence item: `prefix` is its key and colon, or its dash. */
-function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): string[] {
+function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): Written {
   const child = indent + INDENT;
   // A flow list has no line of its own for a comment on one of its items, or an empty line
   // between two, and puts an item the file wrapped over lines on one.
   const flow = commentsWithin(pointer, layout) || foldsWithin(pointer, layout) ? undefined : flowList(value);
-  if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return [`${prefix} ${flow}`];
+  if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return { lines: [`${prefix} ${flow}`], trail: 0 };
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
     // A sequence under a key may sit at the key's own indentation, where its dashes count as
     // the indentation the items need.
     const compact = !dash && Array.isArray(value) && !layout.indentSequences;
-    const lines = block(value, compact ? indent : child, pointer, layout);
+    const { lines, trail } = block(value, compact ? indent : child, pointer, layout);
     // A collection in a sequence item starts on the dash's line, which YAML reads at the
     // column of its first character; under a key it starts on the line below.
-    if (!dash) return [prefix, ...lines];
+    if (!dash) return { lines: [prefix, ...lines], trail: 0 };
     // A comment above the first entry of that collection would split the dash from it, so it
     // goes above the dash.
     const above = lines.findIndex((line) => !isLayout(line));
     const hoisted = lines.slice(0, above).map((line) => line.slice(child - indent));
     const [first = "", ...rest] = lines.slice(above);
-    return [...hoisted, `${prefix} ${first.slice(child)}`, ...rest];
+    // Every line keeps its place, so a comment after the dash goes where one after the first
+    // entry of the collection would: after the last line of a scalar that entry spreads over lines.
+    return { lines: [...hoisted, `${prefix} ${first.slice(child)}`, ...rest], trail };
   }
   if (typeof value === "string") {
     const wrapped = layout.folds.get(pointer);
-    // A comment goes after an entry's first line, which would end a plain scalar spread over
-    // lines there, and be read as part of a quoted one.
-    if (wrapped !== undefined && wrapped.style !== ">" && !layout.after.has(pointer)) {
+    if (wrapped !== undefined && wrapped.style !== ">") {
       const lines =
         wrapped.style === "plain"
           ? plainLines(value, wrapped.lines, prefix.length + 1, child)
           : quotedLines(value, wrapped.lines, wrapped.style, prefix.length + 1, child);
       if (lines !== undefined) {
         const [first, ...rest] = lines;
-        return [`${prefix} ${first}`, ...rest.map((line) => (line === "" ? "" : `${" ".repeat(child)}${line}`))];
+        return {
+          lines: [`${prefix} ${first}`, ...rest.map((line) => (line === "" ? "" : `${" ".repeat(child)}${line}`))],
+          trail: lines.length - 1,
+        };
       }
     }
     const scalarBlock = (wrapped?.style === ">" ? foldedBlock(value, wrapped.lines) : undefined) ?? literalBlock(value);
     if (scalarBlock !== undefined) {
       const pad = " ".repeat(child);
-      return [`${prefix} ${scalarBlock.header}`, ...scalarBlock.lines.map((line) => (line === "" ? "" : `${pad}${line}`))];
+      return {
+        lines: [`${prefix} ${scalarBlock.header}`, ...scalarBlock.lines.map((line) => (line === "" ? "" : `${pad}${line}`))],
+        trail: 0,
+      };
     }
   }
-  return [`${prefix} ${inline(value)}`];
+  return { lines: [`${prefix} ${inline(value)}`], trail: 0 };
 }
 
 /** Whether a comment belongs to an entry inside the node at `pointer`. */

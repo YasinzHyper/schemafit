@@ -332,14 +332,62 @@ tags:
   });
 
   it.each([
-    ["a string the fix did not extend", "Something else entirely.", []],
-    ["a string whose first line would read as an indicator", "- one two", []],
-    ["a string with a comment after it, which would end the scalar on its first line", "one two", [{ line: 2, text: "# note", pointer: "/d", trailing: true }]],
-  ])("writes %s that the file's lines cannot hold as any other string", (_, d, comments) => {
+    ["a string the fix did not extend", "Something else entirely."],
+    ["a string whose first line would read as an indicator", "- one two"],
+  ])("writes %s that the file's lines cannot hold as any other string", (_, d) => {
     const layout = { folds: [{ pointer: "/d", style: "plain" as const, lines: d.startsWith("-") ? ["- one", "two"] : ["one", "two"] }] };
-    const written = stringifyYaml({ d }, comments, [], layout);
-    expect(written).toBe(stringifyYaml({ d }, comments));
+    const written = stringifyYaml({ d }, [], [], layout);
+    expect(written).toBe(stringifyYaml({ d }));
     expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it("puts a comment after a plain or quoted scalar spread over lines after its last line, where the scalar ends", () => {
+    const text = `query:
+  description: Words to look for in the title and the body, which
+    the server matches case-insensitively. # from the API docs
+  examples:
+  - one example that runs on
+    over a second line # the first
+  - "a quoted one that runs
+    on as well" # the second
+sort:
+  anyOf:
+  - description: 'The field to sort by, which the server
+      reads case-insensitively.' # after the dash
+    type: string
+  - - title: a sequence in a sequence
+        over two lines # after both dashes
+`;
+    const { value, attached, layout } = readYaml(text);
+    expect(attached.map(({ pointer, trailing }) => [pointer, trailing])).toEqual([
+      ["/query/description", true],
+      ["/query/examples/0", true],
+      ["/query/examples/1", true],
+      ["/sort/anyOf/0", true],
+      ["/sort/anyOf/1", true],
+    ]);
+    expect(stringifyYaml(value, attached, [], layout)).toBe(text);
+  });
+
+  it("puts a comment after the sentence a fix added to a plain scalar spread over lines", () => {
+    const { attached, layout } = readYaml("d: The number of results to return, counted\n  from the first match. # the page size\n");
+    const description = "The number of results to return, counted from the first match. Must be at least 1. Must be at most 50.";
+    expect(stringifyYaml({ d: description }, attached, [], layout)).toBe(`d: The number of results to return, counted
+  from the first match. Must be at least 1.
+  Must be at most 50. # the page size
+`);
+  });
+
+  it.each([
+    ["spread over lines", [{ pointer: "/d", style: "plain" as const, lines: ["one", 'say "hi'] }], 'd: one\n  say "hi\n'],
+    ["on one line", [], 'd: one say "hi\n'],
+  ])("puts a comment above a plain scalar %s that would read it as part of the string", (_, folds, entry) => {
+    // The reader takes a quote after a space for the start of a quoted scalar, and a "#" after it for one of its characters.
+    const d = 'one say "hi';
+    const comments = [{ line: 2, text: "# a note", pointer: "/d", trailing: true }];
+    const written = stringifyYaml({ d }, comments, [], { folds });
+    expect(written).toBe(`# a note\n${entry}`);
+    expect(readYaml(written).attached).toEqual([{ line: 1, text: "# a note", pointer: "/d", trailing: false }]);
   });
 
   it("writes a quoted scalar spread over lines back on the lines the file wrapped it on, escapes and all", () => {
@@ -397,14 +445,21 @@ tags:
     expect(parseYaml(written)).toEqual({ d });
   });
 
-  it.each([
-    ["a string the fix did not extend", "Something else entirely.", []],
-    ["a string with a comment after it, which would be read as part of the quotes", "one two", [{ line: 2, text: "# note", pointer: "/d", trailing: true }]],
-  ])("writes %s that the file's quoted lines cannot hold as any other string", (_, d, comments) => {
+  it("writes a string the file's quoted lines cannot hold as any other string", () => {
+    const d = "Something else entirely.";
     const layout = { folds: [{ pointer: "/d", style: '"' as const, lines: ['"one', 'two"'] }] };
-    const written = stringifyYaml({ d }, comments, [], layout);
-    expect(written).toBe(stringifyYaml({ d }, comments));
+    const written = stringifyYaml({ d }, [], [], layout);
+    expect(written).toBe(stringifyYaml({ d }));
     expect(parseYaml(written)).toEqual({ d });
+  });
+
+  it("puts a comment after the closing quote of a sentence a fix added to a quoted scalar spread over lines", () => {
+    const { attached, layout } = readYaml("d: 'The number of results to return, counted\n  from the first match.' # the page size\n");
+    const description = "The number of results to return, counted from the first match. Must be at least 1. Must be at most 50.";
+    expect(stringifyYaml({ d: description }, attached, [], layout)).toBe(`d: 'The number of results to return, counted
+  from the first match. Must be at least 1.
+  Must be at most 50.' # the page size
+`);
   });
 
   it("refuses a comment on an entry the value does not hold, or one that is not a comment", () => {
