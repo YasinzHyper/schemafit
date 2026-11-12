@@ -1037,6 +1037,56 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps a description the file wrapped over lines wrapped when a comment follows its last line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tools.yaml");
+    await writeFile(
+      file,
+      `- name: search
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+        description: Words to look for in the title and the body, which
+          the server matches case-insensitively.
+        maxLength: 200 # the index's limit
+      sort:
+        anyOf:
+        - description: "The field to sort by, which the server
+            reads case-insensitively." # from the API docs
+          type: string
+          minLength: 1
+        - type: "null"
+    required: [query, sort]
+    additionalProperties: false
+`,
+    );
+
+    const { code, stderr } = await cli(["--fix", "-p", "anthropic", "--write", file]);
+    expect(code).toBe(0);
+    expect(stderr).not.toContain("comment");
+    expect(await readFile(file, "utf8")).toBe(`- name: search
+  input_schema:
+    type: object
+    properties:
+      query:
+        type: string
+        description: Words to look for in the title and the body, which
+          the server matches case-insensitively. Must be at most 200
+          characters long. # the index's limit
+      sort:
+        anyOf:
+        - description: "The field to sort by, which the server
+            reads case-insensitively. Must be at least 1
+            character long." # from the API docs
+          type: string
+        - type: "null"
+    required: [query, sort]
+    additionalProperties: false
+`);
+  });
+
   it("--fix --write carries a comment on a oneOf over to the anyOf it is renamed to", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");

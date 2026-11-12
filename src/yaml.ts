@@ -153,7 +153,10 @@ export interface YamlComment {
    * no entry below it, which goes at the end of the document.
    */
   pointer: string | null;
-  /** Whether it goes after the entry's first line rather than on a line of its own above it. */
+  /**
+   * Whether it goes after the value its entry's first line starts — on that line, or on the last
+   * of a plain or quoted scalar spread over lines — rather than on a line of its own above it.
+   */
   trailing: boolean;
 }
 
