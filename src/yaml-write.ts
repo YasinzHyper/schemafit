@@ -5,8 +5,9 @@
  * It writes block mappings and block sequences indented by two spaces, a sequence under a key
  * at the key's own indentation instead when the file it came from wrote it there, a list of
  * scalars that fits on its line in flow style (`type: [string, "null"]`), `{}` and `[]` for the
- * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, and a plain
- * scalar continued on the lines below its key for one the file wrapped that way, each on the
+ * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, a plain
+ * scalar continued on the lines below its key for one the file wrapped that way, and a quoted
+ * scalar continued before its closing quote for one the file wrapped in quotes, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
  * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
@@ -51,8 +52,8 @@ interface Layout {
 /**
  * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
  * `readYaml` reads off a file as `attached` and `blanks`, and its sequences indented as the
- * `layout` `readYaml` reads off a file says, and the strings it names as folded or as plain
- * scalars spread over lines wrapped on the lines the file wrapped them on, where the string still
+ * `layout` `readYaml` reads off a file says, and the strings it names as folded, or as plain or
+ * quoted scalars spread over lines, wrapped on the lines the file wrapped them on, where the string still
  * reads that way. An empty line with no
  * entry below it is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
  * either, or for a comment or an empty line whose entry the value does not hold, and an `Error`
@@ -170,9 +171,13 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
   }
   if (typeof value === "string") {
     const wrapped = layout.folds.get(pointer);
-    // A comment goes after an entry's first line, which would end a plain scalar spread over lines there.
-    if (wrapped?.style === "plain" && !layout.after.has(pointer)) {
-      const lines = plainLines(value, wrapped.lines, prefix.length + 1, child);
+    // A comment goes after an entry's first line, which would end a plain scalar spread over
+    // lines there, and be read as part of a quoted one.
+    if (wrapped !== undefined && wrapped.style !== ">" && !layout.after.has(pointer)) {
+      const lines =
+        wrapped.style === "plain"
+          ? plainLines(value, wrapped.lines, prefix.length + 1, child)
+          : quotedLines(value, wrapped.lines, wrapped.style, prefix.length + 1, child);
       if (lines !== undefined) {
         const [first, ...rest] = lines;
         return [`${prefix} ${first}`, ...rest.map((line) => (line === "" ? "" : `${" ".repeat(child)}${line}`))];
@@ -303,6 +308,43 @@ function plainLines(text: string, wrapped: readonly string[], start: number, ind
   const extended = [...wrapped.slice(0, -1), ...wrapWords(wrapped[wrapped.length - 1] ?? "", sentence, width)];
   if (plainReadsAs(extended, text)) return extended;
   const appended = [...wrapped.slice(0, -1), `${wrapped[wrapped.length - 1] ?? ""} ${sentence}`];
+  return plainReadsAs(appended, text) ? appended : undefined;
+}
+
+/**
+ * A string as the quoted scalar a file spread over lines, on the lines the file wrapped it on,
+ * spelled as the file spelled them: the same lines for the same string, and for one a fix added
+ * a sentence to, those lines with the sentence before the closing quote, escaped for the quotes
+ * the file used and wrapped where the file's longest line ends. A string that ends in white space,
+ * as one does when its closing quote sits on a line of its own, may have had that white space
+ * trimmed before the sentence was added, as a fix does, and then the lines that held only it go.
+ * Undefined for any other string, and for one those lines would not read back as.
+ */
+function quotedLines(text: string, wrapped: readonly string[], mark: '"' | "'", start: number, indent: number): string[] | undefined {
+  const last = wrapped[wrapped.length - 1] ?? "";
+  if (wrapped.length < 2 || !wrapped[0]?.startsWith(mark) || !last.endsWith(mark)) return undefined;
+  if (plainReadsAs(wrapped, text)) return [...wrapped];
+  const before = plainValue(wrapped);
+  if (before === undefined) return undefined;
+  // A fix trims a description before it adds its sentence, which takes off the space the line
+  // break before a closing quote on a line of its own folds into, and any spaces before the quote.
+  const kept = text.startsWith(`${before} `) ? before : before.trimEnd();
+  if (kept === "" || !text.startsWith(`${kept} `)) return undefined;
+  const added = text.slice(kept.length + 1);
+  const sentence = mark === '"' ? quote(added).slice(1, -1) : added.replaceAll("'", "''");
+  const width = Math.max(...wrapped.map((line, index) => (index === 0 ? start : indent) + line.length)) - indent;
+  // The lines up to the closing quote, without what the trimmed string no longer holds: a line
+  // that held nothing but the quote, the empty lines above it, and the spaces that end the last.
+  const body = [...wrapped.slice(0, -1), last.slice(0, -1)];
+  if (kept !== before) {
+    while (body.length > 1 && body[body.length - 1]!.trim() === "") body.pop();
+    body[body.length - 1] = body[body.length - 1]!.trimEnd();
+  }
+  const open = body[body.length - 1]!;
+  const lines = wrapWords(open, sentence, width);
+  const extended = [...body.slice(0, -1), ...lines.slice(0, -1), `${lines[lines.length - 1] ?? ""}${mark}`];
+  if (plainReadsAs(extended, text)) return extended;
+  const appended = [...body.slice(0, -1), `${open === "" ? "" : `${open} `}${sentence}${mark}`];
   return plainReadsAs(appended, text) ? appended : undefined;
 }
 

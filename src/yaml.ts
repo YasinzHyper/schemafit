@@ -180,7 +180,7 @@ export interface YamlLayout {
    */
   indentSequences: boolean;
   /**
-   * Every folded block scalar (`>`) and every plain scalar spread over lines of the document,
+   * Every folded block scalar (`>`) and every plain or quoted scalar spread over lines of the document,
    * with the lines the file wrapped it on.
    */
   folds: YamlFold[];
@@ -188,17 +188,20 @@ export interface YamlLayout {
 
 /**
  * A string the file wrapped over lines that reads as one string however it is wrapped — a folded
- * block scalar (`>`) or a plain scalar continued on the lines below its key — and the lines it
+ * block scalar (`>`), a plain scalar continued on the lines below its key, or a quoted scalar
+ * continued on the lines before its closing quote — and the lines it
  * was written on, so a rewrite can wrap it the same way instead of putting it on one line.
  */
 export interface YamlFold {
   /** The JSON Pointer of the string. */
   pointer: string;
-  /** How the file wrote it: as a `>` block, or as a plain scalar. */
-  style: ">" | "plain";
+  /** How the file wrote it: as a `>` block, as a plain scalar, or between double or single quotes. */
+  style: ">" | "plain" | '"' | "'";
   /**
    * Its lines of content: for a `>` block, past the block's indentation, without the empty lines
-   * chomping drops; for a plain scalar, without their indentation, from the line it starts on.
+   * chomping drops; for a plain scalar, without their indentation, from the line it starts on;
+   * for a quoted scalar, as the file spelled them, escapes and all, from the opening quote to
+   * the closing one, each without its indentation.
    */
   lines: string[];
 }
@@ -543,7 +546,15 @@ function parseQuotedOnLines(state: State, line: Line, text: string, minIndent: n
     // The value with the trailing spaces `text` gave up, which an escape before them may need.
     const written = line.raw.slice(line.raw.trimEnd().length - text.length);
     const scanner: Scanner = { text: written, pos: 0, line };
+    const below = state.index;
     value = readQuoted(scanner, { state, minIndent, opened: line });
+    if (scanner.line !== line) {
+      // Recorded off the raw text, since an escape or a run of spaces inside the quotes is a
+      // character of the string, which the folded value alone cannot give back.
+      const middle = state.lines.slice(below, state.index - 1).map((next) => next.raw.replace(/^[ \t]+/, "").replace(/^[ \t]*$/, ""));
+      const lines = [written, ...middle, scanner.text.slice(0, scanner.pos)];
+      state.folds.push({ pointer: state.at, style: written[0] === '"' ? '"' : "'", lines });
+    }
     const after = scanner.text.slice(scanner.pos);
     if (/^[ \t]+#/.test(after)) state.comments.set(scanner.line.n, after.trim());
     if (!/^([ \t]*|[ \t]+#.*)$/.test(after)) {
