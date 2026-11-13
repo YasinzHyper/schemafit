@@ -264,6 +264,8 @@ properties:
     expect(parseYaml('description: see [the "docs # a note\n')).toEqual({ description: 'see [the "docs' });
     expect(parseYaml('- say "hi # a note\n- - say "hi # a note\n')).toEqual(['say "hi', ['say "hi']]);
     expect(parseYaml('say "hi: there # a note\n')).toEqual({ 'say "hi': "there" });
+    // A node starts after a sequence item's dash, so a quote there opens a quoted scalar.
+    expect(parseYaml("- \"a # b\" # c\n- - 'd # e' # f\n")).toEqual(["a # b", ["d # e"]]);
   });
 
   it("reads a quote on a line that continues a plain scalar as a character, from the line's first one", () => {
