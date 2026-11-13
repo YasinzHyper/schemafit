@@ -256,6 +256,36 @@ properties:
     });
   });
 
+  it("reads a quote inside a plain scalar as a character, so a # after it still starts a comment", () => {
+    expect(parseYaml('description: say "hi # a note\n')).toEqual({ description: 'say "hi' });
+    expect(parseYaml("description: it's 'quoted # a note\n")).toEqual({ description: "it's 'quoted" });
+    // Outside a flow collection a comma or a bracket is a character of the scalar too.
+    expect(parseYaml('description: one, "two # a note\n')).toEqual({ description: 'one, "two' });
+    expect(parseYaml('description: see [the "docs # a note\n')).toEqual({ description: 'see [the "docs' });
+    expect(parseYaml('- say "hi # a note\n- - say "hi # a note\n')).toEqual(['say "hi', ['say "hi']]);
+    expect(parseYaml('say "hi: there # a note\n')).toEqual({ 'say "hi': "there" });
+    // A node starts after a sequence item's dash, so a quote there opens a quoted scalar.
+    expect(parseYaml("- \"a # b\" # c\n- - 'd # e' # f\n")).toEqual(["a # b", ["d # e"]]);
+  });
+
+  it("reads a quote on a line that continues a plain scalar as a character, from the line's first one", () => {
+    expect(parseYaml('description: say\n  it "loud # a note\n')).toEqual({ description: 'say it "loud' });
+    expect(parseYaml('description: say\n  "loud # a note\nb: 1\n')).toEqual({ description: 'say "loud', b: 1 });
+    expect(parseYaml("description: say\n  'loud # a note\n")).toEqual({ description: "say 'loud" });
+    // A quote that opens nothing closes nothing either.
+    expect(parseYaml('description: say "hi\n  there" # a note\n')).toEqual({ description: 'say "hi there"' });
+  });
+
+  it("reads a quote after a comma on a line that continues a flow collection as the start of a quoted scalar", () => {
+    expect(parseYaml('enum: [a,\n  b, "c # d"]\n')).toEqual({ enum: ["a", "b", "c # d"] });
+    expect(parseYaml("enum: [a,\n  b, 'c # d'] # e\n")).toEqual({ enum: ["a", "b", "c # d"] });
+    // JSON lets the value follow its key's colon with no space, and so does a flow mapping.
+    expect(parseYaml('items: {"a":"b # c",\n  "d":"e # f"}\n')).toEqual({ items: { a: "b # c", d: "e # f" } });
+    expect(parseYaml('items: {type: string,\n  enum: [a, "b # c"]} # d\n')).toEqual({
+      items: { type: "string", enum: ["a", "b # c"] },
+    });
+  });
+
   it("reads a literal block scalar", () => {
     expect(parseYaml("description: |\n  One.\n  Two.\n")).toEqual({ description: "One.\nTwo.\n" });
     expect(parseYaml("description: |-\n  One.\n  Two.\n")).toEqual({ description: "One.\nTwo." });
@@ -538,6 +568,21 @@ note: 'three
   # four'
 `);
     expect(comments).toEqual([5]);
+  });
+
+  it("attaches a comment after a plain scalar that holds an unclosed quote to the scalar's entry", () => {
+    const { value, attached } = readYaml(`one: say "hi # the first
+two: say
+  it "loud # the second
+three:
+  - see [the "docs # the third
+`);
+    expect(value).toEqual({ one: 'say "hi', two: 'say it "loud', three: ['see [the "docs'] });
+    expect(attached).toEqual([
+      { line: 1, text: "# the first", pointer: "/one", trailing: true },
+      { line: 3, text: "# the second", pointer: "/two", trailing: true },
+      { line: 5, text: "# the third", pointer: "/three/0", trailing: true },
+    ]);
   });
 
   it("finds no comment in a document without one", () => {

@@ -306,35 +306,87 @@ function tokenize(text: string): Line[] {
     if (raw.slice(0, indent).includes("\t")) {
       throw new YamlError(n, "a tab in the indentation; YAML indents with spaces only");
     }
-    const content = raw.slice(indent);
-    const text = stripComment(content);
-    const comment = text !== content.trimEnd();
-    return { n, raw, indent, text, comment, remark: comment || text === "" ? content.slice(text.length).trim() : "" };
+    return { n, raw, indent, ...uncomment(raw.slice(indent), "node") };
   });
 }
 
 /**
- * The content of a line without its trailing comment. A `#` counts as one where YAML says it
- * does: at the start, or after a space, and outside a quoted scalar. A quote only opens a
- * scalar where one can start — at the beginning, or after a space or a flow punctuation mark —
- * so the apostrophe in `title: the user's name # a comment` is a character of the scalar and
- * leaves the comment a comment. The `''` a single-quoted scalar spells a quote with leaves that
- * scalar open, the way `readSingleQuoted` reads it, so the `#` in `title: 'don''t # here'` is a
- * character of the string rather than the start of a comment.
+ * Where a line starts, which `tokenize` cannot know and the parser can: at a node of its own, on
+ * a plain scalar the line above it began, or between the entries of a flow collection opened
+ * above it.
  */
-function stripComment(content: string): string {
+type LineStart = "node" | "plain" | "flow";
+
+/** A line's content without its trailing comment, and the comment, read from `start`. */
+function uncomment(content: string, start: LineStart): Pick<Line, "text" | "comment" | "remark"> {
+  const text = stripComment(content, start);
+  const comment = text !== content.trimEnd();
+  return { text, comment, remark: comment || text === "" ? content.slice(text.length).trim() : "" };
+}
+
+/**
+ * Reads a line `tokenize` took for one starting a node again, now the parser knows it continues
+ * a plain scalar or a flow collection, and puts it back where `readYaml` collects the comments.
+ */
+function reread(state: State, line: Line, start: "plain" | "flow"): Line {
+  const again = { ...line, ...uncomment(line.raw.slice(line.indent), start) };
+  state.lines[line.n - 1] = again;
+  return again;
+}
+
+/**
+ * The content of a line without its trailing comment. A `#` counts as one where YAML says it
+ * does: at the start, or after a space, and outside a quoted scalar. A quote opens a quoted
+ * scalar only where a node starts — at the start of the line, after the dash of a sequence item
+ * or the colon of a key, or after the bracket or comma of a flow collection — and anywhere else
+ * it is a character like any other, which is how YAML 1.2 reads a plain scalar (production 130,
+ * `ns-plain-char(c)`): the quote in `description: say "hi # a note` opens nothing, and the `#`
+ * after it starts a comment, as does the one after the apostrophe in `title: the user's name #
+ * a comment`. Outside a flow collection a comma or a bracket is a character of a plain scalar
+ * too (production 128, `ns-plain-safe-out`, against 129, `ns-plain-safe-in`), so the quotes in
+ * `one, "two` and `see [the "docs` open nothing either. The `''` a single-quoted
+ * scalar spells a quote with leaves that scalar open, the way `readSingleQuoted` reads it, so the
+ * `#` in `title: 'don''t # here'` is a character of the string rather than the start of a
+ * comment.
+ *
+ * A line that continues a plain scalar is on that scalar from its first character, so a quote
+ * at its start opens nothing either, and one that continues a flow collection is inside it to
+ * its end, so a comma there ends a plain scalar and a quote after it opens one.
+ */
+function stripComment(content: string, start: LineStart): string {
+  // Where a node may start, inside a plain scalar, or past a quoted scalar or collection that closed.
+  let at: "node" | "plain" | "after" = start === "plain" ? "plain" : "node";
+  let depth = start === "flow" ? Infinity : 0;
   let quote: string | undefined;
   for (let i = 0; i < content.length; i += 1) {
-    const char = content[i];
+    const char = content[i] ?? "";
     if (quote !== undefined) {
       if (char === "\\" && quote === '"') i += 1;
       // `''` is one quote inside the scalar, not the end of it and the start of another.
       else if (char === "'" && quote === "'" && content[i + 1] === "'") i += 1;
-      else if (char === quote) quote = undefined;
+      else if (char === quote) {
+        quote = undefined;
+        at = "after";
+      }
       continue;
     }
-    if ((char === '"' || char === "'") && (i === 0 || " ,[{".includes(content[i - 1] ?? ""))) quote = char;
-    else if (char === "#" && (i === 0 || content[i - 1] === " ")) return content.slice(0, i).trimEnd();
+    if (char === "#" && (i === 0 || content[i - 1] === " ")) return content.slice(0, i).trimEnd();
+    if (char === " ") continue;
+    const next = content[i + 1];
+    const inFlow = depth > 0;
+    if (inFlow && char === ",") at = "node";
+    else if (inFlow && (char === "]" || char === "}")) {
+      depth -= 1;
+      at = "after";
+    }
+    // The colon of a key, which a flow collection lets follow a quoted key with no space.
+    else if (char === ":" && (next === undefined || next === " " || (inFlow && at === "after"))) at = "node";
+    else if (at !== "node") at = "plain";
+    else if (char === '"' || char === "'") quote = char;
+    else if (char === "[" || char === "{") depth += 1;
+    // The dash of a sequence item, after which a node starts again.
+    else if (!inFlow && char === "-" && (next === undefined || next === " ")) continue;
+    else at = "plain";
   }
   return content.trimEnd();
 }
@@ -492,7 +544,7 @@ function parseValueOnLine(state: State, line: Line, rest: string, indent: number
 function parseScalarOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   if (text.startsWith('"') || text.startsWith("'")) return parseQuotedOnLines(state, line, text, minIndent);
   if (text.startsWith("[") || text.startsWith("{")) return parseFlowOnLines(state, line, text, minIndent);
-  const continuation = takeContinuation(state, minIndent);
+  const continuation = takeContinuation(state, minIndent).map((next) => reread(state, next, "plain"));
   if (continuation[0] === undefined) return parseInline(text, line);
   const value = resolvePlain(foldPlain(line, text, continuation), line);
   if (typeof value === "string") {
@@ -1033,9 +1085,10 @@ function skipSeparation(scanner: Scanner): void {
       );
     }
     state.index += 1;
-    scanner.text = next.text;
+    const inside = reread(state, next, "flow");
+    scanner.text = inside.text;
     scanner.pos = 0;
-    scanner.line = next;
+    scanner.line = inside;
   }
 }
 

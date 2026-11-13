@@ -381,13 +381,17 @@ sort:
   it.each([
     ["spread over lines", [{ pointer: "/d", style: "plain" as const, lines: ["one", 'say "hi'] }], 'd: one\n  say "hi\n'],
     ["on one line", [], 'd: one say "hi\n'],
-  ])("puts a comment above a plain scalar %s that would read it as part of the string", (_, folds, entry) => {
-    // The reader takes a quote after a space for the start of a quoted scalar, and a "#" after it for one of its characters.
+  ])("keeps a comment after a plain scalar %s that holds an unclosed quote", (_, folds, entry) => {
+    // A quote in the middle of a plain scalar opens nothing, so the "#" after it starts a comment.
     const d = 'one say "hi';
     const comments = [{ line: 2, text: "# a note", pointer: "/d", trailing: true }];
     const written = stringifyYaml({ d }, comments, [], { folds });
-    expect(written).toBe(`# a note\n${entry}`);
-    expect(readYaml(written).attached).toEqual([{ line: 1, text: "# a note", pointer: "/d", trailing: false }]);
+    expect(written).toBe(`${entry.slice(0, -1)} # a note\n`);
+    const lines = entry.split("\n").length - 1;
+    expect(readYaml(written)).toMatchObject({
+      value: { d },
+      attached: [{ line: lines, text: "# a note", pointer: "/d", trailing: true }],
+    });
   });
 
   it("writes a quoted scalar spread over lines back on the lines the file wrapped it on, escapes and all", () => {
