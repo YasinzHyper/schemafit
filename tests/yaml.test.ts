@@ -652,19 +652,55 @@ last: 1
   });
 
   it.each([
-    ["at the key's indentation", "required:\n- a\n- b\n", false],
-    ["indented past the key", "required:\n  - a\n", true],
-    ["first, over a later one written the other way", "a:\n- 1\nb:\n  - 2\n", false],
-    ["first, nested in a sequence item", "- anyOf:\n  - type: string\n", false],
-  ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences, folds: [] });
+    ["at the key's indentation", "required:\n- a\n- b\n", false, [{ pointer: "/required", indented: false }]],
+    ["indented past the key", "required:\n  - a\n", true, [{ pointer: "/required", indented: true }]],
+    [
+      "first, over a later one written the other way",
+      "a:\n- 1\nb:\n  - 2\n",
+      false,
+      [
+        { pointer: "/a", indented: false },
+        { pointer: "/b", indented: true },
+      ],
+    ],
+    [
+      "first, nested in a sequence item",
+      "- anyOf:\n  - type: string\n",
+      false,
+      [{ pointer: "" }, { pointer: "/0/anyOf", indented: false }],
+    ],
+  ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences, sequences) => {
+    expect(readYaml(text).layout).toEqual({ indentSequences, sequences, folds: [] });
   });
 
   it.each([
-    ["no sequence", "type: object\n"],
-    ["only a root sequence and one in a sequence item", "- - a\n"],
-    ["only flow sequences", "required: [a, b]\n"],
-  ])("takes a file with %s for one that indents its sequences", (_, text) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences: true, folds: [] });
+    ["no sequence", "type: object\n", []],
+    ["only a root sequence and one in a sequence item", "- - a\n", [{ pointer: "" }, { pointer: "/0" }]],
+    ["only flow sequences", "required: [a, b]\n", []],
+  ])("takes a file with %s for one that indents its sequences", (_, text, sequences) => {
+    expect(readYaml(text).layout).toEqual({ indentSequences: true, sequences, folds: [] });
+  });
+
+  it("records the indentation of every sequence under a key, where a file writes them both ways", () => {
+    const text = `properties:
+  tags:
+    type: array
+    items:
+      enum:
+        - a
+        - b
+    examples:
+    - [a]
+    -
+      - b
+required:
+- tags
+`;
+    expect(readYaml(text).layout.sequences).toEqual([
+      { pointer: "/properties/tags/items/enum", indented: true },
+      { pointer: "/properties/tags/examples", indented: false },
+      { pointer: "/properties/tags/examples/1" },
+      { pointer: "/required", indented: false },
+    ]);
   });
 });

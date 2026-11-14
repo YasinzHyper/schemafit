@@ -731,6 +731,56 @@ additionalProperties: false
     expect((await cli(["-p", "openai", file])).code).toBe(0);
   });
 
+  it("--fix --write keeps each sequence of a YAML file as the file wrote it, where it writes them both ways", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+required:
+- status
+properties:
+  status:
+    oneOf:
+      - const: open
+      - const: closed
+  tags:
+    type: array
+    items: {type: string}
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The oneOf the rename makes an anyOf keeps its own indentation, not the one of the file's
+    // first sequence, and the required list it extends stays one key to a line.
+    expect(await readFile(file, "utf8")).toBe(`type: object
+required:
+- status
+- tags
+properties:
+  status:
+    anyOf:
+      - const: open
+      - const: closed
+  tags:
+    type: [array, "null"]
+    items:
+      type: string
+additionalProperties: false
+`);
+  });
+
+  it("--fix --write leaves the required lists of examples/agent-tools.yaml as the file writes them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "agent-tools.yaml");
+    await writeFile(file, await readFile(example("agent-tools.yaml"), "utf8"));
+
+    expect((await cli(["--fix", "--write", file])).code).toBe(0);
+    const written = await readFile(file, "utf8");
+    expect(written).toContain("    required:\n    - title\n    - priority\n    - assignee\n    additionalProperties: false\n");
+    expect(written).toContain("    required:\n      - query\n      - status\n      - limit\n    additionalProperties: false\n");
+  });
+
   it("--fix --write keeps the comments of a YAML file on the entries they belong to", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");

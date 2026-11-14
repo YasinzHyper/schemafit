@@ -59,6 +59,8 @@ interface State {
   at: string;
   /** How the first block sequence under a key is indented, once one has been read. */
   indentSequences?: boolean;
+  /** The block sequences read so far, by their JSON Pointers. */
+  sequences: Map<string, YamlSequence>;
   /** The folded block scalars read so far, with the lines each one was written on. */
   folds: YamlFold[];
 }
@@ -177,16 +179,36 @@ export interface YamlBlank {
 export interface YamlLayout {
   /**
    * Whether a block sequence under a key is indented past the key (`required:` over
-   * `  - title`) rather than at the key's own indentation (`required:` over `- title`). Both
-   * are YAML, and a file is written in one or the other, so the first such sequence decides.
-   * True for a file that holds none, which is how the writer indents one by default.
+   * `  - title`) rather than at the key's own indentation (`required:` over `- title`), for a
+   * sequence the document does not hold, such as one a fix adds. Both are YAML, and the
+   * document's first such sequence decides. True for a document that holds none, which is how
+   * the writer indents one by default.
    */
   indentSequences: boolean;
+  /**
+   * Every block sequence of the document, each with its own indentation, so a rewrite keeps a
+   * list of scalars written over lines on those lines rather than on one in flow style, and
+   * indents each sequence the way the file indented that one, where a file mixes the two ways.
+   */
+  sequences: YamlSequence[];
   /**
    * Every folded block scalar (`>`) and every plain or quoted scalar spread over lines of the document,
    * with the lines the file wrapped it on.
    */
   folds: YamlFold[];
+}
+
+/** A sequence a YAML document writes in block style, one item to a line after a dash. */
+export interface YamlSequence {
+  /** The JSON Pointer of the sequence. */
+  pointer: string;
+  /**
+   * For the value of a key, whether its items are indented past the key (`required:` over
+   * `  - title`) rather than at the key's own indentation (`required:` over `- title`). Absent
+   * for a sequence that is no key's value, the document itself or a sequence item, whose
+   * indentation follows from what holds it.
+   */
+  indented?: boolean;
 }
 
 /**
@@ -213,9 +235,10 @@ export interface YamlFold {
  * Reads a YAML document into the value it describes, together with its comments and its empty
  * lines, which the value has no room for: a rewrite written from the value alone would drop
  * them. `comments` names the lines of the comments, `attached` says where each one belongs, and
- * `blanks` where each empty line between two entries does, and `layout` how its sequences are
- * indented. A `#` inside a block scalar or a quoted scalar is a character of the string, not a
- * comment, and an empty line inside a scalar or a flow collection is part of it.
+ * `blanks` where each empty line between two entries does, and `layout` which of its sequences
+ * are written in block style and how each is indented, and how it wrapped its strings. A `#`
+ * inside a block scalar or a quoted scalar is a character of the string, not a comment, and an
+ * empty line inside a scalar or a flow collection is part of it.
  */
 export function readYaml(text: string): {
   value: unknown;
@@ -231,6 +254,7 @@ export function readYaml(text: string): {
     comments: new Map(),
     entries: new Map(),
     at: "",
+    sequences: new Map(),
     folds: [],
   };
   const value = parseDocument(state);
@@ -249,7 +273,7 @@ export function readYaml(text: string): {
     const below = starts.find((line) => line > n);
     return [{ line: n, pointer: below === undefined ? null : (state.entries.get(below) ?? null) }];
   });
-  const layout = { indentSequences: state.indentSequences ?? true, folds: state.folds };
+  const layout = { indentSequences: state.indentSequences ?? true, sequences: [...state.sequences.values()], folds: state.folds };
   return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks, layout };
 }
 
@@ -510,6 +534,7 @@ function parseNodeBelow(state: State, indent: number): unknown {
     return parseBlockIndentedBelow(state, indent);
   }
   state.indentSequences ??= next.indent > indent;
+  state.sequences.set(state.at, { pointer: state.at, indented: next.indent > indent });
   return next.indent === indent ? parseSequence(state, indent, true) : parseBlockIndentedBelow(state, indent);
 }
 
@@ -727,6 +752,8 @@ function rejectPlainColon(line: Line, text: string): void {
  * `atKeyIndent` is false: no mapping can own such a line there, so it stays an error naming it.
  */
 function parseSequence(state: State, indent: number, atKeyIndent: boolean): unknown[] {
+  // A key's value was recorded with its indentation before it was read.
+  if (!state.sequences.has(state.at)) state.sequences.set(state.at, { pointer: state.at });
   const items: unknown[] = [];
   for (;;) {
     const line = peek(state);

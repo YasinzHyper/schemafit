@@ -136,8 +136,69 @@ items:
 - x: 1
 tags: []
 `);
-    expect(readYaml(text).layout).toEqual({ indentSequences: false, folds: [] });
+    expect(readYaml(text).layout).toEqual({
+      indentSequences: false,
+      sequences: [
+        { pointer: "/anyOf", indented: false },
+        { pointer: "/anyOf/1/properties/a/anyOf", indented: false },
+        { pointer: "/items", indented: false },
+      ],
+      folds: [],
+    });
     expect(stringifyYaml(value, comments)).toBe(stringifyYaml(value, comments, [], { indentSequences: true }));
+  });
+
+  it("indents each sequence the way the file indented it, where the file writes them both ways", () => {
+    const text = `type: object
+properties:
+  status:
+    enum:
+      - open
+      - closed
+  tags:
+    anyOf:
+    - type: string
+    - type: "null"
+required:
+- status
+- tags
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("keeps a list of scalars the file wrote one item to a line on its lines, as it grows", () => {
+    const { layout } = readYaml("required:\n  - query\nenum: [a, b]\n");
+    const value = { required: ["query", "status", "limit"], enum: ["a", "b", "c"], type: ["integer", "null"] };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`required:
+  - query
+  - status
+  - limit
+enum: [a, b, c]
+type: [integer, "null"]
+`);
+  });
+
+  it("gives a sequence the file did not hold the indentation of its first one", () => {
+    const { layout } = readYaml("a:\n- x: 1\nb:\n  - x: 2\n");
+    expect(stringifyYaml({ a: [{ x: 1 }], b: [{ x: 2 }], c: [{ x: 3 }] }, [], [], layout)).toBe(`a:
+- x: 1
+b:
+  - x: 2
+c:
+- x: 3
+`);
+  });
+
+  it("keeps a list of scalars a sequence item holds over lines on its lines", () => {
+    const text = "examples:\n  - - a\n    - b\n  - [c]\n";
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("writes a value as it would any other where the sequence the file held there is gone", () => {
+    const { layout } = readYaml("type:\n  - string\n  - 'null'\n");
+    expect(stringifyYaml({ type: "string" }, [], [], layout)).toBe("type: string\n");
   });
 
   it("starts a sequence item's first key on the dash's line when that key holds a sequence at its indentation", () => {

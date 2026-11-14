@@ -3,10 +3,12 @@
  * back into it.
  *
  * It writes block mappings and block sequences indented by two spaces, a sequence under a key
- * at the key's own indentation instead when the file it came from wrote it there, a list of
- * scalars that fits on its line in flow style (`type: [string, "null"]`), `{}` and `[]` for the
- * empty collections, a folded block scalar (`>`) for a string the file wrapped in one, a plain
- * scalar continued on the lines below its key for one the file wrapped that way, and a quoted
+ * at the key's own indentation instead when the file it came from wrote that sequence there,
+ * or wrote its first one there for a sequence the file did not hold, a list of scalars that
+ * fits on its line in flow style (`type: [string, "null"]`) unless the file wrote it one item
+ * to a line, `{}` and `[]` for the empty collections, a folded block scalar (`>`) for a string
+ * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
+ * wrapped that way, and a quoted
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
@@ -22,7 +24,15 @@
  */
 
 import { joinPointer } from "./pointer.js";
-import { type YamlBlank, type YamlComment, type YamlFold, type YamlLayout, parseYaml, readYaml } from "./yaml.js";
+import {
+  type YamlBlank,
+  type YamlComment,
+  type YamlFold,
+  type YamlLayout,
+  type YamlSequence,
+  parseYaml,
+  readYaml,
+} from "./yaml.js";
 
 const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
@@ -45,7 +55,10 @@ const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
 interface Layout {
   above: Map<string, string[]>;
   after: Map<string, string>;
+  /** How to indent a sequence under a key that `sequences` does not name. */
   indentSequences: boolean;
+  /** The sequences the file wrote in block style, by their pointers. */
+  sequences: Map<string, YamlSequence>;
   /** How each string the file wrapped over lines was written, by the pointer of the string. */
   folds: Map<string, YamlFold>;
 }
@@ -84,6 +97,7 @@ export function stringifyYaml(
     above: new Map(),
     after: new Map(),
     indentSequences: layout.indentSequences ?? true,
+    sequences: new Map((layout.sequences ?? []).map((sequence) => [sequence.pointer, sequence])),
     folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
   };
   const end: string[] = [];
@@ -189,13 +203,16 @@ function isLayout(line: string): boolean {
 function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): Written {
   const child = indent + INDENT;
   // A flow list has no line of its own for a comment on one of its items, or an empty line
-  // between two, and puts an item the file wrapped over lines on one.
-  const flow = commentsWithin(pointer, layout) || foldsWithin(pointer, layout) ? undefined : flowList(value);
+  // between two, and puts an item the file wrapped over lines on one. A list the file wrote one
+  // item to a line stays that way.
+  const lined = layout.sequences.has(pointer) || commentsWithin(pointer, layout) || foldsWithin(pointer, layout);
+  const flow = lined ? undefined : flowList(value);
   if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return { lines: [`${prefix} ${flow}`], trail: 0 };
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
     // A sequence under a key may sit at the key's own indentation, where its dashes count as
     // the indentation the items need.
-    const compact = !dash && Array.isArray(value) && !layout.indentSequences;
+    const indented = layout.sequences.get(pointer)?.indented ?? layout.indentSequences;
+    const compact = !dash && Array.isArray(value) && !indented;
     const { lines, trail } = block(value, compact ? indent : child, pointer, layout);
     // A collection in a sequence item starts on the dash's line, which YAML reads at the
     // column of its first character; under a key it starts on the line below.
