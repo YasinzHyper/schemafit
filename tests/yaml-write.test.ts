@@ -143,6 +143,7 @@ tags: []
         { pointer: "/anyOf/1/properties/a/anyOf", indented: false },
         { pointer: "/items", indented: false },
       ],
+      blockLists: false,
       folds: [],
     });
     expect(stringifyYaml(value, comments)).toBe(stringifyYaml(value, comments, [], { indentSequences: true }));
@@ -194,6 +195,54 @@ c:
     const text = "examples:\n  - - a\n    - b\n  - [c]\n";
     const { value, layout } = readYaml(text);
     expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("writes a list of scalars the file did not hold one item to a line, where the file writes every list that way", () => {
+    // What PyYAML's safe_dump writes with default_flow_style=False: keys sorted, and every
+    // sequence at the indentation of its key.
+    const { layout } = readYaml(`properties:
+  limit:
+    type: integer
+  query:
+    type: string
+required:
+- query
+type: object
+`);
+    const value = {
+      properties: { limit: { type: ["integer", "null"] }, query: { type: "string" }, tags: { type: "array", examples: [["a", "b"]] } },
+      required: ["query", "limit"],
+      type: "object",
+    };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`properties:
+  limit:
+    type:
+    - integer
+    - "null"
+  query:
+    type: string
+  tags:
+    type: array
+    examples:
+    - - a
+      - b
+required:
+- query
+- limit
+type: object
+`);
+  });
+
+  it("writes a list of scalars the file did not hold in flow style, where the file writes a collection that way", () => {
+    const { layout } = readYaml("required:\n- query\nitems: {type: string}\n");
+    const value = { required: ["query", "limit"], items: { type: "string" }, type: ["integer", "null"] };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`required:
+- query
+- limit
+items:
+  type: string
+type: [integer, "null"]
+`);
   });
 
   it("writes a value as it would any other where the sequence the file held there is gone", () => {

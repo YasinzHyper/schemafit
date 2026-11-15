@@ -770,6 +770,50 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write writes the lists a fix adds one item to a line, where a YAML file writes every list that way", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=False) writes.
+    await writeFile(
+      file,
+      `properties:
+  limit:
+    description: How many tickets to return.
+    type: integer
+  status:
+    enum:
+    - open
+    - closed
+    type: string
+required:
+- status
+type: object
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The type list that makes limit nullable has no style of its own in the file, so it takes the
+    // one every list of the file has, at its key's indentation like the others.
+    expect(await readFile(file, "utf8")).toBe(`properties:
+  limit:
+    description: How many tickets to return.
+    type:
+    - integer
+    - "null"
+  status:
+    enum:
+    - open
+    - closed
+    type: string
+required:
+- status
+- limit
+type: object
+additionalProperties: false
+`);
+    expect((await cli(["-p", "openai", file])).code).toBe(0);
+  });
+
   it("--fix --write leaves the required lists of examples/agent-tools.yaml as the file writes them", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "agent-tools.yaml");
