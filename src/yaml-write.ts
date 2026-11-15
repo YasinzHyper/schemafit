@@ -6,7 +6,8 @@
  * at the key's own indentation instead when the file it came from wrote that sequence there,
  * or wrote its first one there for a sequence the file did not hold, a list of scalars that
  * fits on its line in flow style (`type: [string, "null"]`) unless the file wrote it one item
- * to a line, `{}` and `[]` for the empty collections, a folded block scalar (`>`) for a string
+ * to a line, or writes every collection in block style, `{}` and `[]` for the empty
+ * collections, a folded block scalar (`>`) for a string
  * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
  * wrapped that way, and a quoted
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
@@ -59,6 +60,8 @@ interface Layout {
   indentSequences: boolean;
   /** The sequences the file wrote in block style, by their pointers. */
   sequences: Map<string, YamlSequence>;
+  /** Whether a list of scalars `sequences` does not name is written one item to a line too. */
+  blockLists: boolean;
   /** How each string the file wrapped over lines was written, by the pointer of the string. */
   folds: Map<string, YamlFold>;
 }
@@ -77,7 +80,8 @@ interface Written {
 /**
  * Writes a JSON value as YAML, with the `comments` and the empty lines (`blanks`) given, which
  * `readYaml` reads off a file as `attached` and `blanks`, and its sequences indented as the
- * `layout` `readYaml` reads off a file says, and the strings it names as folded, or as plain or
+ * `layout` `readYaml` reads off a file says, its lists of scalars one item to a line where that
+ * layout says the file writes them all that way, and the strings it names as folded, or as plain or
  * quoted scalars spread over lines, wrapped on the lines the file wrapped them on, where the string still
  * reads that way. An empty line with no
  * entry below it is left out, since nothing follows it to keep apart. Throws a `TypeError` for a value JSON cannot hold
@@ -98,6 +102,7 @@ export function stringifyYaml(
     after: new Map(),
     indentSequences: layout.indentSequences ?? true,
     sequences: new Map((layout.sequences ?? []).map((sequence) => [sequence.pointer, sequence])),
+    blockLists: layout.blockLists ?? false,
     folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
   };
   const end: string[] = [];
@@ -204,8 +209,9 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
   const child = indent + INDENT;
   // A flow list has no line of its own for a comment on one of its items, or an empty line
   // between two, and puts an item the file wrapped over lines on one. A list the file wrote one
-  // item to a line stays that way.
-  const lined = layout.sequences.has(pointer) || commentsWithin(pointer, layout) || foldsWithin(pointer, layout);
+  // item to a line stays that way, and in a file that writes every collection in block style,
+  // so does one it did not hold.
+  const lined = layout.blockLists || layout.sequences.has(pointer) || commentsWithin(pointer, layout) || foldsWithin(pointer, layout);
   const flow = lined ? undefined : flowList(value);
   if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return { lines: [`${prefix} ${flow}`], trail: 0 };
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {

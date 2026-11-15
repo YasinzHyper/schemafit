@@ -652,8 +652,8 @@ last: 1
   });
 
   it.each([
-    ["at the key's indentation", "required:\n- a\n- b\n", false, [{ pointer: "/required", indented: false }]],
-    ["indented past the key", "required:\n  - a\n", true, [{ pointer: "/required", indented: true }]],
+    ["at the key's indentation", "required:\n- a\n- b\n", false, [{ pointer: "/required", indented: false }], true],
+    ["indented past the key", "required:\n  - a\n", true, [{ pointer: "/required", indented: true }], true],
     [
       "first, over a later one written the other way",
       "a:\n- 1\nb:\n  - 2\n",
@@ -662,23 +662,43 @@ last: 1
         { pointer: "/a", indented: false },
         { pointer: "/b", indented: true },
       ],
+      true,
     ],
     [
       "first, nested in a sequence item",
       "- anyOf:\n  - type: string\n",
       false,
       [{ pointer: "" }, { pointer: "/0/anyOf", indented: false }],
+      false,
     ],
-  ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences, sequences) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences, sequences, folds: [] });
+  ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences, sequences, blockLists) => {
+    expect(readYaml(text).layout).toEqual({ indentSequences, sequences, blockLists, folds: [] });
   });
 
   it.each([
-    ["no sequence", "type: object\n", []],
-    ["only a root sequence and one in a sequence item", "- - a\n", [{ pointer: "" }, { pointer: "/0" }]],
-    ["only flow sequences", "required: [a, b]\n", []],
-  ])("takes a file with %s for one that indents its sequences", (_, text, sequences) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences: true, sequences, folds: [] });
+    ["no sequence", "type: object\n", [], false],
+    ["only a root sequence and one in a sequence item", "- - a\n", [{ pointer: "" }, { pointer: "/0" }], true],
+    ["only flow sequences", "required: [a, b]\n", [], false],
+  ])("takes a file with %s for one that indents its sequences", (_, text, sequences, blockLists) => {
+    expect(readYaml(text).layout).toEqual({ indentSequences: true, sequences, blockLists, folds: [] });
+  });
+
+  it.each([
+    ["writes every list one item to a line", "required:\n- a\nproperties:\n  a:\n    enum:\n      - x\n      - 1\n", true],
+    ["holds a list of scalars only in a sequence item", "anyOf:\n- - a\n  - b\n", true],
+    ["holds nothing but empty flow collections besides", "required:\n- a\nproperties: {}\nexamples: []\n", true],
+  ])("reads a file that %s as one that writes its lists in block style", (_, text, blockLists) => {
+    expect(readYaml(text).layout.blockLists).toBe(blockLists);
+  });
+
+  it.each([
+    ["a flow sequence", 'required:\n- a\ntype: [string, "null"]\n'],
+    ["a flow sequence over lines", 'required:\n- a\ntype: [string,\n  "null"]\n'],
+    ["a flow mapping", "required:\n- a\nitems: {type: string}\n"],
+    ["a flow sequence nested in a block one", "examples:\n- [a]\n- - b\n"],
+    ["no list of scalars", "anyOf:\n- type: string\n- type: \"null\"\n"],
+  ])("does not read a file with %s as one that writes its lists in block style", (_, text) => {
+    expect(readYaml(text).layout.blockLists).toBe(false);
   });
 
   it("records the indentation of every sequence under a key, where a file writes them both ways", () => {

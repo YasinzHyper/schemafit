@@ -61,6 +61,8 @@ interface State {
   indentSequences?: boolean;
   /** The block sequences read so far, by their JSON Pointers. */
   sequences: Map<string, YamlSequence>;
+  /** Whether a flow collection with something in it has been read, which no block-only file holds. */
+  flow: boolean;
   /** The folded block scalars read so far, with the lines each one was written on. */
   folds: YamlFold[];
 }
@@ -192,6 +194,16 @@ export interface YamlLayout {
    */
   sequences: YamlSequence[];
   /**
+   * Whether a list of scalars the document does not hold, such as the `type: [integer, "null"]`
+   * a fix makes of a `type: integer`, is written in block style, one item to a line, rather than
+   * in flow style. True for a document that holds a list of scalars and writes every collection
+   * in block style, as PyYAML's `default_flow_style=False` does. One flow collection with
+   * something in it, a `[string, "null"]` or an `{type: string}`, makes it false, since the file
+   * then writes short collections on one line, and so does a document with no list of scalars
+   * to go by. An empty `[]` or `{}` says nothing, because block style has no spelling for one.
+   */
+  blockLists: boolean;
+  /**
    * Every folded block scalar (`>`) and every plain or quoted scalar spread over lines of the document,
    * with the lines the file wrapped it on.
    */
@@ -236,9 +248,9 @@ export interface YamlFold {
  * lines, which the value has no room for: a rewrite written from the value alone would drop
  * them. `comments` names the lines of the comments, `attached` says where each one belongs, and
  * `blanks` where each empty line between two entries does, and `layout` which of its sequences
- * are written in block style and how each is indented, and how it wrapped its strings. A `#`
- * inside a block scalar or a quoted scalar is a character of the string, not a comment, and an
- * empty line inside a scalar or a flow collection is part of it.
+ * are written in block style and how each is indented, whether every collection is, and how it
+ * wrapped its strings. A `#` inside a block scalar or a quoted scalar is a character of the
+ * string, not a comment, and an empty line inside a scalar or a flow collection is part of it.
  */
 export function readYaml(text: string): {
   value: unknown;
@@ -255,6 +267,7 @@ export function readYaml(text: string): {
     entries: new Map(),
     at: "",
     sequences: new Map(),
+    flow: false,
     folds: [],
   };
   const value = parseDocument(state);
@@ -273,8 +286,23 @@ export function readYaml(text: string): {
     const below = starts.find((line) => line > n);
     return [{ line: n, pointer: below === undefined ? null : (state.entries.get(below) ?? null) }];
   });
-  const layout = { indentSequences: state.indentSequences ?? true, sequences: [...state.sequences.values()], folds: state.folds };
+  const layout = {
+    indentSequences: state.indentSequences ?? true,
+    sequences: [...state.sequences.values()],
+    // With no flow collection read, every list the value holds is a block sequence of the file.
+    blockLists: !state.flow && holdsScalarList(value),
+    folds: state.folds,
+  };
   return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks, layout };
+}
+
+/** Whether a value is, or holds, a list with something in it and nothing but scalars in it. */
+function holdsScalarList(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    const scalars = value.length > 0 && value.every((item) => typeof item !== "object" || item === null);
+    return scalars || value.some(holdsScalarList);
+  }
+  return typeof value === "object" && value !== null && Object.values(value).some(holdsScalarList);
 }
 
 /**
@@ -592,6 +620,7 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
 function parseFlowOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   const scanner: Scanner = { text, pos: 0, line, more: { state, minIndent, opened: line } };
   const value = parseFlowNode(scanner, false);
+  if (typeof value === "object" && value !== null && Object.keys(value).length > 0) state.flow = true;
   skipSpaces(scanner);
   const after = scanner.text.slice(scanner.pos);
   if (after.startsWith("#")) state.comments.set(scanner.line.n, after);
