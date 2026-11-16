@@ -145,6 +145,7 @@ tags: []
       ],
       blockLists: false,
       folds: [],
+      flows: [{ pointer: "/anyOf/1/required", kind: "sequence", padded: false, width: 15 }],
     });
     expect(stringifyYaml(value, comments)).toBe(stringifyYaml(value, comments, [], { indentSequences: true }));
   });
@@ -239,10 +240,90 @@ type: object
     expect(stringifyYaml(value, [], [], layout)).toBe(`required:
 - query
 - limit
-items:
-  type: string
+items: {type: string}
 type: [integer, "null"]
 `);
+  });
+
+  it("keeps a flow mapping, and a flow sequence that holds one, on the line the file wrote it on", () => {
+    const text = `type: object
+properties:
+  id: { type: string, pattern: "^[a-z]+$" }
+  owner:
+    anyOf: [{type: string}, {type: "null"}]
+  tags:
+    type: array
+    items:
+      - {type: string}
+      - { const: 1 }
+required: [id, owner, tags]
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("keeps a flow collection on its line as a fix adds to it, spacing what it adds as the file spaces its first one", () => {
+    const { layout } = readYaml("b: [ x ]\na: [{ type: string }]\nc: {type: integer}\n");
+    const value = {
+      b: ["x", "z"],
+      a: [{ type: "string" }, { type: "null" }],
+      c: { type: "integer", additionalProperties: false },
+      d: { type: ["integer", "null"] },
+    };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`b: [ x, z ]
+a: [{ type: string }, { type: "null" }]
+c: {type: integer, additionalProperties: false}
+d:
+  type: [ integer, "null" ]
+`);
+  });
+
+  it("keeps a line the file wrote past the flow width, and moves one a fix lengthened past both into block style", () => {
+    const long = `  items: {type: string, enum: [alpha, beta, gamma, delta, epsilon, zeta, eta, theta]}`;
+    const text = `${long}\nanyOf: [{type: string, format: uri}, {type: "null"}]\n`;
+    const { value, layout } = readYaml(`properties:\n${text}`);
+    expect(long.length).toBeGreaterThan(80);
+    expect(stringifyYaml(value, [], [], layout)).toBe(`properties:\n${text}`);
+    const fixed = {
+      ...(value as Record<string, unknown>),
+      anyOf: [{ type: "string", description: "Must be an absolute URI, such as https://example.com/a." }, { type: "null" }],
+    };
+    // The branch that no longer fits goes into block style, and the one beside it keeps its line.
+    expect(stringifyYaml(fixed, [], [], layout)).toBe(`properties:
+${long}
+anyOf:
+  - type: string
+    description: Must be an absolute URI, such as https://example.com/a.
+  - {type: "null"}
+`);
+  });
+
+  it("keeps a list of scalars the file wrote in flow style past the flow width on its line", () => {
+    const text = `enum: [alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, mu]\n`;
+    const { value, layout } = readYaml(text);
+    expect(text.length).toBeGreaterThan(80);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+    expect(stringifyYaml(value)).toBe(`enum:\n  - ${(value as { enum: string[] }).enum.join("\n  - ")}\n`);
+  });
+
+  it("quotes what a flow collection would read as something else", () => {
+    const { layout } = readYaml("properties: {a: {type: string}}\n");
+    const value = { properties: { "a:b": { type: "string", description: "one, two", default: "true" } } };
+    expect(stringifyYaml(value, [], [], layout)).toBe(
+      'properties: {"a:b": {type: string, description: "one, two", default: "true"}}\n',
+    );
+  });
+
+  it("keeps a document the file wrote as one flow mapping on its line", () => {
+    const text = "{type: object, properties: {id: {type: string}}, required: [id]}\n";
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("writes a flow collection in block style where a comment belongs to an entry inside it", () => {
+    const { value, layout } = readYaml("items: {type: string}\n");
+    const comment = { line: 1, text: "# always a string", pointer: "/items/type", trailing: true };
+    expect(stringifyYaml(value, [comment], [], layout)).toBe("items:\n  type: string # always a string\n");
   });
 
   it("writes a value as it would any other where the sequence the file held there is gone", () => {

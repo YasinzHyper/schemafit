@@ -510,12 +510,13 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const components = request.openapi ? fixComponents(label, document, { providers, pruneUnusedDefs }) : undefined;
 
   const reports: FixReport[] = [];
-  // Each comment, empty line, folded string, and block sequence follows its entry through the
-  // fixes that move one, a rename or a wrapped root.
+  // Each comment, empty line, folded string, block sequence, and flow collection follows its
+  // entry through the fixes that move one, a rename or a wrapped root.
   let moved = comments;
   let movedBlanks = blanks;
   let movedFolds = layout?.folds ?? [];
   let movedSequences = layout?.sequences ?? [];
+  let movedFlows = layout?.flows ?? [];
   let rewritten: unknown = document;
   for (const [index, found] of checked.entries()) {
     let result: FixResult;
@@ -533,6 +534,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
       movedBlanks = movedBlanks.map((blank) => follow(blank, found.pointer, applied));
       movedFolds = movedFolds.map((folded) => follow(folded, found.pointer, applied));
       movedSequences = movedSequences.map((sequence) => follow(sequence, found.pointer, applied));
+      movedFlows = movedFlows.map((flow) => follow(flow, found.pointer, applied));
     }
     reports.push({ ...sourceOf(destination, found, request.openapi || schemas.length > 1), ...result });
   }
@@ -561,7 +563,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   const unwritten = write && !changed;
   // An empty line on an entry the rewrite removes says nothing, so it goes without a word.
   const keptBlanks = movedBlanks.filter((blank) => keepsEntry(blank, rewritten));
-  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, { ...layout, folds: movedFolds, sequences: movedSequences }) : `${JSON.stringify(rewritten, null, 2)}\n`;
+  const output = unwritten ? "" : yaml ? stringifyYaml(rewritten, kept, keptBlanks, { ...layout, folds: movedFolds, sequences: movedSequences, flows: movedFlows }) : `${JSON.stringify(rewritten, null, 2)}\n`;
   return { file, output, reports, notes };
 }
 

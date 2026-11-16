@@ -63,6 +63,8 @@ interface State {
   sequences: Map<string, YamlSequence>;
   /** Whether a flow collection with something in it has been read, which no block-only file holds. */
   flow: boolean;
+  /** The flow collections with something in them read so far that open and close on one line. */
+  flows: YamlFlow[];
   /** The folded block scalars read so far, with the lines each one was written on. */
   folds: YamlFold[];
 }
@@ -208,6 +210,12 @@ export interface YamlLayout {
    * with the lines the file wrapped it on.
    */
   folds: YamlFold[];
+  /**
+   * Every flow collection with something in it that the document writes on one line, an
+   * `items: {type: string}` or an `anyOf: [{type: string}, {type: "null"}]` and the mappings in
+   * it, so a rewrite keeps it on its line rather than expanding it into block style.
+   */
+  flows: YamlFlow[];
 }
 
 /** A sequence a YAML document writes in block style, one item to a line after a dash. */
@@ -221,6 +229,18 @@ export interface YamlSequence {
    * indentation follows from what holds it.
    */
   indented?: boolean;
+}
+
+/** A collection a YAML document writes in flow style, opened and closed on the same line. */
+export interface YamlFlow {
+  /** The JSON Pointer of the collection. */
+  pointer: string;
+  /** Whether it is a mapping between braces or a sequence between brackets. */
+  kind: "mapping" | "sequence";
+  /** Whether a space follows its opening bracket, as one does in `{ type: string }`. */
+  padded: boolean;
+  /** The length of the line it is written on, its indentation included and a comment after it left out. */
+  width: number;
 }
 
 /**
@@ -248,9 +268,10 @@ export interface YamlFold {
  * lines, which the value has no room for: a rewrite written from the value alone would drop
  * them. `comments` names the lines of the comments, `attached` says where each one belongs, and
  * `blanks` where each empty line between two entries does, and `layout` which of its sequences
- * are written in block style and how each is indented, whether every collection is, and how it
- * wrapped its strings. A `#` inside a block scalar or a quoted scalar is a character of the
- * string, not a comment, and an empty line inside a scalar or a flow collection is part of it.
+ * are written in block style and how each is indented, whether every collection is, which it
+ * writes in flow style on one line, and how it wrapped its strings. A `#` inside a block scalar
+ * or a quoted scalar is a character of the string, not a comment, and an empty line inside a
+ * scalar or a flow collection is part of it.
  */
 export function readYaml(text: string): {
   value: unknown;
@@ -268,6 +289,7 @@ export function readYaml(text: string): {
     at: "",
     sequences: new Map(),
     flow: false,
+    flows: [],
     folds: [],
   };
   const value = parseDocument(state);
@@ -292,6 +314,7 @@ export function readYaml(text: string): {
     // With no flow collection read, every list the value holds is a block sequence of the file.
     blockLists: !state.flow && holdsScalarList(value),
     folds: state.folds,
+    flows: state.flows,
   };
   return { value, comments: found.map(({ n }) => n), attached: attach(found, state.entries), blanks, layout };
 }
@@ -619,7 +642,7 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
  */
 function parseFlowOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   const scanner: Scanner = { text, pos: 0, line, more: { state, minIndent, opened: line } };
-  const value = parseFlowNode(scanner, false);
+  const value = parseFlowNode(scanner, false, state.at);
   if (typeof value === "object" && value !== null && Object.keys(value).length > 0) state.flow = true;
   skipSpaces(scanner);
   const after = scanner.text.slice(scanner.pos);
@@ -977,16 +1000,20 @@ function parseInline(text: string, line: Line): unknown {
   return value;
 }
 
-function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
+/**
+ * A node inside a flow collection, or one that starts on a line of its own. Given `at`, the JSON
+ * Pointer of a node written in block context, the collections it opens are recorded there.
+ */
+function parseFlowNode(scanner: Scanner, inFlow: boolean, at?: string): unknown {
   if (inFlow) skipSeparation(scanner);
   else skipSpaces(scanner);
   switch (scanner.text[scanner.pos]) {
     case undefined:
       return null;
     case "[":
-      return parseFlowSequence(scanner);
+      return recordFlow(scanner, "sequence", at, () => parseFlowSequence(scanner, at));
     case "{":
-      return parseFlowMapping(scanner);
+      return recordFlow(scanner, "mapping", at, () => parseFlowMapping(scanner, at));
     case '"':
     case "'":
       return readQuoted(scanner, scanner.more);
@@ -995,7 +1022,26 @@ function parseFlowNode(scanner: Scanner, inFlow: boolean): unknown {
   }
 }
 
-function parseFlowSequence(scanner: Scanner): unknown[] {
+/**
+ * A flow collection read by `read`, recorded at `at` for a rewrite to keep on its line when it
+ * has something in it and closes on the line it opens on. A collection spread over lines is
+ * left out, since putting it on one line would not be where the file wrote it either.
+ */
+function recordFlow<T extends object>(scanner: Scanner, kind: YamlFlow["kind"], at: string | undefined, read: () => T): T {
+  const { line } = scanner;
+  const padded = scanner.text[scanner.pos + 1] === " ";
+  const flows = scanner.more?.state.flows;
+  const index = flows?.length ?? 0;
+  const value = read();
+  if (flows !== undefined && at !== undefined && scanner.line === line && Object.keys(value).length > 0) {
+    // Ahead of the collections nested in it, which were recorded as they closed, so the list
+    // keeps the order the file writes them in.
+    flows.splice(index, 0, { pointer: at, kind, padded, width: line.indent + line.text.length });
+  }
+  return value;
+}
+
+function parseFlowSequence(scanner: Scanner, at?: string): unknown[] {
   scanner.pos += 1;
   const items: unknown[] = [];
   skipSeparation(scanner);
@@ -1004,7 +1050,7 @@ function parseFlowSequence(scanner: Scanner): unknown[] {
     return items;
   }
   for (;;) {
-    items.push(parseFlowNode(scanner, true));
+    items.push(parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, items.length)));
     const before = scanner.line;
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
@@ -1020,7 +1066,7 @@ function parseFlowSequence(scanner: Scanner): unknown[] {
   }
 }
 
-function parseFlowMapping(scanner: Scanner): Record<string, unknown> {
+function parseFlowMapping(scanner: Scanner, at?: string): Record<string, unknown> {
   scanner.pos += 1;
   const mapping: Record<string, unknown> = {};
   skipSeparation(scanner);
@@ -1034,7 +1080,7 @@ function parseFlowMapping(scanner: Scanner): Record<string, unknown> {
     if (Object.prototype.hasOwnProperty.call(mapping, key)) {
       throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
     }
-    mapping[key] = parseFlowNode(scanner, true);
+    mapping[key] = parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, key));
     const before = scanner.line;
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];

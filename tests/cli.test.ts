@@ -764,8 +764,7 @@ properties:
       - const: closed
   tags:
     type: [array, "null"]
-    items:
-      type: string
+    items: {type: string}
 additionalProperties: false
 `);
   });
@@ -849,12 +848,50 @@ required: [title] # priority is optional
 type: object # always an object
 properties:
   # What the ticket is about.
-  title: # one line
-    type: string
+  title: {type: string} # one line
   priority:
     type: [integer, "null"]
     description: "1 is a question, 5 is an outage."
 required: [title, priority] # priority is optional
+additionalProperties: false
+`);
+  });
+
+  it("--fix --write keeps the flow mappings of a YAML file on their lines, changing only the ones a fix touches", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  id: { type: string }
+  status: { type: string, enum: [open, closed] }
+  owner:
+    anyOf: [{ type: string }, { type: integer }]
+  kind:
+    oneOf: [{ const: bug }, { const: task }]
+  tags:
+    type: array
+    items: { type: string, format: email }
+required: [id, status, kind, tags]
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The branch openai/all-required adds goes inside the brackets, spaced as the file spaces its
+    // braces, and the oneOf openai/no-one-of renames keeps its line as anyOf.
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  id: { type: string }
+  status: { type: string, enum: [open, closed] }
+  owner:
+    anyOf: [{ type: string }, { type: integer }, { type: "null" }]
+  kind:
+    anyOf: [{ const: bug }, { const: task }]
+  tags:
+    type: array
+    items: { type: string, format: email }
+required: [id, status, kind, tags, owner]
 additionalProperties: false
 `);
   });
@@ -890,8 +927,7 @@ additionalProperties: false
   input_schema:
     type: object
     properties:
-      query:
-        type: string
+      query: {type: string}
 
       limit:
         type: integer
@@ -1236,8 +1272,7 @@ properties:
 required: [result]
 additionalProperties: false
 $defs:
-  tag: # lower case
-    type: string
+  tag: {type: string} # lower case
 `);
   });
 
@@ -1559,8 +1594,8 @@ $defs:
       expect(code).toBe(0);
       const written = await readFile(file, "utf8");
       expect(written).toContain("    # The pet's tag\n    Tag:");
-      expect(written).toContain("name: # never empty");
-      expect(written).toContain("description: Must be at least 1 character long.");
+      // The flow mapping stays on its line, spaced inside its braces as the file spaced it.
+      expect(written).toContain("        name: { type: string, description: Must be at least 1 character long. } # never empty\n");
       expect(written).not.toContain("minLength");
     });
 
