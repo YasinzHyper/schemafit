@@ -6,7 +6,9 @@
  * at the key's own indentation instead when the file it came from wrote that sequence there,
  * or wrote its first one there for a sequence the file did not hold, a list of scalars that
  * fits on its line in flow style (`type: [string, "null"]`) unless the file wrote it one item
- * to a line, or writes every collection in block style, `{}` and `[]` for the empty
+ * to a line, or writes every collection in block style, a flow mapping or a flow sequence that
+ * holds one (`items: {type: string}`) on its line where the file wrote it on one and it still
+ * fits there, spaced inside its brackets as the file spaced it, `{}` and `[]` for the empty
  * collections, a folded block scalar (`>`) for a string
  * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
  * wrapped that way, and a quoted
@@ -28,6 +30,7 @@ import { joinPointer } from "./pointer.js";
 import {
   type YamlBlank,
   type YamlComment,
+  type YamlFlow,
   type YamlFold,
   type YamlLayout,
   type YamlSequence,
@@ -64,6 +67,13 @@ interface Layout {
   blockLists: boolean;
   /** How each string the file wrapped over lines was written, by the pointer of the string. */
   folds: Map<string, YamlFold>;
+  /** The collections the file wrote in flow style on one line, by their pointers. */
+  flows: Map<string, YamlFlow>;
+  /**
+   * Whether a flow collection `flows` does not name, such as a list a fix adds, has a space
+   * inside its brackets, as the file's first flow collection of the same kind has.
+   */
+  padded: Record<YamlFlow["kind"], boolean>;
 }
 
 /**
@@ -104,6 +114,11 @@ export function stringifyYaml(
     sequences: new Map((layout.sequences ?? []).map((sequence) => [sequence.pointer, sequence])),
     blockLists: layout.blockLists ?? false,
     folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
+    flows: new Map((layout.flows ?? []).map((flow) => [flow.pointer, flow])),
+    padded: {
+      mapping: layout.flows?.find(({ kind }) => kind === "mapping")?.padded ?? false,
+      sequence: layout.flows?.find(({ kind }) => kind === "sequence")?.padded ?? false,
+    },
   };
   const end: string[] = [];
   for (const comment of comments) {
@@ -122,7 +137,12 @@ export function stringifyYaml(
   while (end[end.length - 1] === "") end.pop();
   const ending = end.filter((text) => text === "").length;
   // What JSON would make of it — no undefined members, no functions — is what is written.
-  const written = [...block(JSON.parse(json) as unknown, 0, "", placed).lines, ...end];
+  const parsed = JSON.parse(json) as unknown;
+  // A document the file wrote as one flow collection on one line stays on that line.
+  const flat = placed.flows.has("") && !commentsWithin("", placed) && !foldsWithin("", placed);
+  const root = flat ? flowCollection(parsed, "", placed) : undefined;
+  const top = root !== undefined && root.length <= flowWidth("", placed) ? [root] : block(parsed, 0, "", placed).lines;
+  const written = [...top, ...end];
   const text = `${written.join("\n")}\n`;
   const read = readYaml(text);
   if (JSON.stringify(read.value) !== json) {
@@ -207,13 +227,15 @@ function isLayout(line: string): boolean {
 /** One mapping entry or sequence item: `prefix` is its key and colon, or its dash. */
 function entry(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): Written {
   const child = indent + INDENT;
-  // A flow list has no line of its own for a comment on one of its items, or an empty line
-  // between two, and puts an item the file wrapped over lines on one. A list the file wrote one
-  // item to a line stays that way, and in a file that writes every collection in block style,
+  // A flow collection has no line of its own for a comment on one of its entries, or an empty
+  // line between two, and puts a string the file wrapped over lines on one. A list the file wrote
+  // one item to a line stays that way, and in a file that writes every collection in block style,
   // so does one it did not hold.
   const lined = layout.blockLists || layout.sequences.has(pointer) || commentsWithin(pointer, layout) || foldsWithin(pointer, layout);
-  const flow = lined ? undefined : flowList(value);
-  if (flow !== undefined && prefix.length + 1 + flow.length <= FLOW_WIDTH) return { lines: [`${prefix} ${flow}`], trail: 0 };
+  const flow = lined ? undefined : flowCollection(value, pointer, layout);
+  if (flow !== undefined && prefix.length + 1 + flow.length <= flowWidth(pointer, layout)) {
+    return { lines: [`${prefix} ${flow}`], trail: 0 };
+  }
   if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
     // A sequence under a key may sit at the key's own indentation, where its dashes count as
     // the indentation the items need.
@@ -269,15 +291,52 @@ function foldsWithin(pointer: string, layout: Layout): boolean {
   return [...layout.folds.keys()].some((at) => at.startsWith(`${pointer}/`));
 }
 
-/** A list of nothing but scalars as a flow sequence, or undefined for any other value. */
-function flowList(value: unknown): string | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  if (value.some((item) => typeof item === "object" && item !== null)) return undefined;
+/**
+ * A collection in flow style, for one the file wrote that way on one line and for any list of
+ * nothing but scalars, or undefined for any other value, an empty collection, and one the flow
+ * style would not read back as.
+ */
+function flowCollection(value: unknown, pointer: string, layout: Layout): string | undefined {
+  if (!(Array.isArray(value) ? value.length > 0 : isObject(value) && Object.keys(value).length > 0)) return undefined;
+  const scalars = Array.isArray(value) && value.every((item) => typeof item !== "object" || item === null);
+  if (!scalars && !layout.flows.has(pointer)) return undefined;
+  const flow = flowNode(value, pointer, layout);
+  return readsBack(`k: ${flow}\n`, { k: value }) ? flow : undefined;
+}
+
+/**
+ * How long the line a flow collection is written on may grow: as long as the line the file
+ * wrote it on, and to `FLOW_WIDTH` whatever that was, so a collection a fix leaves as it was
+ * stays on its line and one it lengthens moves into block style where a short one would not.
+ */
+function flowWidth(pointer: string, layout: Layout): number {
+  return Math.max(FLOW_WIDTH, layout.flows.get(pointer)?.width ?? 0);
+}
+
+/** A node inside a flow collection, its collections spaced inside their brackets as the file spaced them. */
+function flowNode(value: unknown, pointer: string, layout: Layout): string {
+  const spaced = (open: string, entries: string[], close: string, kind: YamlFlow["kind"]): string => {
+    if (entries.length === 0) return `${open}${close}`;
+    const pad = (layout.flows.get(pointer)?.padded ?? layout.padded[kind]) ? " " : "";
+    return `${open}${pad}${entries.join(", ")}${pad}${close}`;
+  };
+  if (Array.isArray(value)) {
+    return spaced("[", value.map((item, index) => flowNode(item, joinPointer(pointer, index), layout)), "]", "sequence");
+  }
+  if (isObject(value)) {
+    // A flow mapping's key runs to its first colon, so a key holding one is quoted.
+    const entries = Object.entries(value).map(
+      ([key, item]) => `${flowScalar(key, key.includes(":"))}: ${flowNode(item, joinPointer(pointer, key), layout)}`,
+    );
+    return spaced("{", entries, "}", "mapping");
+  }
+  return typeof value === "string" ? flowScalar(value, false) : JSON.stringify(value);
+}
+
+/** A string inside a flow collection, plain where that reads back as the same string. */
+function flowScalar(text: string, quoted: boolean): string {
   // Inside a flow collection a comma or a bracket ends a plain scalar, so one holding either is quoted.
-  const items = value.map((item) =>
-    typeof item === "string" ? (isPlain(item, false) && !/[,[\]{}]/.test(item) ? item : quote(item)) : JSON.stringify(item),
-  );
-  return `[${items.join(", ")}]`;
+  return !quoted && isPlain(text, false) && !/[,[\]{}]/.test(text) ? text : quote(text);
 }
 
 /** A scalar, or an empty collection, written on the line it belongs to. */

@@ -672,15 +672,21 @@ last: 1
       false,
     ],
   ])("reads the indentation of a sequence under a key %s", (_, text, indentSequences, sequences, blockLists) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences, sequences, blockLists, folds: [] });
+    expect(readYaml(text).layout).toEqual({ indentSequences, sequences, blockLists, folds: [], flows: [] });
   });
 
   it.each([
-    ["no sequence", "type: object\n", [], false],
-    ["only a root sequence and one in a sequence item", "- - a\n", [{ pointer: "" }, { pointer: "/0" }], true],
-    ["only flow sequences", "required: [a, b]\n", [], false],
-  ])("takes a file with %s for one that indents its sequences", (_, text, sequences, blockLists) => {
-    expect(readYaml(text).layout).toEqual({ indentSequences: true, sequences, blockLists, folds: [] });
+    ["no sequence", "type: object\n", [], false, []],
+    ["only a root sequence and one in a sequence item", "- - a\n", [{ pointer: "" }, { pointer: "/0" }], true, []],
+    [
+      "only flow sequences",
+      "required: [a, b]\n",
+      [],
+      false,
+      [{ pointer: "/required", kind: "sequence", padded: false, width: 16 }],
+    ],
+  ])("takes a file with %s for one that indents its sequences", (_, text, sequences, blockLists, flows) => {
+    expect(readYaml(text).layout).toEqual({ indentSequences: true, sequences, blockLists, folds: [], flows });
   });
 
   it.each([
@@ -721,6 +727,33 @@ required:
       { pointer: "/properties/tags/examples", indented: false },
       { pointer: "/properties/tags/examples/1" },
       { pointer: "/required", indented: false },
+    ]);
+  });
+
+  it("records every flow collection written on one line, nested ones included, in the order the file writes them", () => {
+    const text = `items: { type: string, enum: [a, b] } # a note
+anyOf:
+  - [{type: string}, {type: "null"}]
+  - {}
+`;
+    expect(readYaml(text).layout.flows).toEqual([
+      { pointer: "/items", kind: "mapping", padded: true, width: 37 },
+      { pointer: "/items/enum", kind: "sequence", padded: false, width: 37 },
+      { pointer: "/anyOf/0", kind: "sequence", padded: false, width: 36 },
+      { pointer: "/anyOf/0/0", kind: "mapping", padded: false, width: 36 },
+      { pointer: "/anyOf/0/1", kind: "mapping", padded: false, width: 36 },
+    ]);
+  });
+
+  it("leaves a flow collection spread over lines out of the flows, and keeps the ones on a line of it", () => {
+    const text = `anyOf: [
+  {type: string},
+  {type: "null"}
+  ]
+`;
+    expect(readYaml(text).layout.flows).toEqual([
+      { pointer: "/anyOf/0", kind: "mapping", padded: false, width: 17 },
+      { pointer: "/anyOf/1", kind: "mapping", padded: false, width: 16 },
     ]);
   });
 });
