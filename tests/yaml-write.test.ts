@@ -326,6 +326,191 @@ anyOf:
     expect(stringifyYaml(value, [comment], [], layout)).toBe("items:\n  type: string # always a string\n");
   });
 
+  it("keeps a flow collection the file spread one entry to a line on those lines", () => {
+    // What Prettier writes for the collections that outgrew their lines.
+    const text = `properties:
+  status:
+    anyOf:
+      [
+        {
+          type: string,
+          description: "The status of the ticket, as the help desk shows it",
+        },
+        { type: "null" },
+      ]
+  tags:
+    items:
+      {
+        enum:
+          [alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa],
+      }
+  steps:
+    type: array
+    items:
+      - {
+          type: string,
+          description: "A step of the ticket's workflow, in the order it runs",
+        }
+required:
+  [
+    status,
+    tags,
+    steps,
+  ]
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("keeps a JSON document saved as YAML spread over its lines", () => {
+    const { value, layout } = readYaml('{\n  "type": "object",\n  "required": [\n    "id"\n  ]\n}\n');
+    expect(stringifyYaml({ ...(value as object), additionalProperties: false }, [], [], layout)).toBe(`{
+  type: object,
+  required: [
+    id
+  ],
+  additionalProperties: false
+}
+`);
+  });
+
+  it("writes what a fix adds to a collection spread over lines one entry to a line, spacing it as the file spaces its others", () => {
+    const { layout } = readYaml(`anyOf:
+  [
+    {
+      type: string,
+      description: "The status of the ticket, as the help desk shows it",
+    },
+  ]
+items: { type: string }
+`);
+    const value = {
+      anyOf: [
+        { type: "string", description: "The status of the ticket, as the help desk shows it", maxLength: 40 },
+        { type: "null" },
+        { type: "object", properties: { reason: { type: "string" }, since: { type: "string", format: "date" } } },
+      ],
+      items: { type: "string" },
+    };
+    // A collection the file did not hold goes on one line where it fits, and is spread the way
+    // the collection around it is where it does not.
+    expect(stringifyYaml(value, [], [], layout)).toBe(`anyOf:
+  [
+    {
+      type: string,
+      description: "The status of the ticket, as the help desk shows it",
+      maxLength: 40,
+    },
+    { type: "null" },
+    {
+      type: object,
+      properties:
+        { reason: { type: string }, since: { type: string, format: date } },
+    },
+  ]
+items: { type: string }
+`);
+  });
+
+  it("moves a flow collection a fix lengthened past its line below its key, and spreads it where it does not fit there either", () => {
+    const { layout } = readYaml(`properties:
+  ticket:
+    {
+      type: object,
+      properties: { title: { type: string, description: "Short title" } },
+    }
+required: [ticket]
+`);
+    const value = {
+      properties: {
+        ticket: {
+          type: "object",
+          properties: { title: { type: ["string", "null"], description: "Short title. Must be at most 120 characters long." } },
+        },
+      },
+      required: ["ticket", "a_property_whose_name_runs_long", "another_property_whose_name_runs"],
+    };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`properties:
+  ticket:
+    {
+      type: object,
+      properties:
+        {
+          title:
+            {
+              type: [string, "null"],
+              description: Short title. Must be at most 120 characters long.,
+            },
+        },
+    }
+required:
+  [ticket, a_property_whose_name_runs_long, another_property_whose_name_runs]
+`);
+    const longer = { ...value, required: [...value.required, "and_one_more"] };
+    expect(stringifyYaml(longer, [], [], layout).split("required:")[1]).toBe(`
+  [
+    ticket,
+    a_property_whose_name_runs_long,
+    another_property_whose_name_runs,
+    and_one_more,
+  ]
+`);
+  });
+
+  it("spreads a collection a fix puts around one the file spread, so that one keeps its lines", () => {
+    const { layout } = readYaml('{\n  "type": "array",\n  "items": {\n    "type": "string"\n  }\n}\n');
+    // Where openai/root-object moves what the root said about its value.
+    const flows = layout.flows.map((flow) => (flow.pointer === "/items" ? { ...flow, pointer: "/properties/result/items" } : flow));
+    const value = {
+      type: "object",
+      properties: { result: { type: "array", items: { type: "string" } } },
+      required: ["result"],
+      additionalProperties: false,
+    };
+    expect(stringifyYaml(value, [], [], { ...layout, flows })).toBe(`{
+  type: object,
+  properties: {
+    result: {
+      type: array,
+      items: {
+        type: string
+      }
+    }
+  },
+  required: [result],
+  additionalProperties: false
+}
+`);
+  });
+
+  it("puts a comment inside a collection spread over lines on its key's line or above it, as for one on a line", () => {
+    const { value, attached, layout } = readYaml(`anyOf: # the two shapes
+  [
+    # a string first
+    { type: string },
+    { type: integer },
+  ]
+`);
+    expect(stringifyYaml(value, attached, [], layout)).toBe(`# a string first
+anyOf: # the two shapes
+  [
+    { type: string },
+    { type: integer },
+  ]
+`);
+  });
+
+  it("writes in block style a collection spread over lines that would close under its key in a block mapping", () => {
+    // Inside a JSON document a closing bracket may sit under its key, and in a block mapping it may not.
+    const json = { entries: 2, close: 0, trailing: false };
+    const layout = { flows: [{ pointer: "/required", kind: "sequence" as const, padded: false, width: 15, spread: json }] };
+    expect(stringifyYaml({ type: "object", required: ["id", "name"] }, [], [], layout)).toBe(`type: object
+required:
+  - id
+  - name
+`);
+  });
+
   it("writes a value as it would any other where the sequence the file held there is gone", () => {
     const { layout } = readYaml("type:\n  - string\n  - 'null'\n");
     expect(stringifyYaml({ type: "string" }, [], [], layout)).toBe("type: string\n");

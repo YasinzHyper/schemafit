@@ -896,6 +896,42 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps the flow collections a YAML file spread over lines on those lines, as Prettier formats them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    const spread = `type: object
+properties:
+  status:
+    {
+      oneOf:
+        [
+          {
+            type: string,
+            description: "Where the ticket stands, as the help desk shows it",
+          },
+          { type: integer, description: The status code },
+        ],
+    }
+  tags:
+    {
+      type: array,
+      items:
+        {
+          type: string,
+          enum: [billing, outage, feature-request, account, security],
+        },
+    }
+`;
+    await writeFile(file, `${spread}  note: { type: string }\nrequired: [status, tags]\n`);
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // Only the lines a fix touches change: the oneOf openai/no-one-of renames keeps its lines as anyOf.
+    expect(await readFile(file, "utf8")).toBe(`${spread.replace("oneOf:", "anyOf:")}  note: { type: [string, "null"] }
+required: [status, tags, note]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tools.yaml");

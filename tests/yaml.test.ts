@@ -745,15 +745,67 @@ anyOf:
     ]);
   });
 
-  it("leaves a flow collection spread over lines out of the flows, and keeps the ones on a line of it", () => {
-    const text = `anyOf: [
-  {type: string},
-  {type: "null"}
-  ]
+  it("records a flow collection spread one entry to a line, and how far below its key one opens", () => {
+    // What Prettier writes for a collection that outgrew its line.
+    const text = `properties:
+  status:
+    anyOf:
+      [
+        {
+          type: string,
+          description: "The status of the ticket, as the help desk shows it",
+        },
+        { type: "null" },
+      ]
+  tags:
+    items:
+      {
+        enum:
+          [alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa],
+      }
+`;
+    const prettier = { entries: 2, close: 0, trailing: true };
+    expect(readYaml(text).layout.flows).toEqual([
+      { pointer: "/properties/status/anyOf", kind: "sequence", padded: false, width: 7, below: 2, spread: prettier },
+      { pointer: "/properties/status/anyOf/0", kind: "mapping", padded: false, width: 9, spread: prettier },
+      { pointer: "/properties/status/anyOf/1", kind: "mapping", padded: true, width: 25 },
+      { pointer: "/properties/tags/items", kind: "mapping", padded: false, width: 7, below: 2, spread: prettier },
+      { pointer: "/properties/tags/items/enum", kind: "sequence", padded: false, width: 78, below: 2 },
+    ]);
+  });
+
+  it("measures a collection spread over lines from where its first line starts, past a sequence item's dash", () => {
+    const text = `anyOf:
+  - {
+      type: string,
+      description: "The status of the ticket, as the help desk shows it",
+    }
+  - type: object
+    required: [
+        id
+      ]
 `;
     expect(readYaml(text).layout.flows).toEqual([
-      { pointer: "/anyOf/0", kind: "mapping", padded: false, width: 17 },
-      { pointer: "/anyOf/1", kind: "mapping", padded: false, width: 16 },
+      { pointer: "/anyOf/0", kind: "mapping", padded: false, width: 5, spread: { entries: 2, close: 0, trailing: true } },
+      { pointer: "/anyOf/1/required", kind: "sequence", padded: false, width: 15, spread: { entries: 4, close: 2, trailing: false } },
     ]);
+  });
+
+  it("records the collections of a JSON document saved as YAML as spread over lines", () => {
+    const text = '{\n  "type": "object",\n  "required": [\n    "id"\n  ]\n}\n';
+    const json = { entries: 2, close: 0, trailing: false };
+    expect(readYaml(text).layout.flows).toEqual([
+      { pointer: "", kind: "mapping", padded: false, width: 1, spread: json },
+      { pointer: "/required", kind: "sequence", padded: false, width: 15, spread: json },
+    ]);
+  });
+
+  it.each([
+    ["wrapped where its line ran out", 'type: [string,\n  "null"]\n', []],
+    ["with two entries on one line", 'anyOf:\n  [\n    {type: string}, {type: integer},\n    {type: "null"},\n  ]\n', ["/anyOf/0", "/anyOf/1", "/anyOf/2"]],
+    ["closed on the line of its last entry", 'anyOf:\n  [\n    {type: string},\n    {type: "null"}]\n', ["/anyOf/0", "/anyOf/1"]],
+    ["with its entries at two columns", 'anyOf:\n  [\n    {type: string},\n      {type: "null"},\n  ]\n', ["/anyOf/0", "/anyOf/1"]],
+  ])("leaves out a flow collection spread over lines %s, and keeps the ones on a line of it", (_, text, pointers) => {
+    expect(readYaml(text).layout.flows.map(({ pointer }) => pointer)).toEqual(pointers);
   });
 });
