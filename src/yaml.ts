@@ -63,8 +63,16 @@ interface State {
   sequences: Map<string, YamlSequence>;
   /** Whether a flow collection with something in it has been read, which no block-only file holds. */
   flow: boolean;
-  /** The flow collections with something in them read so far that open and close on one line. */
+  /**
+   * The flow collections with something in them read so far that open and close on one line, or
+   * that are spread one entry to a line.
+   */
   flows: YamlFlow[];
+  /**
+   * The key whose value is being read off the lines below it, by the JSON Pointer of the value,
+   * with the column the key starts at, for a flow collection there to say how far below it is.
+   */
+  keyBelow?: { at: string; column: number };
   /** The folded block scalars read so far, with the lines each one was written on. */
   folds: YamlFold[];
 }
@@ -213,7 +221,8 @@ export interface YamlLayout {
   /**
    * Every flow collection with something in it that the document writes on one line, an
    * `items: {type: string}` or an `anyOf: [{type: string}, {type: "null"}]` and the mappings in
-   * it, so a rewrite keeps it on its line rather than expanding it into block style.
+   * it, and every one it spreads one entry to a line, as Prettier breaks one that outgrew its
+   * line, so a rewrite keeps each on its lines rather than expanding it into block style.
    */
   flows: YamlFlow[];
 }
@@ -231,16 +240,49 @@ export interface YamlSequence {
   indented?: boolean;
 }
 
-/** A collection a YAML document writes in flow style, opened and closed on the same line. */
+/**
+ * A collection a YAML document writes in flow style, opened and closed on the same line, or
+ * spread one entry to a line between an opening bracket that ends its line and a closing one
+ * that starts its own.
+ */
 export interface YamlFlow {
   /** The JSON Pointer of the collection. */
   pointer: string;
   /** Whether it is a mapping between braces or a sequence between brackets. */
   kind: "mapping" | "sequence";
-  /** Whether a space follows its opening bracket, as one does in `{ type: string }`. */
+  /**
+   * Whether a space follows its opening bracket, as one does in `{ type: string }`. False for a
+   * collection spread over lines, whose opening bracket ends its line.
+   */
   padded: boolean;
-  /** The length of the line it is written on, its indentation included and a comment after it left out. */
+  /**
+   * The length of the line it opens on, its indentation included and a comment after it left
+   * out, which for a collection opened and closed on one line is the line it is written on.
+   */
   width: number;
+  /**
+   * For a key's value written on a line of its own below the key, how many columns further than
+   * the key it is indented: the `[` Prettier puts under `anyOf:` when the collection does not fit
+   * after it. Absent for one written after its key, and for one that is no key's value.
+   */
+  below?: number;
+  /** For a collection spread one entry to a line, how it is spread. */
+  spread?: YamlSpread;
+}
+
+/**
+ * How a flow collection is spread one entry to a line, measured from the column the line it
+ * opens on starts at, past the dash of a sequence item. The `[` Prettier puts on a line of its
+ * own, over entries indented by two more and a `]` under it, is `entries: 2`, `close: 0`, and a
+ * trailing comma.
+ */
+export interface YamlSpread {
+  /** How many columns further than that its entries are indented, each starting a line. */
+  entries: number;
+  /** How many columns further than that its closing bracket is indented, starting a line. */
+  close: number;
+  /** Whether a comma follows its last entry, as Prettier writes one. */
+  trailing: boolean;
 }
 
 /**
@@ -546,6 +588,7 @@ function parseMapping(state: State, indent: number): Record<string, unknown> {
     const rest = line.text.slice(end + 1).trim();
     state.index += 1;
     const outer = enter(state, line, key);
+    if (rest === "") state.keyBelow = { at: state.at, column: indent };
     mapping[key] = rest === "" ? parseNodeBelow(state, indent) : parseValueOnLine(state, line, rest, indent);
     state.at = outer;
   }
@@ -642,7 +685,9 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
  */
 function parseFlowOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   const scanner: Scanner = { text, pos: 0, line, more: { state, minIndent, opened: line } };
-  const value = parseFlowNode(scanner, false, state.at);
+  // A collection that starts its line below a key is that key's value, not one after a dash.
+  const key = text === line.text && state.keyBelow?.at === state.at ? { column: state.keyBelow.column } : undefined;
+  const value = parseFlowNode(scanner, false, state.at, key);
   if (typeof value === "object" && value !== null && Object.keys(value).length > 0) state.flow = true;
   skipSpaces(scanner);
   const after = scanner.text.slice(scanner.pos);
@@ -1002,18 +1047,19 @@ function parseInline(text: string, line: Line): unknown {
 
 /**
  * A node inside a flow collection, or one that starts on a line of its own. Given `at`, the JSON
- * Pointer of a node written in block context, the collections it opens are recorded there.
+ * Pointer of a node written in block context, the collections it opens are recorded there, and
+ * given `key`, the key it is the value of, how far below that key one sits.
  */
-function parseFlowNode(scanner: Scanner, inFlow: boolean, at?: string): unknown {
+function parseFlowNode(scanner: Scanner, inFlow: boolean, at?: string, key?: FlowKey): unknown {
   if (inFlow) skipSeparation(scanner);
   else skipSpaces(scanner);
   switch (scanner.text[scanner.pos]) {
     case undefined:
       return null;
     case "[":
-      return recordFlow(scanner, "sequence", at, () => parseFlowSequence(scanner, at));
+      return recordFlow(scanner, "sequence", at, key, (shape) => parseFlowSequence(scanner, at, shape));
     case "{":
-      return recordFlow(scanner, "mapping", at, () => parseFlowMapping(scanner, at));
+      return recordFlow(scanner, "mapping", at, key, (shape) => parseFlowMapping(scanner, at, shape));
     case '"':
     case "'":
       return readQuoted(scanner, scanner.more);
@@ -1023,25 +1069,86 @@ function parseFlowNode(scanner: Scanner, inFlow: boolean, at?: string): unknown 
 }
 
 /**
- * A flow collection read by `read`, recorded at `at` for a rewrite to keep on its line when it
- * has something in it and closes on the line it opens on. A collection spread over lines is
- * left out, since putting it on one line would not be where the file wrote it either.
+ * The key a flow collection is the value of: the line it is on, unless that is a block mapping's
+ * key on a line above the collection, and the column it starts at.
  */
-function recordFlow<T extends object>(scanner: Scanner, kind: YamlFlow["kind"], at: string | undefined, read: () => T): T {
+interface FlowKey {
+  line?: Line;
+  column: number;
+}
+
+/**
+ * Where the entries of a flow collection and its closing bracket start, each by its column where
+ * it is the first thing on its line and undefined where it is not, and whether a comma follows
+ * its last entry.
+ */
+interface FlowShape {
+  starts: Array<number | undefined>;
+  close?: number;
+  trailing: boolean;
+}
+
+/**
+ * A flow collection read by `read`, recorded at `at` for a rewrite to keep on its lines when it
+ * has something in it and either closes on the line it opens on or is spread one entry to a
+ * line, each entry and the closing bracket starting a line of its own at the same column. A
+ * collection spread over lines any other way is left out, since a rewrite has no way to
+ * write it where the file wrote it.
+ */
+function recordFlow<T extends object>(
+  scanner: Scanner,
+  kind: YamlFlow["kind"],
+  at: string | undefined,
+  key: FlowKey | undefined,
+  read: (shape: FlowShape) => T,
+): T {
   const { line } = scanner;
   const padded = scanner.text[scanner.pos + 1] === " ";
+  const below = key !== undefined && key.line !== line && startsLine(scanner) ? line.indent - key.column : undefined;
   const flows = scanner.more?.state.flows;
   const index = flows?.length ?? 0;
-  const value = read();
-  if (flows !== undefined && at !== undefined && scanner.line === line && Object.keys(value).length > 0) {
-    // Ahead of the collections nested in it, which were recorded as they closed, so the list
-    // keeps the order the file writes them in.
-    flows.splice(index, 0, { pointer: at, kind, padded, width: line.indent + line.text.length });
-  }
+  const shape: FlowShape = { starts: [], trailing: false };
+  const value = read(shape);
+  if (flows === undefined || at === undefined || Object.keys(value).length === 0) return value;
+  const spread = scanner.line === line ? undefined : spreadOf(shape, line);
+  if (scanner.line !== line && spread === undefined) return value;
+  const flow: YamlFlow = { pointer: at, kind, padded: padded && spread === undefined, width: line.indent + line.text.length };
+  if (below !== undefined && below > 0) flow.below = below;
+  if (spread !== undefined) flow.spread = spread;
+  // Ahead of the collections nested in it, which were recorded as they closed, so the list
+  // keeps the order the file writes them in.
+  flows.splice(index, 0, flow);
   return value;
 }
 
-function parseFlowSequence(scanner: Scanner, at?: string): unknown[] {
+/** Whether the scanner is at the first thing written on its line. */
+function startsLine(scanner: Scanner): boolean {
+  return scanner.pos === 0 && scanner.text === scanner.line.text;
+}
+
+/**
+ * How a collection is spread one entry to a line, measured from where its opening line starts:
+ * past the dash of a sequence item, whose content YAML reads at the column it starts in. Undefined
+ * for a collection whose entries do not each start a line at one column, or whose closing bracket
+ * does not start one.
+ */
+function spreadOf(shape: FlowShape, opened: Line): YamlSpread | undefined {
+  const [first, ...rest] = shape.starts;
+  if (first === undefined || shape.close === undefined || rest.some((start) => start !== first)) return undefined;
+  const base = opened.indent + (/^(?:-[ ]+)*/.exec(opened.text)?.[0].length ?? 0);
+  const entries = first - base;
+  const close = shape.close - base;
+  return entries > 0 && close >= 0 ? { entries, close, trailing: shape.trailing } : undefined;
+}
+
+/** Notes where the closing bracket the scanner is at starts, and whether a comma came before it. */
+function closeShape(shape: FlowShape | undefined, scanner: Scanner, trailing: boolean): void {
+  if (shape === undefined) return;
+  shape.close = startsLine(scanner) ? scanner.line.indent : undefined;
+  shape.trailing = trailing;
+}
+
+function parseFlowSequence(scanner: Scanner, at?: string, shape?: FlowShape): unknown[] {
   scanner.pos += 1;
   const items: unknown[] = [];
   skipSeparation(scanner);
@@ -1050,23 +1157,26 @@ function parseFlowSequence(scanner: Scanner, at?: string): unknown[] {
     return items;
   }
   for (;;) {
+    shape?.starts.push(startsLine(scanner) ? scanner.line.indent : undefined);
     items.push(parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, items.length)));
     const before = scanner.line;
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
+    if (char === "]") closeShape(shape, scanner, false);
     scanner.pos += 1;
     if (char === "]") return items;
     if (char !== ",") throw flowError(scanner, '"," or "]"', "]", before);
     skipSeparation(scanner);
     // A trailing comma, which YAML allows and JSON does not.
     if (scanner.text[scanner.pos] === "]") {
+      closeShape(shape, scanner, true);
       scanner.pos += 1;
       return items;
     }
   }
 }
 
-function parseFlowMapping(scanner: Scanner, at?: string): Record<string, unknown> {
+function parseFlowMapping(scanner: Scanner, at?: string, shape?: FlowShape): Record<string, unknown> {
   scanner.pos += 1;
   const mapping: Record<string, unknown> = {};
   skipSeparation(scanner);
@@ -1076,19 +1186,23 @@ function parseFlowMapping(scanner: Scanner, at?: string): Record<string, unknown
   }
   for (;;) {
     skipSeparation(scanner);
+    const start = startsLine(scanner) ? { line: scanner.line, column: scanner.line.indent } : undefined;
+    shape?.starts.push(start?.column);
     const key = parseFlowKey(scanner);
     if (Object.prototype.hasOwnProperty.call(mapping, key)) {
       throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
     }
-    mapping[key] = parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, key));
+    mapping[key] = parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, key), start);
     const before = scanner.line;
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
+    if (char === "}") closeShape(shape, scanner, false);
     scanner.pos += 1;
     if (char === "}") return mapping;
     if (char !== ",") throw flowError(scanner, '"," or "}"', "}", before);
     skipSeparation(scanner);
     if (scanner.text[scanner.pos] === "}") {
+      closeShape(shape, scanner, true);
       scanner.pos += 1;
       return mapping;
     }

@@ -8,8 +8,10 @@
  * fits on its line in flow style (`type: [string, "null"]`) unless the file wrote it one item
  * to a line, or writes every collection in block style, a flow mapping or a flow sequence that
  * holds one (`items: {type: string}`) on its line where the file wrote it on one and it still
- * fits there, spaced inside its brackets as the file spaced it, `{}` and `[]` for the empty
- * collections, a folded block scalar (`>`) for a string
+ * fits there, spaced inside its brackets as the file spaced it, a flow collection the file
+ * spread one entry to a line, as Prettier breaks one that outgrew its line, spread the same way,
+ * and one that outgrows its line below its key and then spread, where the file does that to its
+ * own, `{}` and `[]` for the empty collections, a folded block scalar (`>`) for a string
  * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
  * wrapped that way, and a quoted
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
@@ -34,6 +36,7 @@ import {
   type YamlFold,
   type YamlLayout,
   type YamlSequence,
+  type YamlSpread,
   parseYaml,
   readYaml,
 } from "./yaml.js";
@@ -67,13 +70,24 @@ interface Layout {
   blockLists: boolean;
   /** How each string the file wrapped over lines was written, by the pointer of the string. */
   folds: Map<string, YamlFold>;
-  /** The collections the file wrote in flow style on one line, by their pointers. */
+  /** The collections the file wrote in flow style, on one line or spread over lines, by their pointers. */
   flows: Map<string, YamlFlow>;
   /**
    * Whether a flow collection `flows` does not name, such as a list a fix adds, has a space
-   * inside its brackets, as the file's first flow collection of the same kind has.
+   * inside its brackets, as the file's first flow collection of the same kind on one line has.
    */
   padded: Record<YamlFlow["kind"], boolean>;
+  /**
+   * How far below its key a flow collection goes once it no longer fits after the key: as far as
+   * the file's first collection below its key went. Undefined for a file that puts none there.
+   */
+  below: number | undefined;
+  /**
+   * How a collection in block context that fits on no line is spread: as the file's first
+   * collection spread over lines is. Undefined for a file that spreads none, where such a
+   * collection goes into block style.
+   */
+  spread: YamlSpread | undefined;
 }
 
 /**
@@ -116,9 +130,11 @@ export function stringifyYaml(
     folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
     flows: new Map((layout.flows ?? []).map((flow) => [flow.pointer, flow])),
     padded: {
-      mapping: layout.flows?.find(({ kind }) => kind === "mapping")?.padded ?? false,
-      sequence: layout.flows?.find(({ kind }) => kind === "sequence")?.padded ?? false,
+      mapping: layout.flows?.find(({ kind, spread }) => kind === "mapping" && spread === undefined)?.padded ?? false,
+      sequence: layout.flows?.find(({ kind, spread }) => kind === "sequence" && spread === undefined)?.padded ?? false,
     },
+    below: layout.flows?.find(({ below }) => below !== undefined)?.below,
+    spread: layout.flows?.find(({ spread }) => spread !== undefined)?.spread,
   };
   const end: string[] = [];
   for (const comment of comments) {
@@ -138,11 +154,9 @@ export function stringifyYaml(
   const ending = end.filter((text) => text === "").length;
   // What JSON would make of it — no undefined members, no functions — is what is written.
   const parsed = JSON.parse(json) as unknown;
-  // A document the file wrote as one flow collection on one line stays on that line.
-  const flat = placed.flows.has("") && !commentsWithin("", placed) && !foldsWithin("", placed);
-  const root = flat ? flowCollection(parsed, "", placed) : undefined;
-  const top = root !== undefined && root.length <= flowWidth("", placed) ? [root] : block(parsed, 0, "", placed).lines;
-  const written = [...top, ...end];
+  // A document the file wrote as one flow collection stays on the lines the file wrote it on.
+  const flow = commentsWithin("", placed) || foldsWithin("", placed) ? undefined : rootFlow(parsed, placed);
+  const written = [...(flow ?? block(parsed, 0, "", placed).lines), ...end];
   const text = `${written.join("\n")}\n`;
   const read = readYaml(text);
   if (JSON.stringify(read.value) !== json) {
@@ -232,11 +246,9 @@ function entry(prefix: string, value: unknown, indent: number, dash: boolean, po
   // one item to a line stays that way, and in a file that writes every collection in block style,
   // so does one it did not hold.
   const lined = layout.blockLists || layout.sequences.has(pointer) || commentsWithin(pointer, layout) || foldsWithin(pointer, layout);
-  const flow = lined ? undefined : flowCollection(value, pointer, layout);
-  if (flow !== undefined && prefix.length + 1 + flow.length <= flowWidth(pointer, layout)) {
-    return { lines: [`${prefix} ${flow}`], trail: 0 };
-  }
-  if ((Array.isArray(value) && value.length > 0) || (isObject(value) && Object.keys(value).length > 0)) {
+  const flow = lined ? undefined : flowLines(prefix, value, indent, dash, pointer, layout);
+  if (flow !== undefined) return { lines: flow, trail: 0 };
+  if (isCollection(value)) {
     // A sequence under a key may sit at the key's own indentation, where its dashes count as
     // the indentation the items need.
     const indented = layout.sequences.get(pointer)?.indented ?? layout.indentSequences;
@@ -286,9 +298,142 @@ function commentsWithin(pointer: string, layout: Layout): boolean {
   return [...layout.above.keys(), ...layout.after.keys()].some((at) => at.startsWith(`${pointer}/`));
 }
 
+/** Whether a collection the file spread over lines sits inside the node at `pointer`. */
+function spreadsWithin(pointer: string, layout: Layout): boolean {
+  return [...layout.flows.values()].some((flow) => flow.spread !== undefined && flow.pointer.startsWith(`${pointer}/`));
+}
+
 /** Whether a string the file wrapped over lines sits inside the node at `pointer`. */
 function foldsWithin(pointer: string, layout: Layout): boolean {
   return [...layout.folds.keys()].some((at) => at.startsWith(`${pointer}/`));
+}
+
+/** Whether a value is a collection with something in it, which an empty `[]` or `{}` is not. */
+function isCollection(value: unknown): value is unknown[] | Record<string, unknown> {
+  return Array.isArray(value) ? value.length > 0 : isObject(value) && Object.keys(value).length > 0;
+}
+
+/**
+ * The document as the flow collection the file wrote it as, on its one line while it fits there
+ * and spread one entry to a line as the file spread it, or undefined for a document the file
+ * wrote in block style, and for one that does not fit on its line or would not read back.
+ */
+function rootFlow(value: unknown, layout: Layout): string[] | undefined {
+  const spread = layout.flows.get("")?.spread;
+  if (spread !== undefined && isCollection(value)) {
+    const lines = spreadLines(value, "", 0, spread, layout);
+    return readsBack(`${lines.join("\n")}\n`, value) ? lines : undefined;
+  }
+  const flow = layout.flows.has("") ? flowCollection(value, "", layout) : undefined;
+  return flow !== undefined && flow.length <= flowWidth("", layout) ? [flow] : undefined;
+}
+
+/**
+ * A mapping entry or sequence item whose value is a collection in flow style, where the file
+ * wrote it that way or it is a list of scalars: spread as the file spread it, whatever its
+ * length, and on the one line the file wrote it on — after its key or dash, or below the key —
+ * while that line holds it. One that outgrows its line goes below its key the way the file's
+ * first collection below its key went, and is spread the way the file's first collection spread
+ * over lines is where it does not fit there either, which is what Prettier does to a collection
+ * that outgrew its line. Undefined for a value to write in block style: a mapping the file did
+ * not write in flow style, and a collection that fits on no line in a file that spreads none.
+ */
+function flowLines(prefix: string, value: unknown, indent: number, dash: boolean, pointer: string, layout: Layout): string[] | undefined {
+  const record = layout.flows.get(pointer);
+  // Only a key has a line to go below, and a sequence item's value starts past its dash.
+  const below = dash ? undefined : record?.below;
+  if (record?.spread !== undefined && isCollection(value)) return spreadEntry(prefix, value, indent, dash, below, record.spread, pointer, layout);
+  const flow = flowCollection(value, pointer, layout);
+  if (flow === undefined) return undefined;
+  const width = flowWidth(pointer, layout);
+  if (below === undefined && prefix.length + 1 + flow.length <= width) return [`${prefix} ${flow}`];
+  const under = dash ? undefined : (below ?? layout.below);
+  if (under !== undefined && indent + under + flow.length <= width) return [prefix, `${" ".repeat(indent + under)}${flow}`];
+  if (layout.spread === undefined || !isCollection(value)) return undefined;
+  return spreadEntry(prefix, value, indent, dash, under, layout.spread, pointer, layout);
+}
+
+/**
+ * A mapping entry or sequence item whose value is a collection spread one entry to a line,
+ * opened after its key or dash, or `below` the key on a line of its own. Undefined where those
+ * lines would not read back as the value: a file may close a collection under its key, which the
+ * reader takes inside a JSON document and refuses from a block mapping, so a collection a fix
+ * moves out of one goes into block style.
+ */
+function spreadEntry(
+  prefix: string,
+  value: unknown[] | Record<string, unknown>,
+  indent: number,
+  dash: boolean,
+  below: number | undefined,
+  spread: YamlSpread,
+  pointer: string,
+  layout: Layout,
+): string[] | undefined {
+  const base = below === undefined ? indent + (dash ? INDENT : 0) : indent + below;
+  const [open = "", ...rest] = spreadLines(value, pointer, base, spread, layout);
+  const lines = below === undefined ? [`${prefix} ${open}`, ...rest] : [prefix, `${" ".repeat(base)}${open}`, ...rest];
+  const [first = "", ...after] = lines;
+  const text = [`${dash ? "-" : "k:"}${first.slice(prefix.length)}`, ...after.map((line) => line.slice(indent))];
+  return readsBack(`${text.join("\n")}\n`, dash ? [value] : { k: value }) ? lines : undefined;
+}
+
+/**
+ * A collection spread one entry to a line as `spread` says, from `base`, the column the line it
+ * opens on starts at: its opening bracket, which the caller puts at the end of that line, then
+ * a line or more for each entry, and its closing bracket on a line of its own.
+ */
+function spreadLines(value: unknown[] | Record<string, unknown>, pointer: string, base: number, spread: YamlSpread, layout: Layout): string[] {
+  const entries: Array<[string | undefined, unknown]> = Array.isArray(value)
+    ? value.map((item) => [undefined, item])
+    : Object.entries(value);
+  const column = base + spread.entries;
+  const lines = entries.flatMap(([key, item], index) => {
+    const comma = index < entries.length - 1 || spread.trailing ? "," : "";
+    return flowEntry(key, item, joinPointer(pointer, key ?? index), column, comma, spread, layout);
+  });
+  const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"];
+  return [open, ...lines, `${" ".repeat(base + spread.close)}${close}`];
+}
+
+/**
+ * One entry of a collection spread over lines, starting at `column` and followed by `comma`: a
+ * scalar after its key, and a collection where the file wrote it — on its line or below its key,
+ * on one line or spread over lines. A collection that outgrows its line, or one the file did not
+ * write, such as the branch a fix adds to an `anyOf`, goes on one line after its key, or below
+ * it as far as the file's first one went, while it fits there, and is spread as `around`, the
+ * collection it is in, is spread when it does not, or when it holds one the file spread. Inside
+ * a flow collection, block style is no option.
+ */
+function flowEntry(
+  key: string | undefined,
+  value: unknown,
+  pointer: string,
+  column: number,
+  comma: string,
+  around: YamlSpread,
+  layout: Layout,
+): string[] {
+  // A flow mapping's key runs to its first colon, so a key holding one is quoted.
+  const head = `${" ".repeat(column)}${key === undefined ? "" : `${flowScalar(key, key.includes(":"))}:`}`;
+  const gap = key === undefined ? "" : " ";
+  if (!isCollection(value)) return [`${head}${gap}${flowNode(value, pointer, layout)}${comma}`];
+  const record = layout.flows.get(pointer);
+  // One the file spread stays where it opened, and any other goes below its key once it has to.
+  const below = key === undefined ? undefined : record?.spread !== undefined ? record.below : (record?.below ?? layout.below);
+  if (record?.spread === undefined && !spreadsWithin(pointer, layout)) {
+    const flow = flowNode(value, pointer, layout);
+    const width = flowWidth(pointer, layout);
+    const after = `${head}${gap}${flow}${comma}`;
+    const under = below === undefined ? undefined : `${" ".repeat(column + below)}${flow}${comma}`;
+    // One the file wrote below its key stays there, and any other tries after its key first.
+    if (record?.below === undefined && after.length <= width) return [after];
+    if (under !== undefined && under.length <= width) return [head, under];
+  }
+  const base = below === undefined ? column : column + below;
+  const [open = "", ...rest] = spreadLines(value, pointer, base, record?.spread ?? around, layout);
+  const closed = [...rest.slice(0, -1), `${rest[rest.length - 1] ?? ""}${comma}`];
+  return below === undefined ? [`${head}${gap}${open}`, ...closed] : [head, `${" ".repeat(base)}${open}`, ...closed];
 }
 
 /**
@@ -297,7 +442,7 @@ function foldsWithin(pointer: string, layout: Layout): boolean {
  * style would not read back as.
  */
 function flowCollection(value: unknown, pointer: string, layout: Layout): string | undefined {
-  if (!(Array.isArray(value) ? value.length > 0 : isObject(value) && Object.keys(value).length > 0)) return undefined;
+  if (!isCollection(value)) return undefined;
   const scalars = Array.isArray(value) && value.every((item) => typeof item !== "object" || item === null);
   if (!scalars && !layout.flows.has(pointer)) return undefined;
   const flow = flowNode(value, pointer, layout);
