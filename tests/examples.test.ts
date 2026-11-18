@@ -41,9 +41,9 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "warn openai/undocumented-keyword /properties/billing_address/properties/country",
     ],
     anthropic: [],
+    // The two "allOf"s, which only the OpenAI rule carries the merge for. The country code's
+    // length constraints, which the Gemini API strips, move into its description.
     gemini: [
-      "warn gemini/undocumented-keyword /$defs/address/properties/country",
-      "warn gemini/undocumented-keyword /$defs/address/properties/country",
       "warn gemini/undocumented-keyword /properties/billing_address",
       "warn gemini/undocumented-keyword /properties/currency",
     ],
@@ -64,17 +64,14 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "error anthropic/no-recursive-schemas /$defs/reply/properties/replies/items",
       "warn anthropic/enum-casing /properties/category",
     ],
-    // The Gemini rules carry no fixes: their docs list the subset with "such as", so a keyword
-    // or format that is merely undocumented may well work.
+    // The formats stay: the Gemini docs list theirs with "such as", so a format that is merely
+    // undocumented may well work. "minLength", "maxLength", and "uniqueItems", which its API
+    // strips, move into the description.
     gemini: [
       "warn gemini/undocumented-format /properties/reporter/properties/email",
       "warn gemini/undocumented-format /properties/reporter/properties/website",
-      "warn gemini/undocumented-keyword /properties/tags",
-      "warn gemini/undocumented-keyword /properties/title",
-      "warn gemini/undocumented-keyword /properties/title",
     ],
-    // Fewer Gemini warnings than Gemini alone leaves: the Anthropic fixes already removed the
-    // keywords it would have warned about, and the OpenAI one removed "format": "uri".
+    // One Gemini warning fewer than Gemini alone leaves: the OpenAI fix removed "format": "uri".
     all: [
       "error anthropic/no-recursive-schemas /$defs/reply/properties/replies/items",
       "warn anthropic/enum-casing /properties/category",
@@ -93,12 +90,9 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
       "warn openai/undocumented-keyword /properties/tags",
     ],
     anthropic: [],
-    gemini: [
-      "warn gemini/undocumented-keyword /properties/message",
-      "warn gemini/undocumented-keyword /properties/message",
-      "warn gemini/undocumented-keyword /properties/tags",
-    ],
-    // The Anthropic fixes already removed the keywords the other two only warn about.
+    // The Gemini API strips those three, so its fix moves them into the description.
+    gemini: [],
+    // The Anthropic fixes already removed the keywords OpenAI only warns about.
     all: [],
   },
   // An Anthropic request body: two tools whose schemas every fix resolves, and a server tool
@@ -115,8 +109,9 @@ const REMAINING: Record<string, Record<Selection, readonly string[]>> = {
     // "maxLength" on the note title: undocumented rather than rejected, so no fix drops it.
     openai: ["warn openai/undocumented-keyword /properties/title"],
     anthropic: [],
-    // The Gemini rules carry no fixes, so both of its warnings stay.
-    gemini: ["warn gemini/undocumented-format /properties/source", "warn gemini/undocumented-keyword /properties/title"],
+    // "maxLength" moves into the description, since the Gemini API strips it; the format, which
+    // is merely undocumented there, stays.
+    gemini: ["warn gemini/undocumented-format /properties/source"],
     // The Anthropic fixes dropped "maxLength" and the OpenAI one dropped "format": "uri", so
     // the keywords the other two only warn about are gone by the time Gemini's rules see them.
     all: [],

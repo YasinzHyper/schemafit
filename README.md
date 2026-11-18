@@ -13,7 +13,7 @@ Structured outputs and strict tool calling promise JSON that always matches your
 - Anthropic rejects `minimum` and `maxLength`. OpenAI and Gemini accept `minimum`.
 - OpenAI and Gemini handle recursive schemas. Anthropic rejects them.
 - `"format": "uri"` works on Anthropic, fails on OpenAI.
-- Gemini documents a small subset and makes no promise about the rest, so a constraint outside it can silently do nothing.
+- Gemini accepts `maxLength` and `uniqueItems`, then strips them before decoding without a word, so the constraint silently does nothing.
 
 `schemafit` is a linter for exactly this. It checks a schema against each provider's documented rules, tells you where it breaks and how to fix it, and links every finding to the official docs.
 
@@ -37,8 +37,8 @@ examples/ticket.json
            Numerical constraint "minimum" is not supported.
     ...
   Gemini     ⚠ compatible, 5 warnings
-    warn   #/properties/title  gemini/undocumented-keyword
-           "minLength" is outside the documented subset; it may be ignored or rejected.
+    warn   #/properties/title  gemini/unenforced-constraint
+           "minLength" is not enforced; the API strips it from the schema without an error.
     ...
 ```
 
@@ -262,7 +262,7 @@ ticket.openai.json
 - OpenAI supports no `allOf` at all, so for OpenAI an `allOf` is merged into the schema that holds it, the way you would merge it by hand. Object branches contribute their properties, required keys, and descriptions; a branch that describes something else — a string with an `enum`, a number with a `minimum` — contributes its own constraint, narrowed to what every branch agrees on: the types and enum values they have in common, the larger of two lower bounds, the smaller of two upper bounds. A branch that is nothing but a local `$ref` — the `{ "allOf": [{ "$ref": "#/$defs/User" }], "description": "..." }` Pydantic emits for an annotated model field — is inlined first, as long as the definition it names does not refer back to itself. A definition the rest of the schema also references is copied rather than moved — the original stays under `$defs`, where the references the fix does not touch still find it, and the report says which definition was copied — because the alternative is an `allOf` the API rejects, and the extra copy only costs size, which the property and string-size limits still measure. Once nothing references a definition any more, the fix removes it, along with the `$defs` map it empties: an orphan still costs against those limits, which count definition names and every property below them. Branches that constrain the same thing differently are left alone, as are branches with no type or enum value in common, a branch carrying a `$ref` beside other keywords, and the composition keywords whose meaning cannot survive a rewrite (`not`, `if`/`then`/`else`).
 - Anthropic does take an `allOf`; what it does not take is a `$ref` inside one. So `--fix --provider anthropic` keeps the keyword and only puts the definition in the branch's place — copied when the rest of the schema still references it, and removed once nothing does, the same way the merge handles a definition. Select both providers and both rewrites run on the same schema: the `$ref` is inlined, then the `allOf` itself goes, because OpenAI accepts neither half.
 - A root that OpenAI will not take — a union, an array, a primitive, which is what a Zod discriminated union or `z.array()` compiles to — is wrapped in an object with one required property, `result`, and the report names that key. The model then answers `{ "result": ... }`, so unwrap it on the way out. Definitions stay at the root, where `#/$defs/...` references still find them.
-- A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, and neither provider accepts every string `format`, so `--fix` removes the keyword and writes what it required into `description` — `"format": "uri"` becomes "Must be an absolute URI, such as https://example.com/a." That is the same transformation the Anthropic SDKs apply. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
+- A fix never quietly drops a constraint. Anthropic does not support `minimum`, `maxLength`, `uniqueItems` and their kind, Gemini strips `maxLength`, `uniqueItems`, `minProperties` and their kind from the schema it is sent, and neither OpenAI nor Anthropic accepts every string `format`, so `--fix` removes the keyword and writes what it required into `description` — `"format": "uri"` becomes "Must be an absolute URI, such as https://example.com/a." That is the same transformation the Anthropic SDKs apply, and what the Gemini docs recommend for a rule the output grammar does not carry. The constraint then holds only as far as the model honours it, so keep validating the response against your original schema.
 - `--prune-unused-defs` widens that last step to the whole document: every `$defs` / `definitions` entry no `$ref` reaches goes, not only the ones `--fix` orphaned itself, and so does anything only those entries referenced. It is off by default because it is a different decision — a definition the author wrote and never used changes nothing about what the schema accepts, and another document may `$ref` into it — but a generator that emits one `$defs` map for a whole module leaves plenty of them, and each one spends property and string-size budget for nothing. Nothing is pruned from a schema whose references cannot all be followed: an anchor (`"$ref": "#user"`), a `$dynamicRef`, a URL, or a nested `$id` would make a definition that *is* referenced look unused. Every `$ref`, `$dynamicRef`, and `$recursiveRef` in the document counts, wherever it sits — a draft-07 `dependencies`, a `contentSchema` — so a reference outside the keywords the linter otherwise walks stops pruning rather than going unnoticed.
 - `--write` rewrites the files you give it in place, which is what makes `--fix` usable over a directory of schemas or from a pre-commit hook: `schemafit --fix --write tools/*.json`. Every file is read and rewritten before any of them is written out, so a file that is unreadable or not JSON fails the run instead of leaving half of it rewritten. A file no fix changed is not written at all — its formatting and its mtime stay as they were — and the ones that were come back with two-space indentation. The report still goes to stderr, and ends with a line counting the files that changed.
 - The rewritten document goes to stdout (or `--out`), and the report goes to stderr, so `schemafit --fix -p openai tool.json | jq .` works. The report ends with one line per selected provider, saying whether the rewritten schema fits it and what is left to change by hand.
@@ -300,7 +300,7 @@ The short version of [the full rule list](docs/rules.md):
 | `additionalProperties: false` | required | required | optional |
 | Recursive schemas | ✔ | ✖ | ✔ |
 | `minimum` / `maximum` | ✔ | ✖ | ✔ |
-| `minLength` / `maxLength` | undocumented | ✖ | undocumented |
+| `minLength` / `maxLength` | undocumented | ✖ | ⚠ accepted, then stripped |
 | `maxItems` | ✔ | ✖ (`minItems` 0 or 1 only) | ✔ |
 | `pattern` | ✔ | ✔ no lookarounds, backreferences, `\b` | undocumented |
 | `allOf` | ✖ | ✔ but not with `$ref` | undocumented |

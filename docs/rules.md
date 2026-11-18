@@ -304,17 +304,29 @@ Models: Structured output (JSON Schema)
 | Rule | Severity | Summary |
 | --- | --- | --- |
 | [`gemini/undocumented-keyword`](#geminiundocumented-keyword) | warn | Validation keywords outside the documented JSON Schema subset. |
+| [`gemini/unenforced-constraint`](#geminiunenforced-constraint) | warn | Constraints the API strips instead of enforcing (minLength, maxLength, uniqueItems, ...). |
 | [`gemini/undocumented-format`](#geminiundocumented-format) | warn | String "format" values other than date-time, date, and time are undocumented. |
 
 ### gemini/undocumented-keyword
 
 Validation keywords outside the documented JSON Schema subset.
 
-> Gemini documents a supported subset rather than a list of rejected keywords, so everything here is a warning: the keyword may be ignored (the constraint silently does nothing) or the schema may be rejected.
+> Gemini documents a supported subset and the constraints it strips (gemini/unenforced-constraint), but says nothing about these keywords, so everything here is a warning: the keyword may be ignored (the constraint silently does nothing) or the schema may be rejected.
 
 - Severity: **warn**
-- Source: <https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support>
-- Last verified: 2026-10-18
+- Source: <https://ai.google.dev/gemini-api/docs/structured-output#json-schema-support>
+- Last verified: 2026-11-18
+
+### gemini/unenforced-constraint
+
+Constraints the API strips instead of enforcing (minLength, maxLength, uniqueItems, ...).
+
+> The docs list these as unsupported and say the API "automatically strips and ignores them during request normalization rather than returning an error", so the schema is accepted and the constraint silently does nothing. That makes this a warning: nothing is rejected. The fix removes the keyword and states the constraint in "description", which the docs recommend for rules the output grammar does not carry, so the model still sees it; validate the response in your code as well. "contains", "minContains", and "maxContains" are reported without a fix, because what they require cannot be put in a sentence of the description reliably.
+
+- Severity: **warn**
+- Fixable: **yes**, with `--fix`
+- Source: <https://ai.google.dev/gemini-api/docs/structured-output#limitations>
+- Last verified: 2026-11-18
 
 ### gemini/undocumented-format
 
@@ -323,5 +335,5 @@ String "format" values other than date-time, date, and time are undocumented.
 > The docs introduce the list with "such as", so it may not be exhaustive. For the same reason there is no fix: dropping a format that is only undocumented, and may well work, would give up a constraint for nothing.
 
 - Severity: **warn**
-- Source: <https://ai.google.dev/gemini-api/docs/structured-output#json_schema_support>
-- Last verified: 2026-10-18
+- Source: <https://ai.google.dev/gemini-api/docs/structured-output#json-schema-support>
+- Last verified: 2026-11-18
