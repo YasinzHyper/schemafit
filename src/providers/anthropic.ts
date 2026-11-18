@@ -11,7 +11,13 @@ import type {
   SchemaNode,
 } from "../types.js";
 import { isJsonSchema } from "../walk.js";
-import { additionalPropertiesFalse, allowedFormats, foldTitle, forbiddenKeywords, withNote } from "./shared.js";
+import {
+  additionalPropertiesFalse,
+  allowedFormats,
+  forbiddenKeywords,
+  moveToDescription,
+  optionalFix,
+} from "./shared.js";
 
 const DOCS = "https://platform.claude.com/docs/en/build-with-claude/structured-outputs";
 const LIMITATIONS = `${DOCS}#json-schema-limitations`;
@@ -97,83 +103,6 @@ const enumPrimitives: Rule = {
     }
   },
 };
-
-function count(value: number, noun: string): string {
-  return `${value} ${noun}${value === 1 ? "" : "s"}`;
-}
-
-/**
- * What a dropped constraint becomes in `description`, phrased after the docs' own
- * example: a field with `minimum: 100` keeps the description "Must be at least 100".
- * The empty string means the keyword carries no constraint worth describing; null means
- * the value is not one this can phrase, so the finding is reported without a fix rather
- * than with a sentence that does not say what the schema meant.
- */
-function constraintNote(keyword: string, value: unknown): string | null {
-  // "uniqueItems": false allows what every array already allows.
-  if (keyword === "uniqueItems") return value === true ? "Items must be unique." : value === false ? "" : null;
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-
-  switch (keyword) {
-    case "minimum":
-      return `Must be at least ${value}.`;
-    case "maximum":
-      return `Must be at most ${value}.`;
-    case "exclusiveMinimum":
-      return `Must be greater than ${value}.`;
-    case "exclusiveMaximum":
-      return `Must be less than ${value}.`;
-    case "multipleOf":
-      return `Must be a multiple of ${value}.`;
-    case "minLength":
-      return `Must be at least ${count(value, "character")} long.`;
-    case "maxLength":
-      return `Must be at most ${count(value, "character")} long.`;
-    case "minItems":
-      return `Must have at least ${count(value, "item")}.`;
-    case "maxItems":
-      return `Must have at most ${count(value, "item")}.`;
-    default:
-      return null;
-  }
-}
-
-/**
- * The rewrite the Anthropic SDKs apply to an unsupported constraint: remove the keyword
- * and state what it required in `description`. `keep` is a value the docs do support to
- * set the keyword to instead of removing it, which only `minItems` has. Returns null when
- * the constraint cannot be phrased, and the finding then carries no fix.
- */
-function moveToDescription(keyword: string, schema: JsonSchema, keep?: number): SchemaFix | null {
-  const note = constraintNote(keyword, schema[keyword]);
-  if (note === null) return null;
-
-  const title =
-    note === ""
-      ? `Remove "${keyword}".`
-      : keep === undefined
-        ? foldTitle(`"${keyword}"`)
-        : `Lower "${keyword}" to ${keep} and state the real minimum in "description".`;
-
-  return {
-    title,
-    rewrite(current) {
-      // The node may have been rewritten since the finding was reported.
-      if (constraintNote(keyword, current[keyword]) !== note) return current;
-      const rewritten: JsonSchema = {};
-      for (const [key, value] of Object.entries(current)) {
-        if (key !== keyword) rewritten[key] = value;
-        else if (keep !== undefined) rewritten[key] = keep;
-      }
-      return note === "" ? rewritten : withNote(rewritten, note);
-    },
-  };
-}
-
-/** Spreads into a report, so `fix` is absent rather than undefined when there is none. */
-function optionalFix(fix: SchemaFix | null): { fix?: SchemaFix } {
-  return fix === null ? {} : { fix };
-}
 
 const MOVES_TO_DESCRIPTION =
   "The fix is the one the Anthropic SDKs apply when they transform a schema: remove the keyword and state the " +
