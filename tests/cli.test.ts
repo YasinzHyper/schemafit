@@ -932,6 +932,35 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write keeps the flow collections a YAML file wrapped over lines on those lines, as PyYAML wraps them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=None, sort_keys=False) writes.
+    const head = `type: object
+properties:
+  category:
+    type: string
+    enum: [billing, outage, feature-request, account, security, integrations, performance,
+      other]
+  title: {type: string, description: A short title}
+`;
+    await writeFile(
+      file,
+      `${head}  assignee: {type: string}
+  due: {type: string, format: date}
+required: [category, title]
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The enum past 80 columns stays wrapped where PyYAML wrapped it, rather than going into block style.
+    expect(await readFile(file, "utf8")).toBe(`${head}  assignee: {type: [string, "null"]}
+  due: {type: [string, "null"], format: date}
+required: [category, title, assignee, due]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tools.yaml");
