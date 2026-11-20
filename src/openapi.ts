@@ -1,6 +1,6 @@
 import { fixExcept } from "./fix.js";
 import { summarize } from "./lint.js";
-import { joinPointer, unescapeToken } from "./pointer.js";
+import { joinPointer, resolvePointer, setPointer, unescapeToken } from "./pointer.js";
 import { refOnly } from "./refs.js";
 import { PROVIDER_IDS } from "./types.js";
 import type { Finding, FixOptions, FixResult, JsonSchema, LintResult } from "./types.js";
@@ -29,24 +29,34 @@ function spellsNullAsKeyword(document: unknown): boolean {
 }
 
 /**
- * A copy of the components with OpenAPI 3.0's `nullable: true` written as JSON Schema writes it:
+ * A copy of `schema` with OpenAPI 3.0's `nullable: true` written as JSON Schema writes it:
  * `{ "type": "string", "nullable": true }` becomes `{ "type": ["string", "null"] }`. The keyword
  * "only takes effect if `type` is explicitly defined within the same Schema Object", and the other
  * keywords "retain their defined behavior", so an `enum` without `null` still rules it out, as it
  * does beside a `type` array. A `nullable` without a `type`, or set to `false`, changes nothing
  * and is left as it is.
  */
-function nullAsType(components: JsonSchema): JsonSchema {
-  const copy = structuredClone(components);
-  for (const component of Object.values(copy)) {
-    if (!isJsonSchema(component)) continue;
-    for (const { schema } of walk(component)) {
-      if (schema.nullable !== true || typeof schema.type !== "string" || schema.type === "null") continue;
-      schema.type = [schema.type, "null"];
-      delete schema.nullable;
-    }
+function nullAsType(schema: JsonSchema): JsonSchema {
+  const copy = structuredClone(schema);
+  for (const { schema: node } of walk(copy)) {
+    if (node.nullable !== true || typeof node.type !== "string" || node.type === "null") continue;
+    node.type = [node.type, "null"];
+    delete node.nullable;
   }
   return copy;
+}
+
+/** The components with `nullAsType` applied to each, which a component and an inline schema are bundled from alike. */
+function nullAsTypeIn(components: JsonSchema): JsonSchema {
+  return Object.fromEntries(
+    Object.entries(components).map(([name, component]) => [name, isJsonSchema(component) ? nullAsType(component) : component]),
+  );
+}
+
+/** The schema components of `document` as they are read: in an OpenAPI 3.0 document, with `nullable` read as a type. */
+function readComponents(document: unknown): JsonSchema | undefined {
+  const declared = componentSchemas(document);
+  return declared !== undefined && spellsNullAsKeyword(document) ? nullAsTypeIn(declared) : declared;
 }
 
 /**
@@ -238,9 +248,8 @@ export interface OpenApiSchema extends UnwrappedSchema {
  * when the document declares no schema components.
  */
 export function openApiSchemas(document: unknown): OpenApiSchema[] {
-  const declared = componentSchemas(document);
-  if (declared === undefined) return [];
-  const components = spellsNullAsKeyword(document) ? nullAsType(declared) : declared;
+  const components = readComponents(document);
+  if (components === undefined) return [];
   return Object.keys(components).map((name) => {
     const { schema, copied, copiedAs } = bundle(components, name);
     const keys = [...COMPONENTS, name];
@@ -327,7 +336,8 @@ function operationSchemas(operation: JsonSchema, keys: readonly string[], scope:
  * type of an operation's request body and responses, each as it would be sent on its own, with
  * the components it references bundled under `$defs` the way `openApiSchemas` bundles a
  * component's. The name says where the schema is used, such as `POST /pets request body,
- * application/json`.
+ * application/json`. In an OpenAPI 3.0 document, `nullable: true` is read as the `type` array it
+ * means, in the schema and in the components bundled into it alike: see `nullAsType`.
  *
  * A schema that is only a `$ref` to a component is left out, since the component is checked
  * under its own name, and so is a Reference Object in place of a request body or response, which
@@ -335,7 +345,8 @@ function operationSchemas(operation: JsonSchema, keys: readonly string[], scope:
  */
 export function openApiInlineSchemas(document: unknown): OpenApiSchema[] {
   if (!isJsonSchema(document) || !isJsonSchema(document.paths)) return [];
-  const components = componentSchemas(document) ?? {};
+  const components = readComponents(document) ?? {};
+  const spelling = spellsNullAsKeyword(document);
   const found: InlineSchema[] = [];
   for (const [path, item] of Object.entries(document.paths)) {
     if (!isJsonSchema(item)) continue;
@@ -349,7 +360,8 @@ export function openApiInlineSchemas(document: unknown): OpenApiSchema[] {
   return found
     .filter(({ schema }) => !wholeComponent(refOnly(schema)))
     .map(({ schema: declared, keys, name, wrapper }) => {
-      const { schema, copied, copiedAs } = bundleSchema(components, declared, name);
+      const read = spelling ? nullAsType(declared) : declared;
+      const { schema, copied, copiedAs } = bundleSchema(components, read, name);
       return {
         schema,
         wrapper: copied.length > 0 ? `${wrapper}, with the components it references under $defs` : wrapper,
@@ -406,13 +418,14 @@ export function withoutCopiedFindings(
 }
 
 /**
- * The fixes that rewrite what a component is rather than how it is spelled, held back under
- * `fixOpenApi`. Wrapping a non-object root in `{ "result": ... }` is right for a schema sent on
- * its own, but a component is also what every `#/components/schemas/<name>` reference to it
- * means, so the wrapped one would change the API the document describes, the requests and
- * responses that use it included. Wrap such a component where it is sent instead.
+ * The fixes that rewrite what a schema of the document is rather than how it is spelled, held
+ * back under `fixOpenApi`. Wrapping a non-object root in `{ "result": ... }` is right for a schema
+ * sent on its own, but a component is also what every `#/components/schemas/<name>` reference to
+ * it means, and a schema declared under `paths` is the body a request or response carries, so the
+ * wrapped one would change the API the document describes. Wrap such a schema where it is sent
+ * instead.
  */
-const HELD_IN_COMPONENTS: ReadonlySet<string> = new Set(["openai/root-object"]);
+const HELD_IN_DOCUMENT: ReadonlySet<string> = new Set(["openai/root-object"]);
 
 /**
  * A fixed bundle turned back into the component it was made from: the copies `copiedAs` names
@@ -434,66 +447,79 @@ function unbundle(schema: JsonSchema, copiedAs: Readonly<Record<string, string>>
   return restored;
 }
 
-/** One component of an OpenAPI document after `fixOpenApi`, the schema back in its own shape. */
+/**
+ * One schema of an OpenAPI document after `fixOpenApi`, a component or one declared inline under
+ * `paths`, the schema back in its own shape.
+ */
 export type FixedComponent = Omit<OpenApiSchema, "schema"> & FixResult;
 
+/** What a schema of the document is called in an error: a component by its name, an inline one by where it is used. */
+function labelOf(found: OpenApiSchema): string {
+  return found.pointer === componentPointer(found.name as string) ? `Component "${found.name}"` : (found.name as string);
+}
+
 /**
- * Applies every available fix to each schema under `components.schemas` and puts it back where
- * it came from, so a fix lands once, in the component it belongs to.
+ * Fixes one bundled schema of the document and turns it back into the schema it was made from:
+ * see `fixOpenApi`. `own` is the schema as the document writes it, before `nullable` was read.
+ */
+function fixDeclared(found: OpenApiSchema, own: unknown, options: FixOptions, spelling: boolean): FixResult {
+  const declared = isJsonSchema(own) && own.$defs !== undefined;
+  let result: FixResult;
+  try {
+    result = fixExcept(found.schema, options, HELD_IN_DOCUMENT);
+  } catch (error) {
+    if (error instanceof TypeError) throw new TypeError(`${labelOf(found)}: ${error.message}`);
+    throw error;
+  }
+  const applied = result.applied.filter((item) => copiedLocation(item.path, found.copiedAs) === undefined);
+  const schema = unbundle(result.schema, found.copiedAs, declared);
+  // Writing `nullable` back moves it next to `type`, so a schema no fix touched is kept as written.
+  if (spelling) {
+    return { ...result, schema: applied.length > 0 ? nullAsKeyword(schema) : (structuredClone(own) as JsonSchema), applied };
+  }
+  return { ...result, schema, applied };
+}
+
+/**
+ * Applies every available fix to each schema under `components.schemas`, and to each schema
+ * declared inline under `paths` that `openApiInlineSchemas` reads, and puts it back where it came
+ * from, so a fix lands once, in the schema it belongs to.
  *
- * Each component is fixed as the bundle `openApiSchemas` lints, so a fix sees the components
- * it references, and an `allOf` of one can be merged. The copies the bundle made under `$defs`
- * are then taken out again and its references pointed back at `#/components/schemas/`, and the
- * fixes made inside a copy are dropped from its report: they are applied, and reported, on the
- * component the copy was made from. What a fix inlined into the component stays in it.
+ * Each schema is fixed as the bundle `openApiSchemas` or `openApiInlineSchemas` lints, so a fix
+ * sees the components it references, and an `allOf` of one can be merged. The copies the bundle
+ * made under `$defs` are then taken out again and its references pointed back at
+ * `#/components/schemas/`, and the fixes made inside a copy are dropped from its report: they are
+ * applied, and reported, on the component the copy was made from. What a fix inlined into the
+ * schema stays in it.
  *
  * In an OpenAPI 3.0 document, a `type` of one type and `null` is written back as `nullable: true`,
  * the fixes' own included, since 3.0 has no `null` type, and the `null` branch of an `anyOf` as a
  * string that allows only `null`: see `nullAsKeyword`.
  *
- * The fix for `openai/root-object` is held back: see `HELD_IN_COMPONENTS`. Returns the
- * rewritten document, which is the input left untouched when it declares no schema components,
- * and one result per component. Throws a TypeError for a component that is not a JSON object,
- * or whose `$defs` cannot take the components it references.
+ * The fix for `openai/root-object` is held back: see `HELD_IN_DOCUMENT`. Returns the rewritten
+ * document, which is the input left untouched when it declares no schema to fix, one result per
+ * component, and one per schema declared under `paths`. Throws a TypeError for a component that
+ * is not a JSON object, or for a schema whose `$defs` cannot take the components it references.
  */
 export function fixOpenApi(
   document: unknown,
   options: FixOptions = {},
-): { document: unknown; components: FixedComponent[] } {
-  const components = componentSchemas(document);
+): { document: unknown; components: FixedComponent[]; inline: FixedComponent[] } {
   const found = openApiSchemas(document);
-  if (components === undefined || found.length === 0) return { document, components: [] };
+  const inline = openApiInlineSchemas(document);
+  const all = [...found, ...inline];
+  if (all.length === 0) return { document, components: [], inline: [] };
   const spelling = spellsNullAsKeyword(document);
 
-  const results = found.map((component) => {
-    const own = components[component.name as string];
-    const declared = isJsonSchema(own) && own.$defs !== undefined;
-    let result: FixResult;
-    try {
-      result = fixExcept(component.schema, options, HELD_IN_COMPONENTS);
-    } catch (error) {
-      if (error instanceof TypeError) throw new TypeError(`Component "${component.name}": ${error.message}`);
-      throw error;
-    }
-    const applied = result.applied.filter((item) => copiedLocation(item.path, component.copiedAs) === undefined);
-    const schema = unbundle(result.schema, component.copiedAs, declared);
-    // Writing `nullable` back moves it next to `type`, so a component no fix touched is kept as written.
-    if (spelling) {
-      return { ...result, schema: applied.length > 0 ? nullAsKeyword(schema) : structuredClone(own), applied };
-    }
-    return { ...result, schema, applied };
-  });
-
+  const results = all.map((schema) => fixDeclared(schema, resolvePointer(document, schema.pointer), options, spelling));
   const selected = options.providers ?? PROVIDER_IDS;
-  const remaining = withoutCopiedFindings(found, results, (findings) => summarize(findings, selected));
-  const fixed: JsonSchema = structuredClone(components);
-  const out = found.map((component, index): FixedComponent => {
-    const { schema: _bundle, ...where } = component;
+  const remaining = withoutCopiedFindings(all, results, (findings) => summarize(findings, selected));
+  const rewritten = structuredClone(document);
+  const out = all.map((schema, index): FixedComponent => {
+    const { schema: _bundle, ...where } = schema;
     const result = results[index] as FixResult;
-    fixed[component.name as string] = result.schema;
+    setPointer(rewritten, schema.pointer, result.schema);
     return { ...where, ...result, ...(remaining[index] as LintResult) };
   });
-  const rewritten = structuredClone(document) as { components: { schemas: JsonSchema } };
-  rewritten.components.schemas = fixed;
-  return { document: rewritten, components: out };
+  return { document: rewritten, components: out.slice(0, found.length), inline: out.slice(found.length) };
 }
