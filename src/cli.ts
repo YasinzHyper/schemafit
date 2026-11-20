@@ -114,8 +114,10 @@ The schemas of the request bodies and responses of each operation under paths
 are checked too, each named for where it is used ("POST /pets request body,
 application/json", "GET /pets 200 response, application/json") and bundled the
 same way. One that is only a "$ref" to a component is left to that component's
-report. Parameters, response headers, and callbacks are not read. --fix leaves
-these schemas as they are for now, and only rewrites the components.
+report. Parameters, response headers, and callbacks are not read. With --fix,
+each of these schemas is rewritten and put back where it was declared, without
+the copies, and its root is not wrapped in an object either, since the request
+or response that carries it would change with it.
 
 A declaration that sets "strict": false opts out of its provider's strict decoding, and
 with it the schema subset these rules check: OpenAI calls such a tool best-effort, and
@@ -419,30 +421,25 @@ function noSchemaReason(label: string, document: unknown): string {
 }
 
 /**
- * Reads one file as an OpenAPI document and finds every schema component in it, and with
- * `inline`, every schema declared inline under `paths` after them. A document with none is a
- * usage error, and so is a schema whose `$defs` cannot take the components it references.
+ * Reads one file as an OpenAPI document and finds every schema component in it, and every schema
+ * declared inline under `paths` after them, in the order `fixOpenApi` returns their results. A
+ * document with none is a usage error, and so is a schema whose `$defs` cannot take the
+ * components it references.
  */
-async function readOpenApi(
-  file: string,
-  io: CliIo,
-  inline: boolean,
-): Promise<ReadDocument & { schemas: OpenApiSchema[] }> {
+async function readOpenApi(file: string, io: CliIo): Promise<ReadDocument & { schemas: OpenApiSchema[] }> {
   const read = await readDocument(file, io);
   const { label, document } = read;
   let schemas: OpenApiSchema[];
   try {
-    schemas = [...openApiSchemas(document), ...(inline ? openApiInlineSchemas(document) : [])];
+    schemas = [...openApiSchemas(document), ...openApiInlineSchemas(document)];
   } catch (error) {
     if (error instanceof TypeError) throw new UsageError(`${label}: ${error.message}`);
     throw error;
   }
   if (schemas.length === 0) {
     throw new UsageError(
-      inline
-        ? `${label} declares no schema under components.schemas or in a request body or response under paths, ` +
-          "which is where --openapi looks."
-        : `${label} declares no schema under components.schemas, which is where --fix --openapi looks.`,
+      `${label} declares no schema under components.schemas or in a request body or response under paths, ` +
+        "which is where --openapi looks.",
     );
   }
   return { ...read, schemas };
@@ -450,7 +447,7 @@ async function readOpenApi(
 
 /** Lints every schema of an OpenAPI document, its components and the ones under `paths`, each as its own request. */
 async function lintOpenApi(file: string, selected: readonly ProviderId[], io: CliIo): Promise<FileReport[]> {
-  const { label, schemas } = await readOpenApi(file, io, true);
+  const { label, schemas } = await readOpenApi(file, io);
   const results = schemas.map((found) => {
     try {
       return lint(found.schema, { providers: selected });
@@ -497,7 +494,7 @@ interface PlannedFix {
 async function planFix(file: string, request: FixRequest, io: CliIo): Promise<PlannedFix> {
   const { providers, out, write, pruneUnusedDefs, allTools } = request;
   const { label, document, schemas, comments = [], blanks = [], layout } = request.openapi
-    ? await readOpenApi(file, io, false)
+    ? await readOpenApi(file, io)
     : await readSchemas(file, io);
   // The reports name the file the schemas end up in, which --out renames and --write does not.
   const destination = write ? label : (out ?? label);
@@ -505,9 +502,9 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   // constraint away for a subset rule — a "minimum" moved into "description", a dropped
   // "format" — and a non-strict schema is bound by no such rule: the model is still shown the
   // constraint, and your own validator still reads it, so the trade would be a loss for nothing.
-  // A component of an OpenAPI document declares no "strict", so every one of them is fixed.
+  // A schema of an OpenAPI document declares no "strict", so every one of them is fixed.
   const { checked, skipped } = selectStrict(schemas, allTools);
-  const components = request.openapi ? fixComponents(label, document, { providers, pruneUnusedDefs }) : undefined;
+  const openApiFixes = request.openapi ? fixOpenApiDocument(label, document, { providers, pruneUnusedDefs }) : undefined;
 
   const reports: FixReport[] = [];
   // Each comment, empty line, folded string, block sequence, and flow collection follows its
@@ -521,7 +518,7 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
   for (const [index, found] of checked.entries()) {
     let result: FixResult;
     try {
-      result = components?.[index] ?? fix(found.schema, { providers, pruneUnusedDefs });
+      result = openApiFixes?.[index] ?? fix(found.schema, { providers, pruneUnusedDefs });
     } catch (error) {
       if (error instanceof TypeError) throw new UsageError(`${at(label, found)}: ${error.message}`);
       throw error;
@@ -568,12 +565,14 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
 }
 
 /**
- * Every schema component of an OpenAPI document, fixed and back in its own shape: what a fix
- * made of the copies of other components is dropped, since each is fixed where it is declared.
+ * Every schema of an OpenAPI document, its components and then the ones declared under `paths`,
+ * fixed and back in its own shape: what a fix made of the copies of components is dropped, since
+ * each is fixed where it is declared.
  */
-function fixComponents(label: string, document: unknown, options: Pick<FixRequest, "providers" | "pruneUnusedDefs">): FixResult[] {
+function fixOpenApiDocument(label: string, document: unknown, options: Pick<FixRequest, "providers" | "pruneUnusedDefs">): FixResult[] {
   try {
-    return fixOpenApi(document, options).components.map(({ schema, applied, findings, summary }) => ({
+    const { components, inline } = fixOpenApi(document, options);
+    return [...components, ...inline].map(({ schema, applied, findings, summary }) => ({
       schema,
       applied,
       findings,

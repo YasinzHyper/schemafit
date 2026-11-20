@@ -80,7 +80,7 @@ schemafit examples/agent-tools.yaml
 # Every schema an OpenAPI document keeps under components.schemas, and its request bodies and responses
 schemafit --openapi openapi.yaml
 
-# ...and fix each one in place, under components.schemas
+# ...and fix each one in place, where the document declares it
 schemafit --openapi --fix --provider openai --write openapi.yaml
 
 # From stdin
@@ -203,14 +203,14 @@ A component that is only ever part of another, a string `enum` say, is still che
 
 `--fix --openapi` rewrites each component as that same schema and puts it back under `components.schemas` with the copies taken out again: the references the bundle pointed at `#/$defs/<name>` point at `#/components/schemas/<name>` once more, while a reference the component itself wrote to a definition of its own is left alone, as is a `$defs` it declared, and a fix is applied and reported once, in the component it belongs to, rather than in every copy of it. A fix that inlines a referenced component — the `allOf` of a `$ref` that `openai/unsupported-composition` merges and `anthropic/allof-ref` resolves — leaves what it inlined in the component, which is the point of it. The rest of the document is written back as it was, and `--write` and `--out` work as they do for any file, a YAML document's comments included. One fix is held back: `openai/root-object` would wrap a component that is not an object in `{ "result": ... }`, and a component is also what every reference to it means, so the wrap would change the requests and responses the document describes. That finding stays, for you to wrap the schema where you send it. In an OpenAPI 3.0 document, which has no `null` type, a `type` array of one type and `null` is written back as `nullable: true`, so a property that was nullable stays spelled that way, and one the fix for `openai/all-required` makes nullable is spelled that way too. A property that has no `type` to add `null` to — an `anyOf`, or a `$ref`, beside which the specification says [any property "SHALL be ignored"](https://spec.openapis.org/oas/v3.0.4.html#reference-object) — gets the `null` branch the fix adds as `{ "type": "string", "nullable": true, "enum": [null] }`, which allows `null` and nothing else, and which `--openapi` reads back as the `null` it stands for, so the fix does not add it twice.
 
-The schemas a document declares inline under `paths` are checked as well: the `schema` of each media type in an operation's [request body](https://spec.openapis.org/oas/v3.1.1.html#request-body-object) and [responses](https://spec.openapis.org/oas/v3.1.1.html#response-object). Each is named for where it is used and bundled with the components it references, the same way a component is:
+The schemas a document declares inline under `paths` are checked as well: the `schema` of each media type in an operation's [request body](https://spec.openapis.org/oas/v3.1.1.html#request-body-object) and [responses](https://spec.openapis.org/oas/v3.1.1.html#response-object). Each is named for where it is used and bundled with the components it references, the same way a component is, and in an OpenAPI 3.0 document its `nullable` is read as the `type` array it means, in the schema and in the copies of the components alike:
 
 ```text
 openapi.yaml#/paths/~1pets/post/requestBody/content/application~1json/schema  POST /pets request body, application/json  (OpenAPI request body)
 openapi.yaml#/paths/~1pets/get/responses/200/content/application~1json/schema  GET /pets 200 response, application/json  (OpenAPI response)
 ```
 
-A schema that is only a `$ref` to a component, `{ "$ref": "#/components/schemas/Pet" }`, is left to `Pet`'s own report, and a Reference Object in place of a parameter, request body, or response names a declaration under `components` rather than making one, so it is skipped too. A [parameter](https://spec.openapis.org/oas/v3.1.1.html#parameter-object)'s schema is not read: no provider is sent one on its own, because a tool built from an operation makes its parameters the properties of one object, so a scalar `limit: { type: integer }` checked as a root would fail `openai/root-object` for nothing. Response `headers` and `callbacks` are not read either. `--fix --openapi` rewrites the components only and leaves the schemas under `paths` as they are.
+A schema that is only a `$ref` to a component, `{ "$ref": "#/components/schemas/Pet" }`, is left to `Pet`'s own report, and a Reference Object in place of a parameter, request body, or response names a declaration under `components` rather than making one, so it is skipped too. A [parameter](https://spec.openapis.org/oas/v3.1.1.html#parameter-object)'s schema is not read: no provider is sent one on its own, because a tool built from an operation makes its parameters the properties of one object, so a scalar `limit: { type: integer }` checked as a root would fail `openai/root-object` for nothing. Response `headers` and `callbacks` are not read either. `--fix --openapi` rewrites each of these schemas as it rewrites a component, and puts it back where the document declared it: the copies of the components it references are taken out again, a fix inside a copy lands in the component instead, what a fix inlined stays, and a 3.0 document gets its `nullable` back. Its root is not wrapped in `{ "result": ... }` for `openai/root-object` either, since it is the body of a request or a response, and the wrap would change what the API sends or accepts.
 
 ### Only the schemas you send strictly
 
@@ -398,12 +398,12 @@ for (const { name, schema } of openApiSchemas(document)) console.log(name, lint(
 
 `openApiInlineSchemas` is the other half of what `--openapi` reads: the schemas declared inline under `paths`, in the same shape, each `name`d for where it is used (`POST /pets request body, application/json`) and bundled the same way. To deduplicate the findings of both, pass them to the linter together: `[...openApiSchemas(document), ...openApiInlineSchemas(document)]`.
 
-`fixOpenApi` is what `--fix --openapi` runs. It returns the rewritten `document`, its input untouched, and one result per component, with the `schema` back in its own shape and the `applied` fixes and remaining `findings` of that component alone:
+`fixOpenApi` is what `--fix --openapi` runs. It returns the rewritten `document`, its input untouched, one result per component in `components`, and one per schema declared under `paths` in `inline`, each with the `schema` back in its own shape and the `applied` fixes and remaining `findings` of that schema alone:
 
 ```ts
 import { fixOpenApi } from "schemafit";
 
-const { document: fixed, components } = fixOpenApi(document, { providers: ["openai"] });
+const { document: fixed, components, inline } = fixOpenApi(document, { providers: ["openai"] });
 ```
 
 Each entry also carries `pointer`, the JSON Pointer from the document to the schema, `wrapper`, the wrapper it was found in, `kind` (`"tool"` or `"format"`), and `strict`, what the declaration says about strict decoding. `unwrap` is still there for a document that holds exactly one schema.

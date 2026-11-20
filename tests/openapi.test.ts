@@ -214,6 +214,27 @@ describe("openApiInlineSchemas", () => {
     expect(openApiInlineSchemas(document)).toEqual([]);
   });
 
+  it("reads OpenAPI 3.0's nullable in the schema and in the components bundled into it", () => {
+    const nickname = { type: "string", nullable: true };
+    const body = strictObject({ nickname, tag: { $ref: "#/components/schemas/Tag" } });
+    const label = strictObject({ text: { type: "string", nullable: true } });
+    const document = { ...withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Tag: label }), openapi: "3.0.3" };
+    const [found] = openApiInlineSchemas(document);
+    expect(found?.schema).toEqual({
+      ...body,
+      properties: { nickname: { type: ["string", "null"] }, tag: { $ref: "#/$defs/Tag" } },
+      $defs: { Tag: strictObject({ text: { type: ["string", "null"] } }) },
+    });
+    // The document itself is read, not rewritten.
+    expect(nickname).toEqual({ type: "string", nullable: true });
+  });
+
+  it("leaves the nullable of an OpenAPI 3.1 document's inline schema as written", () => {
+    const body = strictObject({ nickname: { type: "string", nullable: true } });
+    const [found] = openApiInlineSchemas(withPaths({ "/pets": { post: { requestBody: json(body) } } }));
+    expect(found?.schema).toEqual(body);
+  });
+
   it("returns nothing for a document without paths", () => {
     expect(openApiInlineSchemas({ openapi: "3.1.1", components: { schemas: { Tag: tag } } })).toEqual([]);
   });
@@ -471,8 +492,165 @@ describe("fixOpenApi", () => {
     expect(() => fixOpenApi(openApi({ Tag: tag, Any: true }))).toThrow('Component "Any": Schema must be a JSON object.');
   });
 
-  it("returns a document without schema components as it is", () => {
+  it("returns a document that declares no schema to fix as it is", () => {
     const document = { openapi: "3.1.1", paths: {} };
-    expect(fixOpenApi(document)).toEqual({ document, components: [] });
+    expect(fixOpenApi(document)).toEqual({ document, components: [], inline: [] });
+  });
+});
+
+describe("fixOpenApi, for the schemas declared under paths", () => {
+  const json = (schema: unknown) => ({ content: { "application/json": { schema } } });
+  const at = (document: unknown, path: string, ...keys: string[]): unknown =>
+    keys.reduce<unknown>(
+      (node, key) => (node as Record<string, unknown>)[key],
+      (document as { paths: Record<string, unknown> }).paths[path],
+    );
+  const withPaths = (paths: Record<string, unknown>, schemas: Record<string, unknown> = {}, openapi = "3.1.1") => ({
+    ...(openApi(schemas, openapi) as object),
+    paths,
+  });
+  const bodyOf = (document: unknown, method = "post") =>
+    at(document, "/pets", method, "requestBody", "content", "application/json", "schema");
+
+  it("fixes each one and puts it back where it was declared, without the copies of the components", () => {
+    const body = {
+      type: "object",
+      properties: { tag: { $ref: "#/components/schemas/Tag" }, note: { type: "string", maxLength: 80 } },
+    };
+    const operation = { summary: "Add a pet", requestBody: json(body), responses: { "204": { description: "Added" } } };
+    const document = withPaths({ "/pets": { post: operation } }, { Tag: tag });
+    const { document: fixed, components, inline } = fixOpenApi(document, { providers: ["anthropic"] });
+
+    expect(bodyOf(fixed)).toEqual({
+      type: "object",
+      properties: {
+        tag: { $ref: "#/components/schemas/Tag" },
+        note: { type: "string", description: "Must be at most 80 characters long." },
+      },
+      additionalProperties: false,
+    });
+    expect(at(fixed, "/pets", "post", "summary")).toBe("Add a pet");
+    expect(at(fixed, "/pets", "post", "responses")).toEqual(operation.responses);
+    expect((fixed as { components: { schemas: { Tag: unknown } } }).components.schemas.Tag).toEqual(
+      strictObject({ name: { type: "string", description: "Must be at least 1 character long." } }),
+    );
+    // The copy of Tag is fixed, and reported, on Tag alone.
+    expect(components.map(({ name, applied }) => [name, applied.map((item) => item.path)])).toEqual([
+      ["Tag", ["/properties/name"]],
+    ]);
+    expect(inline.map(({ name, pointer, applied }) => [name, pointer, applied.map((item) => item.path).sort()])).toEqual([
+      [
+        "POST /pets request body, application/json",
+        "/paths/~1pets/post/requestBody/content/application~1json/schema",
+        ["", "/properties/note"],
+      ],
+    ]);
+    expect(inline[0]?.findings).toEqual([]);
+    expect(document).toEqual(withPaths({ "/pets": { post: operation } }, { Tag: tag }));
+  });
+
+  it("reports what remains in a copy on the component it was copied from alone", () => {
+    const loose = { type: "object", properties: { at: { type: "string", format: "email" } } };
+    const body = strictObject({ loose: { $ref: "#/components/schemas/Loose" } });
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Loose: loose });
+    const { components, inline } = fixOpenApi(document, { providers: ["gemini"] });
+    expect(components[0]?.findings.map((item) => item.path)).toEqual(["/properties/at"]);
+    expect(inline[0]?.findings).toEqual([]);
+  });
+
+  it("keeps what a fix inlined into the schema, and the component it was inlined from", () => {
+    const base = strictObject({ id: { type: "integer" } });
+    const body = { allOf: [{ $ref: "#/components/schemas/Base" }, strictObject({ name: { type: "string" } })] };
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Base: base });
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    expect(bodyOf(fixed)).toEqual(strictObject({ id: { type: "integer" }, name: { type: "string" } }));
+    expect((fixed as { components: { schemas: unknown } }).components.schemas).toEqual({ Base: base });
+  });
+
+  it("does not wrap the root of one that is not an object", () => {
+    const list = { type: "array", items: { $ref: "#/components/schemas/Tag" } };
+    const document = withPaths({ "/pets": { get: { responses: { "200": json(list) } } } }, { Tag: tag });
+    const { document: fixed, inline } = fixOpenApi(document, { providers: ["openai"] });
+    expect(at(fixed, "/pets", "get", "responses", "200", "content", "application/json", "schema")).toEqual(list);
+    expect(inline[0]?.findings.map((item) => item.ruleId)).toEqual(["openai/root-object"]);
+  });
+
+  it("fixes one in a document that declares no schema components", () => {
+    const response = { content: { "text/plain": { schema: { type: "string", maxLength: 10 } } } };
+    const document = { openapi: "3.1.1", paths: { "/pets": { get: { responses: { "200": response } } } } };
+    const { document: fixed, components, inline } = fixOpenApi(document, { providers: ["anthropic"] });
+    expect(components).toEqual([]);
+    expect(inline.map(({ name }) => name)).toEqual(["GET /pets 200 response, text/plain"]);
+    expect(at(fixed, "/pets", "get", "responses", "200", "content", "text/plain", "schema")).toEqual({
+      type: "string",
+      description: "Must be at most 10 characters long.",
+    });
+    expect(fixed).not.toHaveProperty("components");
+  });
+
+  it("leaves a reference to a component, and a schema no fix applied to, exactly as they were", () => {
+    const body = strictObject({ tag: { $ref: "#/components/schemas/Tag" } });
+    const paths = {
+      "/pets": {
+        post: { requestBody: json(body), responses: { "200": json({ $ref: "#/components/schemas/Tag" }) } },
+      },
+    };
+    for (const providers of [["openai"], ["anthropic"], ["gemini"]] as const) {
+      const document = withPaths(paths, { Tag: tag });
+      const { document: fixed, inline } = fixOpenApi(document, { providers: [...providers] });
+      expect(inline.flatMap(({ applied }) => applied), providers[0]).toEqual([]);
+      expect((fixed as { paths: unknown }).paths, providers[0]).toEqual(paths);
+    }
+  });
+
+  it("writes the nullable of an OpenAPI 3.0 document back as the keyword, a fix's own included", () => {
+    const body = {
+      type: "object",
+      properties: { name: { type: "string", nullable: true }, age: { type: "integer" } },
+      additionalProperties: false,
+    };
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, {}, "3.0.3");
+    const { document: fixed, inline } = fixOpenApi(document, { providers: ["openai"] });
+    expect(bodyOf(fixed)).toEqual({
+      type: "object",
+      properties: { name: { type: "string", nullable: true }, age: { type: "integer", nullable: true } },
+      additionalProperties: false,
+      required: ["name", "age"],
+    });
+    expect(inline[0]?.applied.map((item) => item.title)).toEqual([
+      'Add name, age to "required", and "null" to the type of age.',
+    ]);
+    expect(JSON.stringify(fixed)).not.toContain('"null"');
+
+    const again = fixOpenApi(fixed, { providers: ["openai"] });
+    expect(again.inline.flatMap(({ applied }) => applied)).toEqual([]);
+    expect(again.document).toEqual(fixed);
+  });
+
+  it("writes the null branch a fix adds around a reference the OpenAPI 3.0 way", () => {
+    const body = { type: "object", properties: { tag: { $ref: "#/components/schemas/Tag" } }, additionalProperties: false };
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Tag: tag }, "3.0.3");
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    expect(bodyOf(fixed)).toEqual({
+      type: "object",
+      properties: {
+        tag: { anyOf: [{ $ref: "#/components/schemas/Tag" }, { type: "string", nullable: true, enum: [null] }] },
+      },
+      additionalProperties: false,
+      required: ["tag"],
+    });
+  });
+
+  it("leaves one of an OpenAPI 3.0 document no fix applied to exactly as it was", () => {
+    const body = strictObject({ name: { nullable: true, type: "string" } });
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, {}, "3.0.3");
+    const { document: fixed } = fixOpenApi(document, { providers: ["openai"] });
+    expect(JSON.stringify(bodyOf(fixed))).toBe(JSON.stringify(body));
+  });
+
+  it("names the schema whose $defs cannot take a copy of a component", () => {
+    const body = { ...strictObject({ tag: { $ref: "#/components/schemas/Tag" } }), $defs: { Tag: { type: "string" } } };
+    const document = withPaths({ "/pets": { post: { requestBody: json(body) } } }, { Tag: tag });
+    expect(() => fixOpenApi(document)).toThrow('POST /pets request body, application/json: "$defs" already defines "Tag"');
   });
 });

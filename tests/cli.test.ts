@@ -1530,10 +1530,75 @@ $defs:
       expect(lintRun.code).toBe(1);
       expect(lintRun.stdout).toContain("GET /pets 200 response, text/plain");
       const fixRun = await cli(["--openapi", "--fix", "-p", "anthropic", file]);
-      expect(fixRun.code).toBe(2);
-      expect(fixRun.stderr).toContain(
-        "declares no schema under components.schemas, which is where --fix --openapi looks.",
+      expect(fixRun.code).toBe(0);
+      const { paths } = JSON.parse(fixRun.stdout) as { paths: Record<string, Record<string, unknown>> };
+      expect(paths["/pets"]?.get).toEqual({
+        responses: {
+          "200": {
+            content: { "text/plain": { schema: { type: "string", description: "Must be at most 10 characters long." } } },
+          },
+        },
+      });
+      expect(fixRun.stderr).toContain("GET /pets 200 response, text/plain  (OpenAPI response)");
+    });
+
+    it("rewrites the schemas declared under paths of a YAML document in place, its comments and nullable kept", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+      const file = join(dir, "openapi.yaml");
+      await writeFile(
+        file,
+        [
+          "openapi: 3.0.3",
+          "paths:",
+          "  /pets:",
+          "    post:",
+          "      summary: Add a pet",
+          "      requestBody:",
+          "        content:",
+          "          application/json:",
+          "            schema:",
+          "              type: object",
+          "              properties:",
+          "                name:",
+          "                  type: string",
+          "                  maxLength: 40 # short names only",
+          "                nickname:",
+          "                  type: string",
+          "                  nullable: true",
+          "              required: [name]",
+          "      responses:",
+          "        '200':",
+          "          description: The pets",
+          "          content:",
+          "            application/json:",
+          "              schema:",
+          "                type: array",
+          "                items: { type: string }",
+          "",
+        ].join("\n"),
       );
+      const { code, stderr } = await cli(["--openapi", "--fix", "--write", "-p", "openai,anthropic", file]);
+      // The array response is reported, not wrapped, so the run still fails on it.
+      expect(code).toBe(1);
+      expect(stderr).toContain("POST /pets 200 response, application/json");
+      expect(stderr).toContain("openai/root-object");
+      const written = await readFile(file, "utf8");
+      expect(written).toContain("      summary: Add a pet\n");
+      expect(written).toContain(
+        [
+          "                name:",
+          "                  type: string",
+          "                  description: Must be at most 40 characters long. # short names only",
+          "                nickname:",
+          "                  type: string",
+          "                  nullable: true",
+          "              required: [name, nickname]",
+          "              additionalProperties: false",
+        ].join("\n"),
+      );
+      expect(written).toContain("                type: array\n                items: { type: string }\n");
+      expect(written).not.toContain("null\n");
+      expect(written).not.toContain("result");
     });
 
     it("does not report a scalar parameter as a root that is not an object", async () => {
