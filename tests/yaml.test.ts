@@ -800,11 +800,49 @@ anyOf:
     ]);
   });
 
+  it("records a flow collection wrapped over lines, and how many entries each of its lines holds", () => {
+    // What yaml.safe_dump(schema, default_flow_style=None) writes for a list past 80 columns.
+    const text = `properties:
+  category:
+    enum: [billing, outage, feature-request, account, security, integrations, performance,
+      other]
+type: [string,
+  "null"]
+`;
+    expect(readYaml(text).layout.flows).toEqual([
+      {
+        pointer: "/properties/category/enum",
+        kind: "sequence",
+        padded: false,
+        width: 90,
+        wrap: { lines: [7, 1], entries: 2, trailing: false, width: 86 },
+      },
+      { pointer: "/type", kind: "sequence", padded: false, width: 14, wrap: { lines: [1, 1], entries: 2, trailing: false, width: 14 } },
+    ]);
+  });
+
   it.each([
-    ["wrapped where its line ran out", 'type: [string,\n  "null"]\n', []],
-    ["with two entries on one line", 'anyOf:\n  [\n    {type: string}, {type: integer},\n    {type: "null"},\n  ]\n', ["/anyOf/0", "/anyOf/1", "/anyOf/2"]],
-    ["closed on the line of its last entry", 'anyOf:\n  [\n    {type: string},\n    {type: "null"}]\n', ["/anyOf/0", "/anyOf/1"]],
+    [
+      "with two entries on one line",
+      'anyOf:\n  [\n    {type: string}, {type: integer},\n    {type: "null"},\n  ]\n',
+      { lines: [0, 2, 1], entries: 2, close: 0, trailing: true, width: 34 },
+    ],
+    ["closed on the line of its last entry", 'anyOf:\n  [\n    {type: string},\n    {type: "null"}]\n', { lines: [0, 1, 1], entries: 2, trailing: false, width: 17 }],
+    ["past a sequence item's dash", "- [ a, b,\n    c ]\n", { lines: [2, 1], entries: 2, trailing: false, width: 7 }],
+  ])("records a flow collection wrapped %s, measured from where its first line starts", (_, text, wrap) => {
+    expect(readYaml(text).layout.flows[0]?.wrap).toEqual(wrap);
+  });
+
+  it("records a document the file wrote as one flow mapping wrapped over lines", () => {
+    const { layout } = readYaml("{type: object, properties: {a: {type: string}},\n  required: [a]}\n");
+    expect(layout.flows[0]).toEqual({ pointer: "", kind: "mapping", padded: false, width: 47, wrap: { lines: [2, 1], entries: 2, trailing: false, width: 47 } });
+  });
+
+  it.each([
     ["with its entries at two columns", 'anyOf:\n  [\n    {type: string},\n      {type: "null"},\n  ]\n', ["/anyOf/0", "/anyOf/1"]],
+    ["with an entry spread over lines itself", "items: {type: string, enum: [a,\n    b]}\n", ["/items/enum"]],
+    ["with a comma starting a line", "required: [a\n  , b]\n", []],
+    ["with every entry on the line it opens on", "required: [a, b\n  ]\n", []],
   ])("leaves out a flow collection spread over lines %s, and keeps the ones on a line of it", (_, text, pointers) => {
     expect(readYaml(text).layout.flows.map(({ pointer }) => pointer)).toEqual(pointers);
   });

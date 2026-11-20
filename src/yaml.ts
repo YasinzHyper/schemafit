@@ -65,7 +65,7 @@ interface State {
   flow: boolean;
   /**
    * The flow collections with something in them read so far that open and close on one line, or
-   * that are spread one entry to a line.
+   * that are spread one entry to a line or wrapped over lines.
    */
   flows: YamlFlow[];
   /**
@@ -221,8 +221,9 @@ export interface YamlLayout {
   /**
    * Every flow collection with something in it that the document writes on one line, an
    * `items: {type: string}` or an `anyOf: [{type: string}, {type: "null"}]` and the mappings in
-   * it, and every one it spreads one entry to a line, as Prettier breaks one that outgrew its
-   * line, so a rewrite keeps each on its lines rather than expanding it into block style.
+   * it, every one it spreads one entry to a line, as Prettier breaks one that outgrew its
+   * line, and every one it wraps over lines with each entry on one, so a rewrite keeps each on
+   * its lines rather than expanding it into block style or joining it onto one line.
    */
   flows: YamlFlow[];
 }
@@ -268,6 +269,11 @@ export interface YamlFlow {
   below?: number;
   /** For a collection spread one entry to a line, how it is spread. */
   spread?: YamlSpread;
+  /**
+   * For a collection spread over lines some other way, with several entries to a line or
+   * wrapped where its line ran out, as PyYAML wraps one past 80 columns, how it is wrapped.
+   */
+  wrap?: YamlWrap;
 }
 
 /**
@@ -283,6 +289,32 @@ export interface YamlSpread {
   close: number;
   /** Whether a comma follows its last entry, as Prettier writes one. */
   trailing: boolean;
+}
+
+/**
+ * How a flow collection is spread over lines when it is not one entry to a line: each entry on
+ * one line, and the lines after the one it opens on starting with an entry at one column. Its
+ * columns are measured as a `YamlSpread`'s are, from where the line it opens on starts. The
+ * `type: [string,` over `  "null"]` a list that outgrew its line is wrapped into is `lines: [1, 1]`
+ * and `entries: 2`, with no `close`.
+ */
+export interface YamlWrap {
+  /**
+   * How many entries each of its lines holds, the line it opens on first, which holds none where
+   * its opening bracket ends that line.
+   */
+  lines: number[];
+  /** How many columns further than that the lines after the first are indented. */
+  entries: number;
+  /**
+   * Where its closing bracket starts a line of its own, how many columns further than that the
+   * bracket is indented. Absent where the bracket follows the last entry on its line.
+   */
+  close?: number;
+  /** Whether a comma follows its last entry. */
+  trailing: boolean;
+  /** How many columns past where the line it opens on starts its longest line ends. */
+  width: number;
 }
 
 /**
@@ -1078,22 +1110,25 @@ interface FlowKey {
 }
 
 /**
- * Where the entries of a flow collection and its closing bracket start, each by its column where
- * it is the first thing on its line and undefined where it is not, and whether a comma follows
- * its last entry.
+ * Where the entries of a flow collection and its closing bracket are: each entry by the lines it
+ * starts and ends on, and the entries and the bracket by their column where they are the first
+ * thing on their line and undefined where they are not, and whether a comma follows its last entry.
  */
 interface FlowShape {
-  starts: Array<number | undefined>;
+  entries: Array<{ column: number | undefined; from: Line; to: Line }>;
   close?: number;
+  /** The line its closing bracket is on. */
+  closed?: Line;
   trailing: boolean;
 }
 
 /**
  * A flow collection read by `read`, recorded at `at` for a rewrite to keep on its lines when it
- * has something in it and either closes on the line it opens on or is spread one entry to a
- * line, each entry and the closing bracket starting a line of its own at the same column. A
- * collection spread over lines any other way is left out, since a rewrite has no way to
- * write it where the file wrote it.
+ * has something in it and closes on the line it opens on, is spread one entry to a line, each
+ * entry and the closing bracket starting a line of its own at the same column, or is wrapped
+ * over lines with each entry on one and every line after the first starting with an entry at the
+ * same column. A collection spread over lines any other way is left out, since a rewrite has no
+ * way to write it where the file wrote it.
  */
 function recordFlow<T extends object>(
   scanner: Scanner,
@@ -1107,14 +1142,16 @@ function recordFlow<T extends object>(
   const below = key !== undefined && key.line !== line && startsLine(scanner) ? line.indent - key.column : undefined;
   const flows = scanner.more?.state.flows;
   const index = flows?.length ?? 0;
-  const shape: FlowShape = { starts: [], trailing: false };
+  const shape: FlowShape = { entries: [], trailing: false };
   const value = read(shape);
   if (flows === undefined || at === undefined || Object.keys(value).length === 0) return value;
   const spread = scanner.line === line ? undefined : spreadOf(shape, line);
-  if (scanner.line !== line && spread === undefined) return value;
+  const wrap = scanner.line === line || spread !== undefined ? undefined : wrapOf(shape, line);
+  if (scanner.line !== line && spread === undefined && wrap === undefined) return value;
   const flow: YamlFlow = { pointer: at, kind, padded: padded && spread === undefined, width: line.indent + line.text.length };
   if (below !== undefined && below > 0) flow.below = below;
   if (spread !== undefined) flow.spread = spread;
+  if (wrap !== undefined) flow.wrap = wrap;
   // Ahead of the collections nested in it, which were recorded as they closed, so the list
   // keeps the order the file writes them in.
   flows.splice(index, 0, flow);
@@ -1133,18 +1170,59 @@ function startsLine(scanner: Scanner): boolean {
  * does not start one.
  */
 function spreadOf(shape: FlowShape, opened: Line): YamlSpread | undefined {
-  const [first, ...rest] = shape.starts;
+  const [first, ...rest] = shape.entries.map(({ column }) => column);
   if (first === undefined || shape.close === undefined || rest.some((start) => start !== first)) return undefined;
-  const base = opened.indent + (/^(?:-[ ]+)*/.exec(opened.text)?.[0].length ?? 0);
+  const base = baseOf(opened);
   const entries = first - base;
   const close = shape.close - base;
   return entries > 0 && close >= 0 ? { entries, close, trailing: shape.trailing } : undefined;
+}
+
+/**
+ * How a collection is wrapped over lines, measured from where its opening line starts as a spread
+ * one is. Undefined for one with an entry spread over lines itself, a line after the first that
+ * does not start with an entry, or two such lines that start at different columns, and for a
+ * closing bracket that neither starts a line nor follows the last entry, as a comma at the start
+ * of a line would leave it.
+ */
+function wrapOf(shape: FlowShape, opened: Line): YamlWrap | undefined {
+  const { entries, closed } = shape;
+  if (closed === undefined || entries.some(({ from, to }) => from !== to)) return undefined;
+  const lines: number[] = [];
+  let line = opened;
+  let count = 0;
+  let column: number | undefined;
+  for (const entry of entries) {
+    if (entry.from === line) {
+      count += 1;
+      continue;
+    }
+    if (entry.column === undefined || (column !== undefined && entry.column !== column)) return undefined;
+    lines.push(count);
+    count = 1;
+    column = entry.column;
+    line = entry.from;
+  }
+  lines.push(count);
+  const base = baseOf(opened);
+  if (column === undefined || column <= base) return undefined;
+  if (shape.close === undefined ? closed !== line : shape.close < base) return undefined;
+  const width = Math.max(...[opened, ...entries.map(({ from }) => from), closed].map(({ indent, text }) => indent + text.length)) - base;
+  const wrap: YamlWrap = { lines, entries: column - base, trailing: shape.trailing, width };
+  if (shape.close !== undefined) wrap.close = shape.close - base;
+  return wrap;
+}
+
+/** The column the line a collection opens on starts at, past the dash of a sequence item. */
+function baseOf(opened: Line): number {
+  return opened.indent + (/^(?:-[ ]+)*/.exec(opened.text)?.[0].length ?? 0);
 }
 
 /** Notes where the closing bracket the scanner is at starts, and whether a comma came before it. */
 function closeShape(shape: FlowShape | undefined, scanner: Scanner, trailing: boolean): void {
   if (shape === undefined) return;
   shape.close = startsLine(scanner) ? scanner.line.indent : undefined;
+  shape.closed = scanner.line;
   shape.trailing = trailing;
 }
 
@@ -1157,9 +1235,11 @@ function parseFlowSequence(scanner: Scanner, at?: string, shape?: FlowShape): un
     return items;
   }
   for (;;) {
-    shape?.starts.push(startsLine(scanner) ? scanner.line.indent : undefined);
+    const from = scanner.line;
+    const column = startsLine(scanner) ? from.indent : undefined;
     items.push(parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, items.length)));
     const before = scanner.line;
+    shape?.entries.push({ column, from, to: before });
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     if (char === "]") closeShape(shape, scanner, false);
@@ -1186,14 +1266,15 @@ function parseFlowMapping(scanner: Scanner, at?: string, shape?: FlowShape): Rec
   }
   for (;;) {
     skipSeparation(scanner);
-    const start = startsLine(scanner) ? { line: scanner.line, column: scanner.line.indent } : undefined;
-    shape?.starts.push(start?.column);
+    const from = scanner.line;
+    const start = startsLine(scanner) ? { line: from, column: from.indent } : undefined;
     const key = parseFlowKey(scanner);
     if (Object.prototype.hasOwnProperty.call(mapping, key)) {
       throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
     }
     mapping[key] = parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, key), start);
     const before = scanner.line;
+    shape?.entries.push({ column: start?.column, from, to: before });
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     if (char === "}") closeShape(shape, scanner, false);
