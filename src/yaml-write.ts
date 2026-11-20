@@ -11,7 +11,9 @@
  * fits there, spaced inside its brackets as the file spaced it, a flow collection the file
  * spread one entry to a line, as Prettier breaks one that outgrew its line, spread the same way,
  * and one that outgrows its line below its key and then spread, where the file does that to its
- * own, `{}` and `[]` for the empty collections, a folded block scalar (`>`) for a string
+ * own, a flow collection the file wrapped over lines, as PyYAML wraps one past 80 columns,
+ * wrapped where the file wrapped it, `{}` and `[]` for the empty collections, a folded block
+ * scalar (`>`) for a string
  * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
  * wrapped that way, and a quoted
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
@@ -37,6 +39,7 @@ import {
   type YamlLayout,
   type YamlSequence,
   type YamlSpread,
+  type YamlWrap,
   parseYaml,
   readYaml,
 } from "./yaml.js";
@@ -130,8 +133,8 @@ export function stringifyYaml(
     folds: new Map((layout.folds ?? []).map((folded) => [folded.pointer, folded])),
     flows: new Map((layout.flows ?? []).map((flow) => [flow.pointer, flow])),
     padded: {
-      mapping: layout.flows?.find(({ kind, spread }) => kind === "mapping" && spread === undefined)?.padded ?? false,
-      sequence: layout.flows?.find(({ kind, spread }) => kind === "sequence" && spread === undefined)?.padded ?? false,
+      mapping: layout.flows?.find((flow) => flow.kind === "mapping" && onOneLine(flow))?.padded ?? false,
+      sequence: layout.flows?.find((flow) => flow.kind === "sequence" && onOneLine(flow))?.padded ?? false,
     },
     below: layout.flows?.find(({ below }) => below !== undefined)?.below,
     spread: layout.flows?.find(({ spread }) => spread !== undefined)?.spread,
@@ -170,6 +173,11 @@ export function stringifyYaml(
     throw new TypeError(`${placedBlanks - read.blanks.length} of the empty lines belong to an entry the value does not hold`);
   }
   return text;
+}
+
+/** Whether the file wrote a flow collection on the one line it opens on. */
+function onOneLine({ spread, wrap }: YamlFlow): boolean {
+  return spread === undefined && wrap === undefined;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -314,15 +322,20 @@ function isCollection(value: unknown): value is unknown[] | Record<string, unkno
 }
 
 /**
- * The document as the flow collection the file wrote it as, on its one line while it fits there
- * and spread one entry to a line as the file spread it, or undefined for a document the file
- * wrote in block style, and for one that does not fit on its line or would not read back.
+ * The document as the flow collection the file wrote it as, on its one line while it fits there,
+ * spread one entry to a line as the file spread it, and wrapped over lines as the file wrapped
+ * it, or undefined for a document the file wrote in block style, and for one that does not fit
+ * on its line or would not read back.
  */
 function rootFlow(value: unknown, layout: Layout): string[] | undefined {
-  const spread = layout.flows.get("")?.spread;
+  const { spread, wrap, padded = false } = layout.flows.get("") ?? {};
   if (spread !== undefined && isCollection(value)) {
     const lines = spreadLines(value, "", 0, spread, layout);
     return readsBack(`${lines.join("\n")}\n`, value) ? lines : undefined;
+  }
+  if (wrap !== undefined && isCollection(value)) {
+    const lines = wrapLines(value, "", "", 0, wrap, padded, layout);
+    if (readsBack(`${lines.join("\n")}\n`, value)) return lines;
   }
   const flow = layout.flows.has("") ? flowCollection(value, "", layout) : undefined;
   return flow !== undefined && flow.length <= flowWidth("", layout) ? [flow] : undefined;
@@ -343,6 +356,13 @@ function flowLines(prefix: string, value: unknown, indent: number, dash: boolean
   // Only a key has a line to go below, and a sequence item's value starts past its dash.
   const below = dash ? undefined : record?.below;
   if (record?.spread !== undefined && isCollection(value)) return spreadEntry(prefix, value, indent, dash, below, record.spread, pointer, layout);
+  if (record?.wrap !== undefined && isCollection(value)) {
+    const base = below === undefined ? indent + (dash ? INDENT : 0) : indent + below;
+    const lines = wrapLines(value, pointer, below === undefined ? `${prefix} ` : " ".repeat(base), base, record.wrap, record.padded, layout);
+    const entry = below === undefined ? lines : [prefix, ...lines];
+    // Where the wrapped lines would not read back, it is written as any other flow collection the file held.
+    if (entryReadsBack(prefix, entry, indent, dash, value)) return entry;
+  }
   const flow = flowCollection(value, pointer, layout);
   if (flow === undefined) return undefined;
   const width = flowWidth(pointer, layout);
@@ -373,9 +393,64 @@ function spreadEntry(
   const base = below === undefined ? indent + (dash ? INDENT : 0) : indent + below;
   const [open = "", ...rest] = spreadLines(value, pointer, base, spread, layout);
   const lines = below === undefined ? [`${prefix} ${open}`, ...rest] : [prefix, `${" ".repeat(base)}${open}`, ...rest];
+  return entryReadsBack(prefix, lines, indent, dash, value) ? lines : undefined;
+}
+
+/** Whether the lines of a mapping entry or sequence item at `indent`, `prefix` first, read back as `value`. */
+function entryReadsBack(prefix: string, lines: readonly string[], indent: number, dash: boolean, value: unknown): boolean {
   const [first = "", ...after] = lines;
   const text = [`${dash ? "-" : "k:"}${first.slice(prefix.length)}`, ...after.map((line) => line.slice(indent))];
-  return readsBack(`${text.join("\n")}\n`, dash ? [value] : { k: value }) ? lines : undefined;
+  return readsBack(`${text.join("\n")}\n`, dash ? [value] : { k: value });
+}
+
+/**
+ * A collection wrapped over lines as `wrap` says, from `base`, the column the line it opens on
+ * starts at, after `opening`, what that line holds before the opening bracket. Each entry goes on
+ * one line, and starts a new one where the file started one, and where it would carry its line past
+ * the file's longest, so the entries a fix adds, such as the keys `openai/all-required` adds to a
+ * `required`, fill the last line and wrap where the file wrapped. Spaced inside its brackets as
+ * the file spaced it, with `padded`, where an entry follows the opening one or precedes the
+ * closing one on its line.
+ */
+function wrapLines(
+  value: unknown[] | Record<string, unknown>,
+  pointer: string,
+  opening: string,
+  base: number,
+  wrap: YamlWrap,
+  padded: boolean,
+  layout: Layout,
+): string[] {
+  const entries = Array.isArray(value)
+    ? value.map((item, index) => flowNode(item, joinPointer(pointer, index), layout))
+    : Object.entries(value).map(([key, item]) => `${flowScalar(key, key.includes(":"))}: ${flowNode(item, joinPointer(pointer, key), layout)}`);
+  // The entries the file started a line with, by their indexes: the first of each line after the one it opens on.
+  const starts = new Set<number>();
+  let index = wrap.lines[0] ?? 0;
+  for (const count of wrap.lines.slice(1)) {
+    starts.add(index);
+    index += count;
+  }
+  const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"];
+  const pad = padded ? " " : "";
+  const closing = wrap.close === undefined ? `${pad}${close}` : "";
+  const column = " ".repeat(base + wrap.entries);
+  const lines: string[] = [];
+  let line = `${opening}${open}`;
+  entries.forEach((entry, at) => {
+    const last = at === entries.length - 1;
+    const comma = last && !wrap.trailing ? "" : ",";
+    // The comma is left out of the measure, so an entry that gains one as a fix adds another after it stays where it was.
+    const passes = `${line} ${entry}${last ? closing : ""}`.length > base + wrap.width;
+    if (at === 0 ? starts.has(0) : starts.has(at) || passes) {
+      lines.push(line);
+      line = `${column}${entry}${comma}`;
+    } else {
+      line = `${line}${at === 0 ? pad : " "}${entry}${comma}`;
+    }
+  });
+  if (wrap.close === undefined) return [...lines, `${line}${closing}`];
+  return [...lines, line, `${" ".repeat(base + wrap.close)}${close}`];
 }
 
 /**

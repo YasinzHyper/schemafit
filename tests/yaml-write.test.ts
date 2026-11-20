@@ -511,6 +511,81 @@ required:
 `);
   });
 
+  it("keeps a flow collection the file wrapped over lines on those lines", () => {
+    // What yaml.safe_dump(schema, default_flow_style=None) writes, a hand-wrapped list, and
+    // collections with several entries to a line.
+    const text = `properties:
+  category:
+    type: string
+    enum: [billing, outage, feature-request, account, security, integrations, performance,
+      other]
+  owner:
+    type: [string,
+      "null"]
+  status:
+    anyOf:
+      [
+        {type: string}, {type: integer},
+        {type: "null"},
+      ]
+  steps:
+    - [ open, triaged,
+        closed ]
+required:
+  [category, owner,
+   status, steps]
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("keeps a document the file wrote as one flow mapping wrapped over lines on those lines", () => {
+    const { value, layout } = readYaml("{type: object, properties: {a: {type: string}},\n  required: [a]}\n");
+    expect(stringifyYaml({ ...(value as object), additionalProperties: false }, [], [], layout)).toBe(
+      "{type: object, properties: {a: {type: string}},\n  required: [a], additionalProperties: false}\n",
+    );
+  });
+
+  it("fills the last line of a wrapped collection with what a fix adds, and wraps it where the file's longest line ends", () => {
+    const { layout } = readYaml(`required: [category, priority,
+  title]
+anyOf: [
+    {type: string},
+    {type: integer}, {type: boolean}
+  ]
+`);
+    const value = {
+      required: ["category", "priority", "title", "assignee", "a_property_whose_name_runs_long"],
+      anyOf: [{ type: "string" }, { type: "integer" }, { type: "boolean" }, { type: "null" }],
+    };
+    // The entry that gains a comma keeps its line, though the comma takes that line past the longest.
+    expect(stringifyYaml(value, [], [], layout)).toBe(`required: [category, priority,
+  title, assignee,
+  a_property_whose_name_runs_long]
+anyOf: [
+    {type: string},
+    {type: integer}, {type: boolean},
+    {type: "null"}
+  ]
+`);
+  });
+
+  it("starts a new line of a wrapped collection before an entry a fix lengthened past the file's longest line", () => {
+    const { layout } = readYaml("anyOf: [{type: string}, {type: integer},\n  {type: boolean}]\n");
+    const value = { anyOf: [{ type: "string" }, { type: ["integer", "null"], description: "A count" }, { type: "boolean" }] };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`anyOf: [{type: string},
+  {type: [integer, "null"], description: A count},
+  {type: boolean}]
+`);
+  });
+
+  it("writes a wrapped collection that would not read back on its lines as any other flow collection the file held", () => {
+    // A closing bracket under its key, which a block mapping does not allow.
+    const wrap = { lines: [0, 2], entries: 2, close: 0, trailing: false, width: 10 };
+    const layout = { flows: [{ pointer: "/required", kind: "sequence" as const, padded: false, width: 11, wrap }] };
+    expect(stringifyYaml({ type: "object", required: ["id", "name"] }, [], [], layout)).toBe("type: object\nrequired: [id, name]\n");
+  });
+
   it("writes a value as it would any other where the sequence the file held there is gone", () => {
     const { layout } = readYaml("type:\n  - string\n  - 'null'\n");
     expect(stringifyYaml({ type: "string" }, [], [], layout)).toBe("type: string\n");
