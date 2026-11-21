@@ -131,6 +131,64 @@ input_schema:
     expect(parseYaml("{ a:\n    b }\n")).toEqual({ a: "b" });
   });
 
+  it("folds a plain scalar continued on the lines below it inside a flow collection", () => {
+    expect(parseYaml("a: {b: one\n  two}\n")).toEqual({ a: { b: "one two" } });
+    expect(parseYaml("type: [string\n  integer]\n")).toEqual({ type: ["string integer"] });
+    // The scalar ends at the comma or the bracket after it, wherever on its last line that is.
+    expect(parseYaml("a: {b: one\n  two\n  three, c: d}\n")).toEqual({ a: { b: "one two three", c: "d" } });
+    expect(parseYaml("a: [one\n  , two]\n")).toEqual({ a: ["one", "two"] });
+    expect(parseYaml("a: [one \n   two  ,three]\n")).toEqual({ a: ["one two", "three"] });
+    // A run of line breaks folds to one fewer newline, as it does outside a collection.
+    expect(parseYaml("a: {b: one\n\n  two}\n")).toEqual({ a: { b: "one\ntwo" } });
+    expect(parseYaml("a: {b: one\n\n\n  two}\n")).toEqual({ a: { b: "one\n\ntwo" } });
+    // A document that is one flow mapping clears no indentation at all.
+    expect(parseYaml("{a: one\ntwo}\n")).toEqual({ a: "one two" });
+    // The scalar runs on past a quoted one that closed on the line it starts on.
+    expect(parseYaml('a: {b: "x\n  y", c: one\n  two}\n')).toEqual({ a: { b: "x y", c: "one two" } });
+  });
+
+  it("reads what a plain scalar inside a flow collection cannot start with on a line that continues one", () => {
+    expect(parseYaml("a: [one\n  - two, three]\n")).toEqual({ a: ["one - two", "three"] });
+    expect(parseYaml('a: [one\n  "two"]\n')).toEqual({ a: ['one "two"'] });
+    expect(parseYaml("a: [one\n  'two']\n")).toEqual({ a: ["one 'two'"] });
+    expect(parseYaml("a: [one\n  *x, :y]\n")).toEqual({ a: ["one *x", ":y"] });
+    expect(parseYaml("a: [1\n  2]\n")).toEqual({ a: ["1 2"] });
+  });
+
+  it.each([
+    [
+      "default_flow_style=True",
+      `{type: object, description: A support ticket as the customer filed it and the state
+    it is in now., properties: {status: {type: string, enum: [open, pending, closed]},
+    assignee: {type: string, description: Who to assign it to. Omit to leave it in
+        the queue for triage.}}, required: [status]}
+`,
+    ],
+    [
+      "default_flow_style=None",
+      `type: object
+description: A support ticket as the customer filed it and the state it is in now.
+properties:
+  status:
+    type: string
+    enum: [open, pending, closed]
+  assignee: {type: string, description: Who to assign it to. Omit to leave it in the
+      queue for triage.}
+required: [status]
+`,
+    ],
+  ])("reads what yaml.safe_dump writes with %s, a description wrapped inside a flow collection included", (_, text) => {
+    expect(parseYaml(text)).toEqual({
+      type: "object",
+      description: "A support ticket as the customer filed it and the state it is in now.",
+      properties: {
+        status: { type: "string", enum: ["open", "pending", "closed"] },
+        assignee: { type: "string", description: "Who to assign it to. Omit to leave it in the queue for triage." },
+      },
+      required: ["status"],
+    });
+  });
+
   it("reads comments and blank lines between the entries of a flow collection", () => {
     expect(parseYaml("enum: [a, # the first\n  # a whole line\n\n  b]\nc: 1\n")).toEqual({ enum: ["a", "b"], c: 1 });
     // A quoted scalar folds on over a line break inside a collection as it does in a block, and
@@ -373,6 +431,7 @@ properties:
 
   it("ends a folded plain scalar at a comment, and keeps one that follows it", () => {
     expect(parseYaml("a: one\n  two # the comment ends a scalar that was ending anyway\n")).toEqual({ a: "one two" });
+    expect(parseYaml("a: [one\n  two # here too\n  , three # and here\n  ]\n")).toEqual({ a: ["one two", "three"] });
     expect(parseYaml("a: one\n  two\n  # a comment below the scalar\nb: 3\n")).toEqual({ a: "one two", b: 3 });
     expect(parseYaml("a: one\n# at the mapping's own indentation\nb: 3\n")).toEqual({ a: "one", b: 3 });
   });
@@ -508,10 +567,22 @@ properties:
     expect(refusal("[a,\n---\nb]\n")).toBe(
       "line 2: a document marker inside the flow collection opened on line 1; close the collection above it",
     );
-    expect(refusal("type: [string\n  integer]\n")).toBe(
-      'line 2: expected "," or "]" in a flow collection, found "integer]" on the line below the entry before it; a plain scalar inside a flow collection is read on one line, so quote one that wraps, or put a comma after the entry above if they are two',
+    expect(refusal('type: ["string"\n  integer]\n')).toBe(
+      'line 2: expected "," or "]" in a flow collection, found "integer]" on the line below the entry before it; put a comma after the entry above if they are two',
     );
-    expect(refusal("a: { b: one\n  two }\n")).toContain('line 2: expected "," or "}" in a flow collection, found "two }" on the line below');
+    expect(refusal("a: [one\n  [two]]\n")).toContain('line 2: expected "," or "]" in a flow collection, found "[two]]" on the line below');
+    expect(refusal("a: { b: [one]\n  two }\n")).toContain('line 2: expected "," or "}" in a flow collection, found "two }" on the line below');
+    expect(refusal("a: {b: one\n  c: d}\n")).toBe(
+      'line 2: the plain scalar from line 1 runs on to this line inside a flow collection, and "c: d" holds a colon followed by a space; put a comma after the entry above if this line starts an entry of its own, or quote the scalar if it is text',
+    );
+    expect(refusal("a: [one\n  two\n  three:]\n")).toContain('line 3: the plain scalar from line 1 runs on to this line');
+    expect(refusal("a: [one # note\n  two]\n")).toBe(
+      "line 1: a comment inside a plain scalar spread over lines of a flow collection; YAML folds no comment into a scalar, so move the comment out of the collection if the lines are one scalar, or put a comma after the entry above the comment if they are two",
+    );
+    expect(refusal("a: [one\n  # note\n\n  two]\n")).toContain("line 2: a comment inside a plain scalar spread over lines of a flow collection");
+    expect(refusal("a: {b: one\n  two # note\n  three}\n")).toContain("line 2: a comment inside a plain scalar spread over lines of a flow collection");
+    expect(refusal("a: [one\nb: 1\n")).toContain("line 2: a line inside the flow collection opened on line 1 indented less than the collection's block");
+    expect(refusal("[one\n---\ntwo]\n")).toContain("line 2: a document marker inside the flow collection opened on line 1");
     expect(refusal("type: [string]\n  extra\n")).toBe(
       'line 2: "extra" is indented under a flow collection that already ended at its closing bracket; move the text inside the brackets, or indent the line less',
     );
@@ -585,6 +656,24 @@ three:
     ]);
   });
 
+  it("attaches a comment after a plain scalar wrapped inside a flow collection to the entry it runs on from", () => {
+    const { value, attached } = readYaml(`properties:
+  status: {type: string, description: say
+    "hi # the first
+    , title: Status}
+  tags: [one
+    two # the second
+    , three]
+`);
+    expect(value).toEqual({
+      properties: { status: { type: "string", description: 'say "hi', title: "Status" }, tags: ["one two", "three"] },
+    });
+    expect(attached).toEqual([
+      { line: 3, text: "# the first", pointer: "/properties/status", trailing: true },
+      { line: 6, text: "# the second", pointer: "/properties/tags", trailing: true },
+    ]);
+  });
+
   it("finds no comment in a document without one", () => {
     expect(readYaml("type: string\ndescription: issue#12, not a comment\n").comments).toEqual([]);
   });
@@ -646,6 +735,9 @@ quoted: "one
 flow: [a,
 
   b]
+wrapped: {a: one
+
+  two}
 last: 1
 `);
     expect(blanks).toEqual([{ line: 5, pointer: "/plain" }]);
@@ -841,6 +933,7 @@ type: [string,
   it.each([
     ["with its entries at two columns", 'anyOf:\n  [\n    {type: string},\n      {type: "null"},\n  ]\n', ["/anyOf/0", "/anyOf/1"]],
     ["with an entry spread over lines itself", "items: {type: string, enum: [a,\n    b]}\n", ["/items/enum"]],
+    ["with a plain scalar wrapped inside it", "items: {type: string, description: a\n    b}\n", []],
     ["with a comma starting a line", "required: [a\n  , b]\n", []],
     ["with every entry on the line it opens on", "required: [a, b\n  ]\n", []],
   ])("leaves out a flow collection spread over lines %s, and keeps the ones on a line of it", (_, text, pointers) => {
