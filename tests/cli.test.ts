@@ -961,6 +961,38 @@ additionalProperties: false
 `);
   });
 
+  it("lints and fixes a YAML file whose description PyYAML wrapped inside a flow mapping", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=None, sort_keys=False) writes.
+    const head = `type: object
+properties:
+  category:
+    type: string
+    enum: [billing, outage, other]
+`;
+    await writeFile(
+      file,
+      `${head}  assignee: {type: string, description: Who to assign the ticket to. Omit it to leave
+      the ticket in the queue.}
+required: [category]
+`,
+    );
+
+    const lint = await cli(["-p", "openai", file]);
+    expect(lint.code).toBe(1);
+    expect(lint.stdout).toContain('Properties missing from "required": assignee.');
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The mapping the fix lengthens goes into block style, with the description it held whole.
+    expect(await readFile(file, "utf8")).toBe(`${head}  assignee:
+    type: [string, "null"]
+    description: Who to assign the ticket to. Omit it to leave the ticket in the queue.
+required: [category, assignee]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tools.yaml");

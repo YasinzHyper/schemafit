@@ -6,7 +6,7 @@
  * plain scalars spread over as many lines as they need, literal and folded block scalars,
  * comments, the YAML 1.2 core resolution of `null`, `true`, numbers — and refuses the rest by
  * name instead of guessing at it: an anchor, an alias, a tag, a merge key, a second document, a
- * tab in the indentation, a plain scalar inside a flow collection continued on the next line. A
+ * tab in the indentation, a comment between two lines of a plain scalar. A
  * linter that misreads its input reports findings against a schema nobody wrote, so a construct
  * this cannot read with certainty is an error naming the line it is on rather than a value that
  * may or may not be what the file said.
@@ -461,10 +461,10 @@ function tokenize(text: string): Line[] {
 
 /**
  * Where a line starts, which `tokenize` cannot know and the parser can: at a node of its own, on
- * a plain scalar the line above it began, or between the entries of a flow collection opened
- * above it.
+ * a plain scalar the line above it began, between the entries of a flow collection opened
+ * above it, or on a plain scalar the line above it began inside such a collection.
  */
-type LineStart = "node" | "plain" | "flow";
+type LineStart = "node" | "plain" | "flow" | "plain in flow";
 
 /** A line's content without its trailing comment, and the comment, read from `start`. */
 function uncomment(content: string, start: LineStart): Pick<Line, "text" | "comment" | "remark"> {
@@ -477,7 +477,7 @@ function uncomment(content: string, start: LineStart): Pick<Line, "text" | "comm
  * Reads a line `tokenize` took for one starting a node again, now the parser knows it continues
  * a plain scalar or a flow collection, and puts it back where `readYaml` collects the comments.
  */
-function reread(state: State, line: Line, start: "plain" | "flow"): Line {
+function reread(state: State, line: Line, start: Exclude<LineStart, "node">): Line {
   const again = { ...line, ...uncomment(line.raw.slice(line.indent), start) };
   state.lines[line.n - 1] = again;
   return again;
@@ -500,12 +500,13 @@ function reread(state: State, line: Line, start: "plain" | "flow"): Line {
  *
  * A line that continues a plain scalar is on that scalar from its first character, so a quote
  * at its start opens nothing either, and one that continues a flow collection is inside it to
- * its end, so a comma there ends a plain scalar and a quote after it opens one.
+ * its end, so a comma there ends a plain scalar and a quote after it opens one. A line that
+ * continues a plain scalar inside a flow collection is both.
  */
 function stripComment(content: string, start: LineStart): string {
   // Where a node may start, inside a plain scalar, or past a quoted scalar or collection that closed.
-  let at: "node" | "plain" | "after" = start === "plain" ? "plain" : "node";
-  let depth = start === "flow" ? Infinity : 0;
+  let at: "node" | "plain" | "after" = start === "plain" || start === "plain in flow" ? "plain" : "node";
+  let depth = start === "flow" || start === "plain in flow" ? Infinity : 0;
   let quote: string | undefined;
   for (let i = 0; i < content.length; i += 1) {
     const char = content[i] ?? "";
@@ -712,8 +713,9 @@ function parseScalarOnLines(state: State, line: Line, text: string, minIndent: n
  * `s-separate(n,c)`), and a comment may end any of its lines. Every line has to clear the
  * indentation of the block the collection sits in (production 197, `s-l+flow-in-block(n)`,
  * which reads it at `n+1`), which is the formatter's `type: [string,` with `"null"]` indented
- * under it. Like a quoted scalar, the collection is over at its closing bracket, so a line
- * indented under it continues nothing.
+ * under it. A plain scalar inside it runs on over the lines below it the same way, up to the
+ * comma or bracket that ends it. Like a quoted scalar, the collection is over at its closing
+ * bracket, so a line indented under it continues nothing.
  */
 function parseFlowOnLines(state: State, line: Line, text: string, minIndent: number): unknown {
   const scanner: Scanner = { text, pos: 0, line, more: { state, minIndent, opened: line } };
@@ -1315,9 +1317,8 @@ function parseFlowKey(scanner: Scanner): string {
 
 /**
  * Why a flow collection stopped making sense: unterminated, or something else where a comma
- * was. Something on a line below the entry it follows is, to YAML, the same plain scalar
- * folded on over the line break, which this reader leaves alone the way it leaves a plain key
- * spread over lines, so the error says which of the two the file most likely meant.
+ * was. Something on a line below the entry it follows, which a plain scalar would have run on
+ * to, is most likely an entry whose comma was left off, so the error says where to put one.
  */
 function flowError(scanner: Scanner, expected: string, close: string, entryLine: Line): YamlError {
   if (scanner.pos > scanner.text.length) {
@@ -1328,7 +1329,7 @@ function flowError(scanner: Scanner, expected: string, close: string, entryLine:
   if (scanner.line !== entryLine) {
     return new YamlError(
       scanner.line.n,
-      `expected ${expected} in a flow collection, found ${found} on the line below the entry before it; a plain scalar inside a flow collection is read on one line, so quote one that wraps, or put a comma after the entry above if they are two`,
+      `expected ${expected} in a flow collection, found ${found} on the line below the entry before it; put a comma after the entry above if they are two`,
     );
   }
   return new YamlError(scanner.line.n, `expected ${expected} in a flow collection, found ${found}`);
@@ -1390,11 +1391,32 @@ function skipSeparation(scanner: Scanner): void {
 }
 
 /**
- * A plain scalar written on one line: everything up to what ends it, which inside a flow
- * collection is more. A scalar carrying a colon followed by a space is a mapping written where
- * YAML cannot read it as such, and it is refused rather than read as the text it is not.
+ * A plain scalar: everything up to what ends it, which inside a flow collection is more. Inside a
+ * flow collection written over lines it runs on over the lines below that continue it, and they
+ * are folded into it as they are outside one. A scalar carrying a colon followed by a space is a
+ * mapping written where YAML cannot read it as such, and it is refused rather than read as the
+ * text it is not.
  */
 function readPlain(scanner: Scanner, inFlow: boolean): string {
+  const opened = scanner.line;
+  const content = [readPlainLine(scanner, inFlow)];
+  const more = inFlow ? scanner.more : undefined;
+  if (more === undefined) return content[0] ?? "";
+  // Only a scalar that runs to the end of its line can carry on below it.
+  while (scanner.pos === scanner.text.length) {
+    const empty = nextPlainLine(scanner, more);
+    if (empty === undefined) break;
+    content.push(...Array.from({ length: empty }, () => ""), readPlainLine(scanner, inFlow, opened));
+  }
+  return fold(content);
+}
+
+/**
+ * The part of a plain scalar written on the scanner's line, from where the scanner is. Given
+ * `opened`, the line the scalar started on above it, a colon followed by a space is more likely
+ * the key of an entry whose comma was left off the line above than text, so the error says so.
+ */
+function readPlainLine(scanner: Scanner, inFlow: boolean, opened?: Line): string {
   let end = scanner.pos;
   while (end < scanner.text.length) {
     const char = scanner.text[end] ?? "";
@@ -1404,8 +1426,77 @@ function readPlain(scanner: Scanner, inFlow: boolean): string {
   }
   const text = scanner.text.slice(scanner.pos, end).trimEnd();
   scanner.pos = end;
-  rejectPlainColon(scanner.line, text);
+  if (opened === undefined) rejectPlainColon(scanner.line, text);
+  else if (/:(\s|$)/.test(text)) {
+    throw new YamlError(
+      scanner.line.n,
+      `the plain scalar from line ${opened.n} runs on to this line inside a flow collection, and ${JSON.stringify(text)} holds a colon followed by a space; put a comma after the entry above if this line starts an entry of its own, or quote the scalar if it is text`,
+    );
+  }
   return text;
+}
+
+/**
+ * Moves the scanner on to the next line of a plain scalar inside a flow collection, and returns
+ * how many empty lines came before it, or undefined where the scalar ends with its line. YAML 1.2
+ * reads a plain scalar in a flow collection over as many lines as it needs (production 135,
+ * `ns-plain-multi-line(n,c)`, in the flow context): a line below continues it when it starts with
+ * a character the scalar may hold there (production 130, `ns-plain-char(c)`), which leaves out a
+ * comma, a bracket, and a colon followed by a space or by one of those, and clears the
+ * indentation of the collection's block. That is how `yaml.safe_dump` writes a description too
+ * long for its line inside a flow mapping. The folding between two lines (production 74,
+ * `s-flow-folded(n)`) takes in empty lines and no comment, so a comment before a line that would
+ * continue the scalar is refused rather than read past.
+ */
+function nextPlainLine(scanner: Scanner, more: Continuation): number | undefined {
+  const { state, minIndent } = more;
+  // A line a quoted scalar ran on to is read off its raw text, so a comment there stopped the scalar already.
+  let comment = scanner.line.comment && !state.content.has(scanner.line.n) ? scanner.line : undefined;
+  const empty: Line[] = [];
+  for (let index = state.index; index < state.lines.length; index += 1) {
+    const next = state.lines[index];
+    if (next === undefined) break;
+    if (next.raw.trim() === "") {
+      empty.push(next);
+      continue;
+    }
+    if (next.text === "") {
+      comment ??= next;
+      continue;
+    }
+    // What does not continue the scalar is left to the collection, which reads or refuses it.
+    if (next.indent < minIndent || (next.indent === 0 && isDocumentMarker(next.text))) return undefined;
+    if (!continuesPlain(next.raw.slice(next.indent))) return undefined;
+    if (comment !== undefined) throw commentInsideFlowPlain(comment);
+    state.index = index + 1;
+    for (const line of empty) state.content.add(line.n);
+    const inside = reread(state, next, "plain in flow");
+    scanner.text = inside.text;
+    scanner.pos = 0;
+    scanner.line = inside;
+    return empty.length;
+  }
+  return undefined;
+}
+
+/** Whether a line inside a flow collection starts with what a plain scalar there may hold. */
+function continuesPlain(content: string): boolean {
+  const first = content[0] ?? "";
+  const second = content[1] ?? "";
+  if (",[]{}".includes(first)) return false;
+  return first !== ":" || (second !== "" && !/\s/.test(second) && !",[]{}".includes(second));
+}
+
+/**
+ * A comment between a plain scalar inside a flow collection and a line that would continue it,
+ * which YAML folds into no scalar. Where the line was meant as an entry of its own, a comma is
+ * what is missing, so the error names both.
+ */
+function commentInsideFlowPlain(line: Line): YamlError {
+  return new YamlError(
+    line.n,
+    "a comment inside a plain scalar spread over lines of a flow collection; YAML folds no comment into a scalar, so move the comment out of the collection if the lines are one scalar, or put a comma after the entry above the comment if they are two",
+  );
 }
 
 /** What the YAML 1.2 core schema makes of a plain scalar, where JSON can hold it. */
