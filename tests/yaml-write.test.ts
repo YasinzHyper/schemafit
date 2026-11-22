@@ -586,6 +586,71 @@ anyOf: [
     expect(stringifyYaml({ type: "object", required: ["id", "name"] }, [], [], layout)).toBe("type: object\nrequired: [id, name]\n");
   });
 
+  it("keeps a schema yaml.safe_dump wrote as one flow mapping on the lines it wrote, the collections and descriptions wrapped inside it included", () => {
+    // What yaml.safe_dump(schema, default_flow_style=True, sort_keys=False) writes.
+    const text = `{type: object, description: 'A support ticket as the customer filed it, and the state
+    it is in now.', properties: {status: {type: string, enum: [open, pending, closed]},
+    assignee: {type: string, description: Who to assign it to. Omit to leave it in
+        the queue for triage.}, labels: {type: array, items: {type: string, enum: [
+          bug, feature, question, duplicate]}}}, required: [status]}
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
+  it("follows a collection wrapped inside another on its last line with what a fix adds, and starts a line at the column of the collection's depth", () => {
+    const { value, layout } = readYaml(`{type: object, properties: {status: {type: string, enum: [open, pending, closed]},
+    assignee: {type: string, description: Who to assign it to. Omit to leave it in
+        the queue for triage.}}, required: [status]}
+`);
+    const schema = value as { properties: { assignee: { type: unknown } }; required: string[] };
+    schema.properties.assignee.type = ["string", "null"];
+    // A line the file started stays started, the description keeps its lines, and a collection
+    // whose entries start no line starts one two columns further in than the collection it is in,
+    // as PyYAML indents each it nests: the root at 2, `assignee` inside `properties` at 6.
+    expect(stringifyYaml({ ...schema, required: ["status", "assignee"], additionalProperties: false }, [], [], layout)).toBe(
+      `{type: object, properties: {status: {type: string, enum: [open, pending, closed]},
+    assignee: {type: [string, "null"],
+      description: Who to assign it to. Omit to leave it in
+        the queue for triage.}}, required: [status, assignee],
+  additionalProperties: false}
+`,
+    );
+  });
+
+  it("wraps a sentence a fix added to a plain or quoted scalar wrapped inside a flow collection on the lines the file wrapped it on", () => {
+    // What yaml.safe_dump(schema, default_flow_style=True, sort_keys=False) writes.
+    const { layout } = readYaml(`{type: object, properties: {code: {type: string, description: The short code the warehouse
+        prints on the label of every parcel it ships., maxLength: 8}, note: {type: string,
+      description: 'Anything the courier should know, such as a gate code or a safe
+        place to leave it.', minLength: 1}}, required: [code, note], additionalProperties: false}
+`);
+    const value = {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The short code the warehouse prints on the label of every parcel it ships. Must be at most 8 characters long." },
+        note: { type: "string", description: "Anything the courier should know, such as a gate code or a safe place to leave it. Must be at least 1 character long." },
+      },
+      required: ["code", "note"],
+      additionalProperties: false,
+    };
+    expect(stringifyYaml(value, [], [], layout)).toBe(`{type: object, properties: {code: {type: string, description: The short code the warehouse
+        prints on the label of every parcel it ships. Must be at most 8 characters long.},
+    note: {type: string,
+      description: 'Anything the courier should know, such as a gate code or a safe
+        place to leave it. Must be at least 1 character long.'}}, required: [code, note],
+  additionalProperties: false}
+`);
+  });
+
+  it("writes a plain scalar wrapped inside a flow collection on one line, quoted, once a fix adds a comma to it", () => {
+    const { layout } = readYaml("{type: string, description: The page the\n    ticket links to, format: uri}\n");
+    const value = { type: "string", description: "The page the ticket links to Must be an absolute URI, such as https://example.com/a." };
+    expect(stringifyYaml(value, [], [], layout)).toBe(
+      '{type: string,\n  description: "The page the ticket links to Must be an absolute URI, such as https://example.com/a."}\n',
+    );
+  });
+
   it("writes a value as it would any other where the sequence the file held there is gone", () => {
     const { layout } = readYaml("type:\n  - string\n  - 'null'\n");
     expect(stringifyYaml({ type: "string" }, [], [], layout)).toBe("type: string\n");

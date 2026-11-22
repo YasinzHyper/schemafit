@@ -215,15 +215,16 @@ export interface YamlLayout {
   blockLists: boolean;
   /**
    * Every folded block scalar (`>`) and every plain or quoted scalar spread over lines of the document,
-   * with the lines the file wrapped it on.
+   * those inside a flow collection included, with the lines the file wrapped it on.
    */
   folds: YamlFold[];
   /**
    * Every flow collection with something in it that the document writes on one line, an
    * `items: {type: string}` or an `anyOf: [{type: string}, {type: "null"}]` and the mappings in
    * it, every one it spreads one entry to a line, as Prettier breaks one that outgrew its
-   * line, and every one it wraps over lines with each entry on one, so a rewrite keeps each on
-   * its lines rather than expanding it into block style or joining it onto one line.
+   * line, and every one it wraps over lines, the collections and scalars wrapped inside it
+   * included, so a rewrite keeps each on its lines rather than expanding it into block style or
+   * joining it onto one line.
    */
   flows: YamlFlow[];
 }
@@ -292,20 +293,32 @@ export interface YamlSpread {
 }
 
 /**
- * How a flow collection is spread over lines when it is not one entry to a line: each entry on
- * one line, and the lines after the one it opens on starting with an entry at one column. Its
- * columns are measured as a `YamlSpread`'s are, from where the line it opens on starts. The
- * `type: [string,` over `  "null"]` a list that outgrew its line is wrapped into is `lines: [1, 1]`
- * and `entries: 2`, with no `close`.
+ * How a flow collection is spread over lines when it is not one entry to a line: the lines after
+ * the one it opens on that start with one of its entries start them at one column, and an entry
+ * is either on one line or is itself a collection wrapped this way or a plain or quoted scalar
+ * spread over lines, opened on the line the entry starts on, after which the next entry may
+ * follow on the line the last one ended on. That is how
+ * `yaml.safe_dump(schema, default_flow_style=True)` wraps a whole schema written as one flow
+ * mapping. Its columns are measured as a `YamlSpread`'s are,
+ * from where the line it opens on starts, and for one inside another flow collection, from where
+ * the line the outermost of them opens on starts, since PyYAML indents the lines of each by how
+ * deep it is nested rather than by the line it happens to open on. The `type: [string,` over
+ * `  "null"]` a list that outgrew its line is wrapped into is `lines: [1, 1]` and `entries: 2`,
+ * with no `close`.
  */
 export interface YamlWrap {
   /**
    * How many entries each of its lines holds, the line it opens on first, which holds none where
-   * its opening bracket ends that line.
+   * its opening bracket ends that line. An entry is counted on the line it starts on, and the
+   * entries after one spread over lines that follow it on its last line are counted with it.
    */
   lines: number[];
-  /** How many columns further than that the lines after the first are indented. */
-  entries: number;
+  /**
+   * How many columns further than that the lines after the first that start with one of its
+   * entries are indented. Absent for one none of whose entries starts a line, which spreads over
+   * lines only because an entry inside it does.
+   */
+  entries?: number;
   /**
    * Where its closing bracket starts a line of its own, how many columns further than that the
    * bracket is indented. Absent where the bracket follows the last entry on its line.
@@ -313,7 +326,7 @@ export interface YamlWrap {
   close?: number;
   /** Whether a comma follows its last entry. */
   trailing: boolean;
-  /** How many columns past where the line it opens on starts its longest line ends. */
+  /** How many columns past where its columns are measured from its longest line ends. */
   width: number;
 }
 
@@ -335,6 +348,14 @@ export interface YamlFold {
    * the closing one, each without its indentation.
    */
   lines: string[];
+  /**
+   * For a plain or quoted scalar inside a flow collection, how many columns further than where the
+   * line the outermost flow collection holding it opens on starts, past the dash of a sequence
+   * item, its lines after the first are indented, which they all are alike and by at least one, as
+   * a `YamlWrap` measures its columns. Absent for a scalar in block context, whose lines go under
+   * its key.
+   */
+  indent?: number;
 }
 
 /**
@@ -1096,10 +1117,34 @@ function parseFlowNode(scanner: Scanner, inFlow: boolean, at?: string, key?: Flo
       return recordFlow(scanner, "mapping", at, key, (shape) => parseFlowMapping(scanner, at, shape));
     case '"':
     case "'":
-      return readQuoted(scanner, scanner.more);
+      return readQuotedOver(scanner, at);
     default:
-      return resolvePlain(readPlain(scanner, inFlow), scanner.line);
+      return resolvePlain(readPlain(scanner, inFlow, at), scanner.line);
   }
+}
+
+/**
+ * A quoted scalar inside a flow collection or starting a line of its own, which inside a flow
+ * collection written in block context runs on over the lines below to its closing quote. One
+ * that does is recorded at `at` with the lines it was written on, read off the raw text as one in
+ * block context is, for a rewrite to wrap where the file did, when its lines below the first line
+ * up.
+ */
+function readQuotedOver(scanner: Scanner, at: string | undefined): string {
+  const opened = scanner.line;
+  const written = scanner.text.slice(scanner.pos);
+  const { more } = scanner;
+  const below = more?.state.index ?? 0;
+  const value = readQuoted(scanner, more);
+  if (more === undefined || at === undefined || scanner.line === opened) return value;
+  const between = more.state.lines.slice(below, more.state.index - 1);
+  const indents = new Set([...between.filter(({ raw }) => raw.trim() !== "").map(({ indent }) => indent), scanner.line.indent]);
+  const indent = [...indents][0]! - baseOf(more.opened);
+  if (indents.size > 1 || indent <= 0) return value;
+  const middle = between.map(({ raw }) => raw.replace(/^[ \t]+/, "").replace(/^[ \t]*$/, ""));
+  const lines = [written, ...middle, scanner.text.slice(0, scanner.pos)];
+  more.state.folds.push({ pointer: at, style: written[0] === '"' ? '"' : "'", lines, indent });
+  return value;
 }
 
 /**
@@ -1115,9 +1160,12 @@ interface FlowKey {
  * Where the entries of a flow collection and its closing bracket are: each entry by the lines it
  * starts and ends on, and the entries and the bracket by their column where they are the first
  * thing on their line and undefined where they are not, and whether a comma follows its last entry.
+ * An entry is `held` where a rewrite can write it on the lines the file did: one on a single line,
+ * and a collection wrapped over lines or a plain or quoted scalar spread over them that opens on
+ * the line the entry starts on, recorded as such.
  */
 interface FlowShape {
-  entries: Array<{ column: number | undefined; from: Line; to: Line }>;
+  entries: Array<{ column: number | undefined; from: Line; to: Line; held: boolean }>;
   close?: number;
   /** The line its closing bracket is on. */
   closed?: Line;
@@ -1128,9 +1176,9 @@ interface FlowShape {
  * A flow collection read by `read`, recorded at `at` for a rewrite to keep on its lines when it
  * has something in it and closes on the line it opens on, is spread one entry to a line, each
  * entry and the closing bracket starting a line of its own at the same column, or is wrapped
- * over lines with each entry on one and every line after the first starting with an entry at the
- * same column. A collection spread over lines any other way is left out, since a rewrite has no
- * way to write it where the file wrote it.
+ * over lines with each entry held on the lines it is on and every line that starts with an entry
+ * starting it at the same column. A collection spread over lines any other way is left out,
+ * since a rewrite has no way to write it where the file wrote it.
  */
 function recordFlow<T extends object>(
   scanner: Scanner,
@@ -1148,7 +1196,7 @@ function recordFlow<T extends object>(
   const value = read(shape);
   if (flows === undefined || at === undefined || Object.keys(value).length === 0) return value;
   const spread = scanner.line === line ? undefined : spreadOf(shape, line);
-  const wrap = scanner.line === line || spread !== undefined ? undefined : wrapOf(shape, line);
+  const wrap = scanner.line === line || spread !== undefined ? undefined : wrapOf(shape, line, scanner.more?.opened ?? line);
   if (scanner.line !== line && spread === undefined && wrap === undefined) return value;
   const flow: YamlFlow = { pointer: at, kind, padded: padded && spread === undefined, width: line.indent + line.text.length };
   if (below !== undefined && below > 0) flow.below = below;
@@ -1158,6 +1206,18 @@ function recordFlow<T extends object>(
   // keeps the order the file writes them in.
   flows.splice(index, 0, flow);
   return value;
+}
+
+/**
+ * Whether the node just read at `pointer`, spread over lines, was recorded as a collection
+ * wrapped over lines or as a plain or quoted scalar spread over them inside a flow collection,
+ * which a rewrite writes on those lines again.
+ */
+function heldOver(scanner: Scanner, pointer: string | undefined): boolean {
+  const state = scanner.more?.state;
+  if (state === undefined || pointer === undefined) return false;
+  const wrapped = state.flows.some((flow) => flow.pointer === pointer && flow.wrap !== undefined);
+  return wrapped || state.folds.some((fold) => fold.pointer === pointer && fold.indent !== undefined);
 }
 
 /** Whether the scanner is at the first thing written on its line. */
@@ -1181,36 +1241,39 @@ function spreadOf(shape: FlowShape, opened: Line): YamlSpread | undefined {
 }
 
 /**
- * How a collection is wrapped over lines, measured from where its opening line starts as a spread
- * one is. Undefined for one with an entry spread over lines itself, a line after the first that
- * does not start with an entry, or two such lines that start at different columns, and for a
- * closing bracket that neither starts a line nor follows the last entry, as a comma at the start
- * of a line would leave it.
+ * How a collection that opened on `opened` is wrapped over lines, measured from where `frame`
+ * starts, the line the outermost flow collection holding it opens on. Undefined for one with an
+ * entry spread over lines in a way a rewrite cannot write again, a line that starts inside it with
+ * no entry, two lines starting with an entry at different columns, or such a line no further in
+ * than `frame`, and for a closing bracket that neither starts a line nor follows the last entry,
+ * as a comma at the start of a line would leave it.
  */
-function wrapOf(shape: FlowShape, opened: Line): YamlWrap | undefined {
+function wrapOf(shape: FlowShape, opened: Line, frame: Line): YamlWrap | undefined {
   const { entries, closed } = shape;
-  if (closed === undefined || entries.some(({ from, to }) => from !== to)) return undefined;
+  if (closed === undefined || entries.some(({ held }) => !held)) return undefined;
   const lines: number[] = [];
+  // The line the last entry ended on, which the next one follows it on unless it starts a line.
   let line = opened;
   let count = 0;
   let column: number | undefined;
   for (const entry of entries) {
-    if (entry.from === line) {
-      count += 1;
-      continue;
+    if (entry.from === line) count += 1;
+    else {
+      if (entry.column === undefined || (column !== undefined && entry.column !== column)) return undefined;
+      lines.push(count);
+      count = 1;
+      column = entry.column;
     }
-    if (entry.column === undefined || (column !== undefined && entry.column !== column)) return undefined;
-    lines.push(count);
-    count = 1;
-    column = entry.column;
-    line = entry.from;
+    line = entry.to;
   }
   lines.push(count);
-  const base = baseOf(opened);
-  if (column === undefined || column <= base) return undefined;
+  const base = baseOf(frame);
+  // A collection none of whose entries starts a line is spread over lines only by an entry inside it.
+  if (column === undefined ? entries.every(({ from, to }) => from === to) : column <= base) return undefined;
   if (shape.close === undefined ? closed !== line : shape.close < base) return undefined;
   const width = Math.max(...[opened, ...entries.map(({ from }) => from), closed].map(({ indent, text }) => indent + text.length)) - base;
-  const wrap: YamlWrap = { lines, entries: column - base, trailing: shape.trailing, width };
+  const wrap: YamlWrap = { lines, trailing: shape.trailing, width };
+  if (column !== undefined) wrap.entries = column - base;
   if (shape.close !== undefined) wrap.close = shape.close - base;
   return wrap;
 }
@@ -1239,9 +1302,10 @@ function parseFlowSequence(scanner: Scanner, at?: string, shape?: FlowShape): un
   for (;;) {
     const from = scanner.line;
     const column = startsLine(scanner) ? from.indent : undefined;
-    items.push(parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, items.length)));
+    const pointer = at === undefined ? undefined : joinPointer(at, items.length);
+    items.push(parseFlowNode(scanner, true, pointer));
     const before = scanner.line;
-    shape?.entries.push({ column, from, to: before });
+    shape?.entries.push({ column, from, to: before, held: before === from || heldOver(scanner, pointer) });
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     if (char === "]") closeShape(shape, scanner, false);
@@ -1274,9 +1338,13 @@ function parseFlowMapping(scanner: Scanner, at?: string, shape?: FlowShape): Rec
     if (Object.prototype.hasOwnProperty.call(mapping, key)) {
       throw new YamlError(scanner.line.n, `duplicate key ${JSON.stringify(key)}`);
     }
-    mapping[key] = parseFlowNode(scanner, true, at === undefined ? undefined : joinPointer(at, key), start);
+    const pointer = at === undefined ? undefined : joinPointer(at, key);
+    // Where the value starts, which for one written on the line below its key is not where the entry does.
+    skipSeparation(scanner);
+    const opens = scanner.line;
+    mapping[key] = parseFlowNode(scanner, true, pointer, start);
     const before = scanner.line;
-    shape?.entries.push({ column: start?.column, from, to: before });
+    shape?.entries.push({ column: start?.column, from, to: before, held: before === from || (opens === from && heldOver(scanner, pointer)) });
     skipSeparation(scanner);
     const char = scanner.text[scanner.pos];
     if (char === "}") closeShape(shape, scanner, false);
@@ -1397,17 +1465,23 @@ function skipSeparation(scanner: Scanner): void {
  * mapping written where YAML cannot read it as such, and it is refused rather than read as the
  * text it is not.
  */
-function readPlain(scanner: Scanner, inFlow: boolean): string {
+function readPlain(scanner: Scanner, inFlow: boolean, at?: string): string {
   const opened = scanner.line;
   const content = [readPlainLine(scanner, inFlow)];
   const more = inFlow ? scanner.more : undefined;
   if (more === undefined) return content[0] ?? "";
+  const indents = new Set<number>();
   // Only a scalar that runs to the end of its line can carry on below it.
   while (scanner.pos === scanner.text.length) {
     const empty = nextPlainLine(scanner, more);
     if (empty === undefined) break;
+    indents.add(scanner.line.indent);
     content.push(...Array.from({ length: empty }, () => ""), readPlainLine(scanner, inFlow, opened));
   }
+  // Recorded for a rewrite to wrap where the file did, when its lines below the first line up.
+  const [column] = indents;
+  const indent = column === undefined ? 0 : column - baseOf(more.opened);
+  if (at !== undefined && indents.size === 1 && indent > 0) more.state.folds.push({ pointer: at, style: "plain", lines: [...content], indent });
   return fold(content);
 }
 

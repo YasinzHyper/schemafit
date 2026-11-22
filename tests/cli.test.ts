@@ -984,13 +984,30 @@ required: [category]
     expect(lint.stdout).toContain('Properties missing from "required": assignee.');
 
     expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
-    // The mapping the fix lengthens goes into block style, with the description it held whole.
-    expect(await readFile(file, "utf8")).toBe(`${head}  assignee:
-    type: [string, "null"]
-    description: Who to assign the ticket to. Omit it to leave the ticket in the queue.
+    // The mapping the fix lengthens stays in flow style, and the description it holds keeps its
+    // lines, the entry moving to a line of its own where PyYAML indents the mapping's lines.
+    expect(await readFile(file, "utf8")).toBe(`${head}  assignee: {type: [string, "null"],
+    description: Who to assign the ticket to. Omit it to leave
+      the ticket in the queue.}
 required: [category, assignee]
 additionalProperties: false
 `);
+  });
+
+  it("--fix --write keeps a schema PyYAML wrote as one flow mapping on the lines it wrote", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "ticket.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=True, sort_keys=False) writes.
+    const head = `{type: object, description: 'A support ticket as the customer filed it, and the state
+    it is in now.', properties: {status: {type: string, enum: [open, pending, closed]},
+    assignee: {type: string, description: Who to assign it to. Omit to leave it in
+        the queue for triage.}, labels: {type: array, items: {type: string, enum: [
+          bug, feature, question, duplicate]}}}, required: [status]`;
+    await writeFile(file, `${head}}\n`);
+
+    expect((await cli(["--fix", "-p", "anthropic", "--write", file])).code).toBe(0);
+    // Every line no fix touched comes out as it went in, rather than the whole schema in block style.
+    expect(await readFile(file, "utf8")).toBe(`${head},\n  additionalProperties: false}\n`);
   });
 
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
