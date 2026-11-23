@@ -1010,6 +1010,28 @@ additionalProperties: false
     expect(await readFile(file, "utf8")).toBe(`${head},\n  additionalProperties: false}\n`);
   });
 
+  it("--fix --write keeps the quotes PyYAML put around a string holding a '?' in a schema it wrote as one flow mapping", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "ticket.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=True, sort_keys=False) writes. PyYAML ends a
+    // plain scalar inside a flow collection at a '?', so `description: Can the agent close it?`
+    // there would fail `yaml.safe_load` with "expected ',' or '}', but got '?'".
+    await writeFile(
+      file,
+      `{type: object, description: 'Can the agent close it?', properties: {status: {type: string,
+      enum: [open, pending, closed]}, assignee: {type: string, description: Who to
+        assign it to. Omit to leave it in the queue for triage.}}, required: [status]}
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "anthropic", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`{type: object, description: "Can the agent close it?", properties: {status: {type: string,
+      enum: [open, pending, closed]}, assignee: {type: string, description: Who to
+        assign it to. Omit to leave it in the queue for triage.}}, required: [status],
+  additionalProperties: false}
+`);
+  });
+
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tools.yaml");

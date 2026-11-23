@@ -21,7 +21,8 @@
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
- * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
+ * takes `yes` and `off` for booleans, and in PyYAML, which ends a plain scalar inside a flow
+ * collection at a `?` — and double-quoted where it does not. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
  *
@@ -56,6 +57,12 @@ const PLAIN_START = /^[-?:,[\]{}#&*!|>'"%@`~=<+.0-9]/;
 const UNPRINTABLE = /[\0-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
 /** The same, less the tab and the line break a literal block scalar holds as they are. */
 const UNPRINTABLE_IN_BLOCK = /[\0-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
+/**
+ * What ends a plain scalar inside a flow collection. YAML 1.2 names only the comma and the
+ * brackets, but PyYAML also ends one at a `?`, and quotes any string that holds one, so a plain
+ * `Is it open?` there reads back in this reader and fails `yaml.safe_load`.
+ */
+const FLOW_BREAKS = /[,?[\]{}]/;
 /** The plain scalars YAML 1.1 resolves to a boolean, which 1.2 left as strings. */
 const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
 
@@ -650,8 +657,7 @@ function flowNode(value: unknown, pointer: string, layout: Layout): string {
 
 /** A string inside a flow collection, plain where that reads back as the same string. */
 function flowScalar(text: string, quoted: boolean): string {
-  // Inside a flow collection a comma or a bracket ends a plain scalar, so one holding either is quoted.
-  return !quoted && isPlain(text, false) && !/[,[\]{}]/.test(text) ? text : quote(text);
+  return !quoted && isPlain(text, false) && !FLOW_BREAKS.test(text) ? text : quote(text);
 }
 
 /** A scalar, or an empty collection, written on the line it belongs to. */
@@ -790,11 +796,11 @@ function quotedLines(text: string, wrapped: readonly string[], mark: '"' | "'", 
 }
 
 /**
- * Whether a line of a plain scalar inside a flow collection is text there: it holds no comma or
- * bracket, which would end the scalar, and nothing that starts a comment or reads as a key's colon.
+ * Whether a line of a plain scalar inside a flow collection is text there: it holds nothing in
+ * `FLOW_BREAKS`, which would end the scalar, and nothing that starts a comment or reads as a key's colon.
  */
 function inFlowPlain(line: string): boolean {
-  return !/[,[\]{}]/.test(line) && !line.startsWith("#") && !line.includes(" #") && !/:( |$)/.test(line);
+  return !FLOW_BREAKS.test(line) && !line.startsWith("#") && !line.includes(" #") && !/:( |$)/.test(line);
 }
 
 function plainText(lines: readonly string[]): string {

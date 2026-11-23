@@ -651,6 +651,29 @@ anyOf: [
     );
   });
 
+  it("quotes a string holding a '?' inside a flow collection, which PyYAML ends a plain scalar at", () => {
+    // What yaml.safe_dump(schema, default_flow_style=None, sort_keys=False) writes: PyYAML quotes
+    // the description, and `yaml.safe_load` fails on `{..., description: Is it urgent?}`.
+    const { value, layout } = readYaml("type: object\nproperties:\n  urgent: {type: boolean, description: 'Is it urgent?'}\n");
+    expect(stringifyYaml({ ...(value as object), additionalProperties: false }, [], [], layout)).toBe(
+      'type: object\nproperties:\n  urgent: {type: boolean, description: "Is it urgent?"}\nadditionalProperties: false\n',
+    );
+    // A key holding one, and a '?' in block context, which ends nothing there.
+    expect(stringifyYaml({ items: { "why?": "yes or no?" }, description: "Is it urgent?" }, [], [], readYaml("items: {a: b}\n").layout)).toBe(
+      'items: {"why?": "yes or no?"}\ndescription: Is it urgent?\n',
+    );
+  });
+
+  it("writes a plain scalar holding a '?' that a file wrapped inside a flow collection on one line, quoted", () => {
+    // YAML 1.2 reads the '?' as a character, so this reader does, but PyYAML refuses the file.
+    const { value, layout } = readYaml("{type: string, description: Is the ticket\n    urgent? Say so here., maxLength: 80}\n");
+    const { maxLength: _, ...rest } = value as { description: string; maxLength: number };
+    const fixed = { ...rest, description: `${rest.description} Must be at most 80 characters long.` };
+    expect(stringifyYaml(fixed, [], [], layout)).toBe(
+      '{type: string,\n  description: "Is the ticket urgent? Say so here. Must be at most 80 characters long."}\n',
+    );
+  });
+
   it("writes a value as it would any other where the sequence the file held there is gone", () => {
     const { layout } = readYaml("type:\n  - string\n  - 'null'\n");
     expect(stringifyYaml({ type: "string" }, [], [], layout)).toBe("type: string\n");
