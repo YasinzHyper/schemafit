@@ -4,13 +4,13 @@ import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequests, lintSchema, summarize } from "./lint.js";
-import { movedPointer } from "./moves.js";
+import { pointerMover } from "./moves.js";
 import { expandPattern, isGlob } from "./glob.js";
 import { fixOpenApi, openApiInlineSchemas, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
 import { providers } from "./providers/index.js";
 import { PROVIDER_IDS } from "./types.js";
-import type { AppliedFix, FixResult, LintResult, ProviderId, RuleMeta } from "./types.js";
+import type { FixResult, LintResult, ProviderId, RuleMeta } from "./types.js";
 import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
@@ -527,11 +527,14 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
     // component without the copies of the components it references.
     rewritten = rewrap(rewritten, found.keys, result.schema);
     for (const applied of result.applied) {
-      moved = moved.map((comment) => follow(comment, found.pointer, applied));
-      movedBlanks = movedBlanks.map((blank) => follow(blank, found.pointer, applied));
-      movedFolds = movedFolds.map((folded) => follow(folded, found.pointer, applied));
-      movedSequences = movedSequences.map((sequence) => follow(sequence, found.pointer, applied));
-      movedFlows = movedFlows.map((flow) => follow(flow, found.pointer, applied));
+      // Most fixes move nothing, and a large file has an item of these for nearly every entry.
+      const move = pointerMover(found.pointer, applied);
+      if (move === undefined) continue;
+      moved = moved.map((comment) => follow(comment, move));
+      movedBlanks = movedBlanks.map((blank) => follow(blank, move));
+      movedFolds = movedFolds.map((folded) => follow(folded, move));
+      movedSequences = movedSequences.map((sequence) => follow(sequence, move));
+      movedFlows = movedFlows.map((flow) => follow(flow, move));
     }
     reports.push({ ...sourceOf(destination, found, request.openapi || schemas.length > 1), ...result });
   }
@@ -584,9 +587,11 @@ function fixOpenApiDocument(label: string, document: unknown, options: Pick<FixR
   }
 }
 
-/** A comment, an empty line, or a folded string, moved to where `applied` put its entry. */
-function follow<T extends { pointer: string | null }>(item: T, schema: string, applied: AppliedFix): T {
-  return item.pointer === null ? item : { ...item, pointer: movedPointer(item.pointer, schema, applied) };
+/** A comment, an empty line, or a folded string, moved to where `move` puts its entry, and itself where that is where it was. */
+function follow<T extends { pointer: string | null }>(item: T, move: (pointer: string) => string): T {
+  if (item.pointer === null) return item;
+  const pointer = move(item.pointer);
+  return pointer === item.pointer ? item : { ...item, pointer };
 }
 
 /** Whether the entry a comment or an empty line belongs to is still in the rewritten document. */

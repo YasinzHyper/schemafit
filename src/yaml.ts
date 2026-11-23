@@ -75,6 +75,11 @@ interface State {
   keyBelow?: { at: string; column: number };
   /** The folded block scalars read so far, with the lines each one was written on. */
   folds: YamlFold[];
+  /**
+   * The pointers of the collections in `flows` wrapped over lines and of the scalars in `folds`
+   * spread over lines inside a flow collection, which a rewrite writes on those lines again.
+   */
+  held: Set<string>;
 }
 
 /** One line being read left to right, for the scalars and flow collections written on it. */
@@ -386,6 +391,7 @@ export function readYaml(text: string): {
     flow: false,
     flows: [],
     folds: [],
+    held: new Set(),
   };
   const value = parseDocument(state);
   const found = state.lines.flatMap(({ n, raw, text: content, comment, remark }) => {
@@ -1144,6 +1150,7 @@ function readQuotedOver(scanner: Scanner, at: string | undefined): string {
   const middle = between.map(({ raw }) => raw.replace(/^[ \t]+/, "").replace(/^[ \t]*$/, ""));
   const lines = [written, ...middle, scanner.text.slice(0, scanner.pos)];
   more.state.folds.push({ pointer: at, style: written[0] === '"' ? '"' : "'", lines, indent });
+  more.state.held.add(at);
   return value;
 }
 
@@ -1190,7 +1197,8 @@ function recordFlow<T extends object>(
   const { line } = scanner;
   const padded = scanner.text[scanner.pos + 1] === " ";
   const below = key !== undefined && key.line !== line && startsLine(scanner) ? line.indent - key.column : undefined;
-  const flows = scanner.more?.state.flows;
+  const state = scanner.more?.state;
+  const flows = state?.flows;
   const index = flows?.length ?? 0;
   const shape: FlowShape = { entries: [], trailing: false };
   const value = read(shape);
@@ -1201,7 +1209,10 @@ function recordFlow<T extends object>(
   const flow: YamlFlow = { pointer: at, kind, padded: padded && spread === undefined, width: line.indent + line.text.length };
   if (below !== undefined && below > 0) flow.below = below;
   if (spread !== undefined) flow.spread = spread;
-  if (wrap !== undefined) flow.wrap = wrap;
+  if (wrap !== undefined) {
+    flow.wrap = wrap;
+    state?.held.add(at);
+  }
   // Ahead of the collections nested in it, which were recorded as they closed, so the list
   // keeps the order the file writes them in.
   flows.splice(index, 0, flow);
@@ -1214,10 +1225,7 @@ function recordFlow<T extends object>(
  * which a rewrite writes on those lines again.
  */
 function heldOver(scanner: Scanner, pointer: string | undefined): boolean {
-  const state = scanner.more?.state;
-  if (state === undefined || pointer === undefined) return false;
-  const wrapped = state.flows.some((flow) => flow.pointer === pointer && flow.wrap !== undefined);
-  return wrapped || state.folds.some((fold) => fold.pointer === pointer && fold.indent !== undefined);
+  return pointer !== undefined && (scanner.more?.state.held.has(pointer) ?? false);
 }
 
 /** Whether the scanner is at the first thing written on its line. */
@@ -1481,7 +1489,10 @@ function readPlain(scanner: Scanner, inFlow: boolean, at?: string): string {
   // Recorded for a rewrite to wrap where the file did, when its lines below the first line up.
   const [column] = indents;
   const indent = column === undefined ? 0 : column - baseOf(more.opened);
-  if (at !== undefined && indents.size === 1 && indent > 0) more.state.folds.push({ pointer: at, style: "plain", lines: [...content], indent });
+  if (at !== undefined && indents.size === 1 && indent > 0) {
+    more.state.folds.push({ pointer: at, style: "plain", lines: [...content], indent });
+    more.state.held.add(at);
+  }
   return fold(content);
 }
 
