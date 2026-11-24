@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { movedPointer } from "../src/moves.js";
+import { movedPointer, pointerMover, rewrappedRoot } from "../src/moves.js";
 
 const rename = { ruleId: "openai/no-one-of", provider: "openai", path: "/properties/status", title: "" } as const;
 const wrap = { ruleId: "openai/root-object", provider: "openai", path: "", title: "" } as const;
@@ -43,5 +43,32 @@ describe("movedPointer", () => {
   it("leaves a pointer alone for a fix that moves nothing", () => {
     const required = { ruleId: "openai/all-required", provider: "openai", path: "", title: "" } as const;
     expect(movedPointer("/properties/a/oneOf", "", required)).toBe("/properties/a/oneOf");
+  });
+});
+
+describe("pointerMover", () => {
+  it("is undefined for a fix that moves nothing, so a caller can pass over it", () => {
+    const required = { ruleId: "openai/all-required", provider: "openai", path: "", title: "" } as const;
+    const lowered = { ruleId: "anthropic/array-constraints", provider: "anthropic", path: "", title: 'Lower "minItems" to 1 and state the real minimum in "description".' } as const;
+    expect(pointerMover("", required)).toBeUndefined();
+    expect(pointerMover("", lowered)).toBeUndefined();
+  });
+
+  it("moves a pointer as movedPointer does for a fix that moves entries", () => {
+    const fold = { ruleId: "anthropic/no-string-length", provider: "anthropic", path: "/properties/code", title: 'Remove "maxLength" and state it in "description".' } as const;
+    expect(pointerMover("", fold)?.("/properties/code/maxLength")).toBe("/properties/code/description");
+    expect(pointerMover("", rename)?.("/properties/status/oneOf/0")).toBe("/properties/status/anyOf/0");
+    const wrapped = pointerMover("/tools/0/input_schema", wrap);
+    expect(wrapped?.("/tools/0/input_schema/type")).toBe("/tools/0/input_schema/properties/result/type");
+    expect(wrapped?.("/tools/0/input_schema/$defs/tag")).toBe("/tools/0/input_schema/$defs/tag");
+    expect(wrapped?.("/tools/1/input_schema/type")).toBe("/tools/1/input_schema/type");
+  });
+});
+
+describe("rewrappedRoot", () => {
+  it("names the root openai/root-object wraps, inside a larger document too, and nothing for any other fix", () => {
+    expect(rewrappedRoot("", wrap)).toBe("");
+    expect(rewrappedRoot("/tools/0/input_schema", wrap)).toBe("/tools/0/input_schema");
+    expect(rewrappedRoot("", rename)).toBeUndefined();
   });
 });

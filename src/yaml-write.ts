@@ -12,14 +12,17 @@
  * spread one entry to a line, as Prettier breaks one that outgrew its line, spread the same way,
  * and one that outgrows its line below its key and then spread, where the file does that to its
  * own, a flow collection the file wrapped over lines, as PyYAML wraps one past 80 columns,
- * wrapped where the file wrapped it, `{}` and `[]` for the empty collections, a folded block
+ * wrapped where the file wrapped it, the collections and the plain or quoted scalars it wrapped
+ * inside it included, as `yaml.safe_dump(schema, default_flow_style=True)` wraps a whole schema,
+ * `{}` and `[]` for the empty collections, a folded block
  * scalar (`>`) for a string
  * the file wrapped in one, a plain scalar continued on the lines below its key for one the file
  * wrapped that way, and a quoted
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
- * takes `yes` and `off` for booleans — and double-quoted where it does not. What it writes is
+ * takes `yes` and `off` for booleans, and in PyYAML, which ends a plain scalar inside a flow
+ * collection at a `?` — and double-quoted where it does not. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
  *
@@ -54,6 +57,12 @@ const PLAIN_START = /^[-?:,[\]{}#&*!|>'"%@`~=<+.0-9]/;
 const UNPRINTABLE = /[\0-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
 /** The same, less the tab and the line break a literal block scalar holds as they are. */
 const UNPRINTABLE_IN_BLOCK = /[\0-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
+/**
+ * What ends a plain scalar inside a flow collection. YAML 1.2 names only the comma and the
+ * brackets, but PyYAML also ends one at a `?`, and quotes any string that holds one, so a plain
+ * `Is it open?` there reads back in this reader and fails `yaml.safe_load`.
+ */
+const FLOW_BREAKS = /[,?[\]{}]/;
 /** The plain scalars YAML 1.1 resolves to a boolean, which 1.2 left as strings. */
 const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
 
@@ -311,9 +320,12 @@ function spreadsWithin(pointer: string, layout: Layout): boolean {
   return [...layout.flows.values()].some((flow) => flow.spread !== undefined && flow.pointer.startsWith(`${pointer}/`));
 }
 
-/** Whether a string the file wrapped over lines sits inside the node at `pointer`. */
+/**
+ * Whether a string the file wrapped over lines in block context sits inside the node at `pointer`.
+ * One the file wrapped inside a flow collection is the collection's to keep wrapped.
+ */
 function foldsWithin(pointer: string, layout: Layout): boolean {
-  return [...layout.folds.keys()].some((at) => at.startsWith(`${pointer}/`));
+  return [...layout.folds.values()].some(({ pointer: at, indent }) => indent === undefined && at.startsWith(`${pointer}/`));
 }
 
 /** Whether a value is a collection with something in it, which an empty `[]` or `{}` is not. */
@@ -405,12 +417,7 @@ function entryReadsBack(prefix: string, lines: readonly string[], indent: number
 
 /**
  * A collection wrapped over lines as `wrap` says, from `base`, the column the line it opens on
- * starts at, after `opening`, what that line holds before the opening bracket. Each entry goes on
- * one line, and starts a new one where the file started one, and where it would carry its line past
- * the file's longest, so the entries a fix adds, such as the keys `openai/all-required` adds to a
- * `required`, fill the last line and wrap where the file wrapped. Spaced inside its brackets as
- * the file spaced it, with `padded`, where an entry follows the opening one or precedes the
- * closing one on its line.
+ * starts at, after `opening`, what that line holds before the opening bracket.
  */
 function wrapLines(
   value: unknown[] | Record<string, unknown>,
@@ -421,9 +428,43 @@ function wrapLines(
   padded: boolean,
   layout: Layout,
 ): string[] {
-  const entries = Array.isArray(value)
-    ? value.map((item, index) => flowNode(item, joinPointer(pointer, index), layout))
-    : Object.entries(value).map(([key, item]) => `${flowScalar(key, key.includes(":"))}: ${flowNode(item, joinPointer(pointer, key), layout)}`);
+  const pen: Pen = { done: [], line: opening };
+  wrapOnto(pen, value, pointer, wrap, padded, base, base, layout);
+  return [...pen.done, pen.line];
+}
+
+/** The lines a collection wrapped over lines is written on: those already finished, and the one being written. */
+interface Pen {
+  done: string[];
+  line: string;
+}
+
+/**
+ * Writes a collection wrapped over lines as `wrap` says onto the end of the pen's line. Each
+ * entry starts a new line where the file started one, and where it would carry its line past the
+ * file's longest, so the entries a fix adds, such as the keys `openai/all-required` adds to a
+ * `required`, fill the last line and wrap where the file wrapped. An entry the file wrapped over
+ * lines itself — a collection wrapped this way, or a plain or quoted scalar spread over lines — is
+ * written onto the line it starts on and the lines below as the file wrote it, and the entries
+ * after it follow it on its last line, which is how
+ * `yaml.safe_dump(schema, default_flow_style=True)` writes a whole schema. Its columns are measured from `frame`, the column the line the outermost
+ * collection opens on starts at, wherever the line it opens on starts, so its lines start at the
+ * column the file started them at, or for one whose entries the file started no line with, at
+ * `held`, the column of the lines of the collection it is in, plus two, as PyYAML indents each
+ * collection it nests. Spaced inside its brackets as the file spaced it, with `padded`, where an
+ * entry follows the opening one or precedes the closing one on its line.
+ */
+function wrapOnto(
+  pen: Pen,
+  value: unknown[] | Record<string, unknown>,
+  pointer: string,
+  wrap: YamlWrap,
+  padded: boolean,
+  frame: number,
+  held: number,
+  layout: Layout,
+): void {
+  const entries: Array<[string | undefined, unknown]> = Array.isArray(value) ? value.map((item) => [undefined, item]) : Object.entries(value);
   // The entries the file started a line with, by their indexes: the first of each line after the one it opens on.
   const starts = new Set<number>();
   let index = wrap.lines[0] ?? 0;
@@ -434,23 +475,84 @@ function wrapLines(
   const [open, close] = Array.isArray(value) ? ["[", "]"] : ["{", "}"];
   const pad = padded ? " " : "";
   const closing = wrap.close === undefined ? `${pad}${close}` : "";
-  const column = " ".repeat(base + wrap.entries);
-  const lines: string[] = [];
-  let line = `${opening}${open}`;
-  entries.forEach((entry, at) => {
+  const column = wrap.entries === undefined ? held + INDENT : frame + wrap.entries;
+  const width = frame + wrap.width;
+  pen.line += open;
+  entries.forEach(([key, item], at) => {
     const last = at === entries.length - 1;
     const comma = last && !wrap.trailing ? "" : ",";
+    const where = joinPointer(pointer, key ?? at);
+    // A flow mapping's key runs to its first colon, so a key holding one is quoted.
+    const head = key === undefined ? "" : `${flowScalar(key, key.includes(":"))}: `;
+    // Where it goes after the line so far, which is where its lines are worked out from.
+    const inner = wrappedWithin(item, where, `${pen.line}${at === 0 ? pad : " "}${head}`.length, frame, layout);
+    // What the entry puts on the line it starts on: all of it, or up to where the file wrapped it.
+    const first = inner === undefined ? `${head}${flowNode(item, where, layout)}${last ? closing : ""}` : `${head}${inner.first}`;
     // The comma is left out of the measure, so an entry that gains one as a fix adds another after it stays where it was.
-    const passes = `${line} ${entry}${last ? closing : ""}`.length > base + wrap.width;
-    if (at === 0 ? starts.has(0) : starts.has(at) || passes) {
-      lines.push(line);
-      line = `${column}${entry}${comma}`;
+    if (at === 0 ? starts.has(0) : starts.has(at) || `${pen.line} ${first}`.length > width) {
+      pen.done.push(pen.line);
+      pen.line = " ".repeat(column);
     } else {
-      line = `${line}${at === 0 ? pad : " "}${entry}${comma}`;
+      pen.line += at === 0 ? pad : " ";
     }
+    pen.line += head;
+    if (inner === undefined) pen.line += flowNode(item, where, layout);
+    else inner.write(pen, column);
+    pen.line += comma;
   });
-  if (wrap.close === undefined) return [...lines, `${line}${closing}`];
-  return [...lines, line, `${" ".repeat(base + wrap.close)}${close}`];
+  if (wrap.close === undefined) {
+    pen.line += closing;
+    return;
+  }
+  pen.done.push(pen.line);
+  pen.line = `${" ".repeat(frame + wrap.close)}${close}`;
+}
+
+/**
+ * How to write an entry of a collection wrapped over lines that the file wrapped over lines
+ * itself onto the pen, given the column of the lines of the collection it is in: a collection
+ * wrapped the same way, or a plain or quoted scalar spread over lines that would start at column
+ * `start`, with what it puts on the line it starts on. Their columns are measured from `frame`.
+ * Undefined for any other entry, and for a scalar the file's lines no longer hold, which go on one
+ * line.
+ */
+function wrappedWithin(
+  value: unknown,
+  pointer: string,
+  start: number,
+  frame: number,
+  layout: Layout,
+): { first: string; write: (pen: Pen, held: number) => void } | undefined {
+  const record = layout.flows.get(pointer);
+  if (record?.wrap !== undefined && isCollection(value)) {
+    const { wrap, padded } = record;
+    return {
+      first: Array.isArray(value) ? "[" : "{",
+      write: (pen, held) => wrapOnto(pen, value, pointer, wrap, padded, frame, held, layout),
+    };
+  }
+  const fold = layout.folds.get(pointer);
+  if (typeof value !== "string" || fold === undefined || fold.style === ">" || fold.indent === undefined) return undefined;
+  const { style } = fold;
+  const column = frame + fold.indent;
+  const linesAt = (at: number): string[] | undefined => {
+    const lines = style === "plain" ? plainLines(value, fold.lines, at, column) : quotedLines(value, fold.lines, style, at, column);
+    // A plain scalar a fix added a comma or a bracket to would end there inside the collection.
+    return style === "plain" && !lines?.every(inFlowPlain) ? undefined : lines;
+  };
+  const first = linesAt(start)?.[0];
+  if (first === undefined) return undefined;
+  return {
+    first,
+    write: (pen) => {
+      const [opening = "", ...rest] = linesAt(pen.line.length) ?? [flowScalar(value, false)];
+      pen.line += opening;
+      for (const line of rest) {
+        pen.done.push(pen.line);
+        pen.line = line === "" ? "" : `${" ".repeat(column)}${line}`;
+      }
+    },
+  };
 }
 
 /**
@@ -555,8 +657,7 @@ function flowNode(value: unknown, pointer: string, layout: Layout): string {
 
 /** A string inside a flow collection, plain where that reads back as the same string. */
 function flowScalar(text: string, quoted: boolean): string {
-  // Inside a flow collection a comma or a bracket ends a plain scalar, so one holding either is quoted.
-  return !quoted && isPlain(text, false) && !/[,[\]{}]/.test(text) ? text : quote(text);
+  return !quoted && isPlain(text, false) && !FLOW_BREAKS.test(text) ? text : quote(text);
 }
 
 /** A scalar, or an empty collection, written on the line it belongs to. */
@@ -692,6 +793,14 @@ function quotedLines(text: string, wrapped: readonly string[], mark: '"' | "'", 
   if (plainReadsAs(extended, text)) return extended;
   const appended = [...body.slice(0, -1), `${open === "" ? "" : `${open} `}${sentence}${mark}`];
   return plainReadsAs(appended, text) ? appended : undefined;
+}
+
+/**
+ * Whether a line of a plain scalar inside a flow collection is text there: it holds nothing in
+ * `FLOW_BREAKS`, which would end the scalar, and nothing that starts a comment or reads as a key's colon.
+ */
+function inFlowPlain(line: string): boolean {
+  return !FLOW_BREAKS.test(line) && !line.startsWith("#") && !line.includes(" #") && !/:( |$)/.test(line);
 }
 
 function plainText(lines: readonly string[]): string {
