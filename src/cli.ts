@@ -4,7 +4,7 @@ import { fix } from "./fix.js";
 import { formatFixed, formatPretty, formatRules } from "./format/pretty.js";
 import type { FileReport, FixReport, SchemaSource } from "./format/pretty.js";
 import { lint, lintRequests, lintSchema, summarize } from "./lint.js";
-import { pointerMover } from "./moves.js";
+import { pointerMover, rewrappedRoot } from "./moves.js";
 import { expandPattern, isGlob } from "./glob.js";
 import { fixOpenApi, openApiInlineSchemas, openApiSchemas, withoutCopiedFindings } from "./openapi.js";
 import { displayPointer, resolvePointer } from "./pointer.js";
@@ -15,7 +15,7 @@ import { jsonRpcBatch, jsonRpcMessage, rewrap, unwrapAll } from "./unwrap.js";
 import type { JsonRpcMessage, UnwrappedSchema } from "./unwrap.js";
 import type { OpenApiSchema } from "./openapi.js";
 import { readYaml } from "./yaml.js";
-import type { YamlBlank, YamlComment, YamlLayout } from "./yaml.js";
+import type { YamlBlank, YamlComment, YamlFlow, YamlFold, YamlLayout } from "./yaml.js";
 import { stringifyYaml } from "./yaml-write.js";
 
 export interface CliIo {
@@ -530,6 +530,8 @@ async function planFix(file: string, request: FixRequest, io: CliIo): Promise<Pl
       // Most fixes move nothing, and a large file has an item of these for nearly every entry.
       const move = pointerMover(found.pointer, applied);
       if (move === undefined) continue;
+      const rewrapped = rewrappedRoot(found.pointer, applied);
+      if (rewrapped !== undefined) ({ flows: movedFlows, folds: movedFolds } = unwrapAround(rewrapped, movedFlows, movedFolds));
       moved = moved.map((comment) => follow(comment, move));
       movedBlanks = movedBlanks.map((blank) => follow(blank, move));
       movedFolds = movedFolds.map((folded) => follow(folded, move));
@@ -592,6 +594,32 @@ function follow<T extends { pointer: string | null }>(item: T, move: (pointer: s
   if (item.pointer === null) return item;
   const pointer = move(item.pointer);
   return pointer === item.pointer ? item : { ...item, pointer };
+}
+
+/**
+ * The flow collections and folded strings of a YAML file once a fix has moved the entries of the
+ * schema at `root` in under a new key, less the wraps of the outermost collection the file wrapped
+ * over lines that is that schema or holds it, and of every collection and string wrapped inside it.
+ * Their columns are all measured from where that collection's line starts, and none of the lines
+ * they describe stays as it was: the schema's entries move two levels deeper, and a collection
+ * around them would hold the wrapper, which no wrap of the file's describes and which it could only
+ * write on one line, since block style is no option inside a flow collection. Without them, that
+ * collection goes into block style, as it would had the file not wrapped it. What the file wrote on
+ * one line or spread one entry to a line inside it is kept, since that is measured from the line it
+ * opens on, wherever that ends up.
+ */
+function unwrapAround(root: string, flows: YamlFlow[], folds: YamlFold[]): { flows: YamlFlow[]; folds: YamlFold[] } {
+  const holds = (pointer: string, inner: string): boolean => inner === pointer || inner.startsWith(`${pointer}/`);
+  // An outer collection's pointer is a prefix of an inner one's, so the shortest is the outermost.
+  const [outer] = flows
+    .filter(({ pointer, wrap }) => wrap !== undefined && holds(pointer, root))
+    .map(({ pointer }) => pointer)
+    .sort((a, b) => a.length - b.length);
+  if (outer === undefined) return { flows, folds };
+  return {
+    flows: flows.filter(({ pointer, wrap }) => wrap === undefined || !holds(outer, pointer)),
+    folds: folds.filter(({ pointer, indent }) => indent === undefined || !holds(outer, pointer)),
+  };
 }
 
 /** Whether the entry a comment or an empty line belongs to is still in the rewritten document. */

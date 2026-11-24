@@ -42,6 +42,16 @@ export function pointerMover(schema: string, applied: AppliedFix): ((pointer: st
   };
 }
 
+/**
+ * The pointer of the schema whose entries `applied`, a fix to the schema at `schema`, moves in
+ * under a new key, which is the root `openai/root-object` wraps, or undefined for any other fix.
+ * No line a file wrote that schema on stays as it was: every entry that says what it accepts ends
+ * up nested two levels deeper, and its definitions and document keywords stay behind.
+ */
+export function rewrappedRoot(schema: string, applied: AppliedFix): string | undefined {
+  return applied.ruleId === "openai/root-object" ? schema + applied.path : undefined;
+}
+
 function renamed(pointer: string, from: string, to: string): string {
   return pointer === from || pointer.startsWith(`${from}/`) ? to + pointer.slice(from.length) : pointer;
 }

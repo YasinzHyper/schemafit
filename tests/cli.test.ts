@@ -1032,6 +1032,83 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write writes a root openai/root-object wraps in block style where PyYAML wrote the schema as one flow mapping", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tickets.yaml");
+    // What yaml.safe_dump(schema, default_flow_style=True, sort_keys=False) writes.
+    await writeFile(
+      file,
+      `{type: array, description: 'The tickets found in the thread, oldest first.', items: {
+    type: object, properties: {title: {type: string, description: 'A one-line summary
+          of the ticket, written for the queue.'}, status: {type: string, enum: [
+          open, pending, closed]}, tags: {type: array, items: {type: string}, maxItems: 5}},
+    required: [title, status]}}
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    // The wrap moves every entry two levels deeper, so no line of the file could stay as it was,
+    // and the wrapper, which the file has no lines for, does not go on one line of its own.
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  result:
+    type: array
+    description: The tickets found in the thread, oldest first.
+    items:
+      type: object
+      properties:
+        title:
+          type: string
+          description: A one-line summary of the ticket, written for the queue.
+        status:
+          type: string
+          enum: [open, pending, closed]
+        tags: {type: [array, "null"], items: {type: string}, maxItems: 5}
+      required: [title, status, tags]
+      additionalProperties: false
+required: [result]
+additionalProperties: false
+`);
+  });
+
+  it("--fix --write writes the flow collections around a root openai/root-object wraps in block style too", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    // What yaml.safe_dump(tool, default_flow_style=True, sort_keys=False) writes for a Responses
+    // function tool. Inside the flow mapping around it, the wrapper could only go on one line.
+    await writeFile(
+      file,
+      `{type: function, name: find_tickets, description: Find the tickets a thread mentions.,
+  parameters: {type: array, description: 'The tickets found in the thread, oldest
+      first.', items: {type: object, properties: {title: {type: string}, status: {
+          type: string, enum: [open, pending, closed]}}, required: [title, status]}}}
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`type: function
+name: find_tickets
+description: Find the tickets a thread mentions.
+parameters:
+  type: object
+  properties:
+    result:
+      type: array
+      description: The tickets found in the thread, oldest first.
+      items:
+        type: object
+        properties:
+          title: {type: string}
+          status:
+            type: string
+            enum: [open, pending, closed]
+        required: [title, status]
+        additionalProperties: false
+  required: [result]
+  additionalProperties: false
+`);
+  });
+
   it("--fix --write keeps the empty lines that keep two tool definitions apart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tools.yaml");

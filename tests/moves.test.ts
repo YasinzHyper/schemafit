@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { movedPointer, pointerMover } from "../src/moves.js";
+import { movedPointer, pointerMover, rewrappedRoot } from "../src/moves.js";
 
 const rename = { ruleId: "openai/no-one-of", provider: "openai", path: "/properties/status", title: "" } as const;
 const wrap = { ruleId: "openai/root-object", provider: "openai", path: "", title: "" } as const;
@@ -62,5 +62,13 @@ describe("pointerMover", () => {
     expect(wrapped?.("/tools/0/input_schema/type")).toBe("/tools/0/input_schema/properties/result/type");
     expect(wrapped?.("/tools/0/input_schema/$defs/tag")).toBe("/tools/0/input_schema/$defs/tag");
     expect(wrapped?.("/tools/1/input_schema/type")).toBe("/tools/1/input_schema/type");
+  });
+});
+
+describe("rewrappedRoot", () => {
+  it("names the root openai/root-object wraps, inside a larger document too, and nothing for any other fix", () => {
+    expect(rewrappedRoot("", wrap)).toBe("");
+    expect(rewrappedRoot("/tools/0/input_schema", wrap)).toBe("/tools/0/input_schema");
+    expect(rewrappedRoot("", rename)).toBeUndefined();
   });
 });
