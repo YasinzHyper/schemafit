@@ -628,6 +628,37 @@ describe("fix", () => {
     expect(applied[0]?.title).toBe('Add kind, at to "required".');
   });
 
+  it("lists null in the enum of a property it makes nullable, which the enum would otherwise rule out", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          unit: { type: "string", enum: ["F", "C"], description: "The unit." },
+          level: { type: "integer", enum: [1, 2, null] },
+          name: { type: "string" },
+          scale: { type: ["string", "null"], enum: ["K", "R"] },
+        },
+        required: [],
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      unit: { type: ["string", "null"], enum: ["F", "C", null], description: "The unit." },
+      level: { type: ["integer", "null"], enum: [1, 2, null] },
+      name: { type: ["string", "null"] },
+      // Already nullable by its type, as the docs' optional-parameter example spells it, so left as written.
+      scale: { type: ["string", "null"], enum: ["K", "R"] },
+    });
+    expect(Object.keys(schema.properties as object)).toEqual(["unit", "level", "name", "scale"]);
+    expect(Object.keys((schema.properties as Record<string, object>).unit as object)).toEqual(["type", "enum", "description"]);
+    expect(applied[0]?.title).toBe(
+      'Add unit, level, name, scale to "required", and "null" to the type of unit, level, name, and to the enum of unit.',
+    );
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
   it("requires properties of nested objects and definitions too", () => {
     const { schema } = fix(
       {

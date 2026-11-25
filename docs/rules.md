@@ -46,6 +46,8 @@ The root schema must be an object and must not use anyOf.
 
 Every key in "properties" must be listed in "required".
 
+> The fix keeps a property optional the way the docs do, by letting it be null: a "type" gains "null", an "anyOf" gains a { "type": "null" } branch, and a "$ref" is wrapped in an "anyOf" with one. An "enum" beside the type gains null too, as the docs' moderation example lists it, because the enum still applies beside a "type" array and would otherwise rule null out. A property with no type to extend, a bare "enum" or "const", is required as it is, and the fix title names only the properties it made nullable.
+
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>

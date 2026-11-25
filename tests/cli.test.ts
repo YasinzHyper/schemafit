@@ -731,6 +731,28 @@ additionalProperties: false
     expect((await cli(["-p", "openai", file])).code).toBe(0);
   });
 
+  it("--fix --write lists the null a fix adds to an enum in a YAML file as a null, not as a string", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      "type: object\nproperties:\n  status:\n    type: string\n    enum: [open, closed]\nrequired: []\nadditionalProperties: false\n",
+    );
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", file]);
+    expect(code).toBe(0);
+    expect(stderr).toContain('Add status to "required", and "null" to the type of status, and to the enum of status.');
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  status:
+    type: [string, "null"]
+    enum: [open, closed, null]
+required: [status]
+additionalProperties: false
+`);
+    expect((await cli(["-p", "openai", file])).code).toBe(0);
+  });
+
   it("--fix --write keeps each sequence of a YAML file as the file wrote it, where it writes them both ways", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");

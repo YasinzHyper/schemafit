@@ -417,6 +417,33 @@ describe("fixOpenApi", () => {
     ]);
   });
 
+  it("lists null in the enum of a property a fix makes nullable in an OpenAPI 3.0 document, where nullable alone would not allow it", () => {
+    const shirt = {
+      type: "object",
+      properties: {
+        size: { type: "string", enum: ["S", "M"] },
+        color: { type: "string", nullable: true, enum: ["red", "blue"] },
+      },
+      additionalProperties: false,
+    };
+    const document = openApi({ Shirt: shirt }, "3.0.3");
+    const { document: fixed, components } = fixOpenApi(document, { providers: ["openai"] });
+    expect((fixed as { components: { schemas: unknown } }).components.schemas).toEqual({
+      Shirt: {
+        type: "object",
+        properties: {
+          size: { type: "string", nullable: true, enum: ["S", "M", null] },
+          color: { type: "string", nullable: true, enum: ["red", "blue"] },
+        },
+        additionalProperties: false,
+        required: ["size", "color"],
+      },
+    });
+    expect(components[0]?.applied.map((item) => item.title)).toEqual([
+      'Add size, color to "required", and "null" to the type of size, and to the enum of size.',
+    ]);
+  });
+
   it("writes the null branch a fix adds as a nullable string that allows only null in an OpenAPI 3.0 document", () => {
     const owner = {
       type: "object",

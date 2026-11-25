@@ -110,11 +110,20 @@ const rootObject: Rule = {
  * under strict mode: "You can denote optional fields by adding `null` as a `type` option."
  * A schema with nothing to extend — a bare `enum`, a `const`, an empty schema — is
  * returned unchanged, because there is no documented way to make it nullable.
+ *
+ * An `enum` beside the type gains `null` as well. It still applies beside a `type` array, so
+ * `{ "type": ["string", "null"], "enum": ["F", "C"] }` allows "F" and "C" and nothing else to
+ * a JSON Schema validator. The docs' moderation example lists it in both places:
+ * `"type": ["string", "null"], "enum": ["violence", "sexual", "self_harm", null]`.
  */
 function nullable(schema: JsonSchema): JsonSchema {
   const types = typesOf(schema);
   if (types.includes("null")) return schema;
-  if (types.length > 0) return { ...schema, type: [...types, "null"] };
+  if (types.length > 0) {
+    const widened: JsonSchema = { ...schema, type: [...types, "null"] };
+    if (Array.isArray(schema.enum) && !schema.enum.includes(null)) widened.enum = [...schema.enum, null];
+    return widened;
+  }
 
   if (Array.isArray(schema.anyOf)) {
     const branches = schema.anyOf;
@@ -142,6 +151,12 @@ const allRequired: Rule = {
   ...meta("all-required", {
     severity: "error",
     summary: 'Every key in "properties" must be listed in "required".',
+    notes:
+      'The fix keeps a property optional the way the docs do, by letting it be null: a "type" gains "null", an ' +
+      '"anyOf" gains a { "type": "null" } branch, and a "$ref" is wrapped in an "anyOf" with one. An "enum" beside ' +
+      'the type gains null too, as the docs\' moderation example lists it, because the enum still applies beside a ' +
+      '"type" array and would otherwise rule null out. A property with no type to extend, a bare "enum" or ' +
+      '"const", is required as it is, and the fix title names only the properties it made nullable.',
   }),
   fixable: true,
   check(ctx) {
@@ -156,16 +171,19 @@ const allRequired: Rule = {
         const property = properties[key];
         return isJsonSchema(property) && nullable(property) !== property;
       });
+      const enums = nullified.filter((key) => {
+        const property = properties[key] as JsonSchema;
+        return nullable(property).enum !== property.enum;
+      });
+      const typed = nullified.length > 0 ? `, and "null" to the type of ${nullified.join(", ")}` : "";
+      const listed = enums.length > 0 ? `, and to the enum of ${enums.join(", ")}` : "";
 
       ctx.report({
         path: node.path,
         message: `Properties missing from "required": ${missing.join(", ")}.`,
         hint: 'Add them to "required". To keep a field optional, make it nullable: "type": ["string", "null"].',
         fix: {
-          title:
-            nullified.length > 0
-              ? `Add ${missing.join(", ")} to "required", and "null" to the type of ${nullified.join(", ")}.`
-              : `Add ${missing.join(", ")} to "required".`,
+          title: `Add ${missing.join(", ")} to "required"${typed}${listed}.`,
           rewrite(schema) {
             const current = schema.properties;
             if (!isJsonSchema(current)) return schema;
