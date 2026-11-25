@@ -40,7 +40,7 @@ The root schema must be an object and must not use anyOf.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/all-required
 
@@ -51,7 +51,7 @@ Every key in "properties" must be listed in "required".
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/additional-properties-false
 
@@ -60,7 +60,7 @@ Every object must set "additionalProperties": false.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/unsupported-composition
 
@@ -71,7 +71,7 @@ allOf, not, dependentRequired, dependentSchemas, if, then, and else are not supp
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/no-one-of
 
@@ -82,7 +82,7 @@ Unions must use "anyOf"; "oneOf" is not supported.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/unsupported-format
 
@@ -93,7 +93,7 @@ String "format" must be one of the documented formats.
 - Severity: **error**
 - Fixable: **yes**, with `--fix`
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/undocumented-keyword
 
@@ -103,7 +103,7 @@ Validation keywords absent from the documented per-type keyword lists.
 
 - Severity: **warn**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/nesting-depth
 
@@ -113,7 +113,7 @@ A schema may have up to 10 levels of nesting.
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/max-properties
 
@@ -121,7 +121,7 @@ A schema may have up to 5000 object properties in total.
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/enum-limits
 
@@ -129,7 +129,7 @@ Up to 1000 enum values in total; an enum with more than 250 string values may to
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ### openai/string-budget
 
@@ -137,7 +137,7 @@ Property names, definition names, enum values, and const values may total at mos
 
 - Severity: **error**
 - Source: <https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas>
-- Last verified: 2026-10-23
+- Last verified: 2026-11-25
 
 ## Anthropic
 
