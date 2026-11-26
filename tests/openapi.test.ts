@@ -444,6 +444,22 @@ describe("fixOpenApi", () => {
     ]);
   });
 
+  it("types a bare enum a fix makes nullable in an OpenAPI 3.0 document, so nullable has a type to take effect beside", () => {
+    const document = openApi({ Shirt: { type: "object", properties: { fit: { enum: ["slim", "loose"] } }, additionalProperties: false } }, "3.0.3");
+    const { document: fixed, components } = fixOpenApi(document, { providers: ["openai"] });
+    expect((fixed as { components: { schemas: unknown } }).components.schemas).toEqual({
+      Shirt: {
+        type: "object",
+        properties: { fit: { type: "string", nullable: true, enum: ["slim", "loose", null] } },
+        additionalProperties: false,
+        required: ["fit"],
+      },
+    });
+    expect(components[0]?.applied.map((item) => item.title)).toEqual([
+      'Add fit to "required", and "null" to the type of fit, and to the enum of fit, typing fit by its values.',
+    ]);
+  });
+
   it("writes the null branch a fix adds as a nullable string that allows only null in an OpenAPI 3.0 document", () => {
     const owner = {
       type: "object",

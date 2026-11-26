@@ -40,6 +40,23 @@ describe("movedPointer", () => {
     expect(movedPointer("/uniqueItems", "", removed)).toBe("/uniqueItems");
   });
 
+  it("follows the entries a fix names in its renames, and only those", () => {
+    const literal = {
+      ruleId: "openai/all-required",
+      provider: "openai",
+      path: "/properties/shape",
+      title: "",
+      renames: [["/properties/kind/const", "/properties/kind/enum"]],
+    } as const;
+    expect(movedPointer("/tools/0/input_schema/properties/shape/properties/kind/const", "/tools/0/input_schema", literal)).toBe(
+      "/tools/0/input_schema/properties/shape/properties/kind/enum",
+    );
+    expect(movedPointer("/properties/shape/properties/kind/const", "", literal)).toBe("/properties/shape/properties/kind/enum");
+    expect(movedPointer("/properties/shape/properties/kind/type", "", literal)).toBe("/properties/shape/properties/kind/type");
+    expect(movedPointer("/properties/shape/properties/sides/const", "", literal)).toBe("/properties/shape/properties/sides/const");
+    expect(movedPointer("/properties/shape/properties/kind/constant", "", literal)).toBe("/properties/shape/properties/kind/constant");
+  });
+
   it("leaves a pointer alone for a fix that moves nothing", () => {
     const required = { ruleId: "openai/all-required", provider: "openai", path: "", title: "" } as const;
     expect(movedPointer("/properties/a/oneOf", "", required)).toBe("/properties/a/oneOf");

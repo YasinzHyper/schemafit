@@ -37,6 +37,12 @@ export interface SchemaFix {
    * the rest of the schema still needs it.
    */
   prunes?: readonly string[];
+  /**
+   * Entries the rewrite puts under another key, as `[from, to]` JSON Pointers from the subschema
+   * it rewrites: what sat at `from`, and everything under it, sits at `to` afterwards. Whatever
+   * points into the schema, such as a comment read off a YAML file, follows the entry there.
+   */
+  renames?: readonly (readonly [from: string, to: string])[];
 }
 
 export interface Finding {
@@ -186,6 +192,8 @@ export interface AppliedFix {
   /** JSON Pointer to the subschema that was rewritten, in the schema as it was then. */
   path: string;
   title: string;
+  /** The entries the rewrite put under another key, as `SchemaFix.renames` names them: from `path`. */
+  renames?: readonly (readonly [from: string, to: string])[];
 }
 
 export interface FixResult {

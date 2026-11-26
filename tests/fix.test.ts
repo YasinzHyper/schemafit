@@ -613,19 +613,100 @@ describe("fix", () => {
   });
 
   it("leaves a property it cannot make nullable alone, and says so in the title", () => {
+    const properties = {
+      kind: { enum: ["a", 1] },
+      // Already allows null, with no type to say so.
+      size: { enum: ["S", null] },
+      shape: { const: { sides: 3 } },
+      pick: { type: "string", const: "a", enum: ["a", "b"] },
+      at: { type: ["string", "null"] },
+    };
+    const { schema, applied } = fix(
+      { type: "object", additionalProperties: false, properties, required: [] },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual(properties);
+    expect(schema.required).toEqual(["kind", "size", "shape", "pick", "at"]);
+    expect(applied[0]?.title).toBe('Add kind, size, shape, pick, at to "required".');
+    expect(applied[0]).not.toHaveProperty("renames");
+  });
+
+  it("gives a bare enum the type its values share, so it can be made nullable", () => {
     const { schema, applied } = fix(
       {
         type: "object",
         additionalProperties: false,
-        properties: { kind: { enum: ["a", "b"] }, at: { type: ["string", "null"] } },
+        properties: {
+          category: { description: "What it is about.", enum: ["billing", "bug"] },
+          level: { enum: [1, 2, 3] },
+          weight: { enum: [1, 2.5] },
+          urgent: { enum: [true, false] },
+        },
         required: [],
       },
       { providers: ["openai"] },
     );
 
-    expect(schema.properties).toEqual({ kind: { enum: ["a", "b"] }, at: { type: ["string", "null"] } });
-    expect(schema.required).toEqual(["kind", "at"]);
-    expect(applied[0]?.title).toBe('Add kind, at to "required".');
+    expect(schema.properties).toEqual({
+      category: { description: "What it is about.", type: ["string", "null"], enum: ["billing", "bug", null] },
+      level: { type: ["integer", "null"], enum: [1, 2, 3, null] },
+      // An integer is a number too.
+      weight: { type: ["number", "null"], enum: [1, 2.5, null] },
+      urgent: { type: ["boolean", "null"], enum: [true, false, null] },
+    });
+    // The type goes where the enum stood, ahead of it, as the docs' examples order the two.
+    expect(Object.keys((schema.properties as Record<string, object>).category as object)).toEqual(["description", "type", "enum"]);
+    expect(applied[0]?.title).toBe(
+      'Add category, level, weight, urgent to "required", and "null" to the type of category, level, weight, urgent, ' +
+        "and to the enum of category, level, weight, urgent, typing category, level, weight, urgent by their values.",
+    );
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
+  });
+
+  it("writes a const as the enum of one value it stands for, which can list null where a const cannot", () => {
+    const { schema, applied } = fix(
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          // Zod 4.6's z.literal("circle").optional().
+          shape: { type: "string", const: "circle" },
+          // Pydantic 2.14's Literal["v2"] with a default.
+          version: { const: "v2", default: "v2", title: "Version", type: "string" },
+          sides: { const: 3 },
+          name: { type: "string" },
+        },
+        required: [],
+      },
+      { providers: ["openai"] },
+    );
+
+    expect(schema.properties).toEqual({
+      shape: { type: ["string", "null"], enum: ["circle", null] },
+      version: { enum: ["v2", null], default: "v2", title: "Version", type: ["string", "null"] },
+      sides: { type: ["integer", "null"], enum: [3, null] },
+      name: { type: ["string", "null"] },
+    });
+    // Each keyword stays where the property had it: the enum where the const was.
+    expect(Object.keys((schema.properties as Record<string, object>).version as object)).toEqual(["enum", "default", "title", "type"]);
+    expect(applied).toEqual([
+      {
+        ruleId: "openai/all-required",
+        provider: "openai",
+        path: "",
+        title:
+          'Add shape, version, sides, name to "required", and "null" to the type of shape, version, sides, name, ' +
+          'and to the enum of shape, version, sides, writing the "const" of shape, version, sides as an "enum" ' +
+          "and typing sides by its values.",
+        renames: [
+          ["/properties/shape/const", "/properties/shape/enum"],
+          ["/properties/version/const", "/properties/version/enum"],
+          ["/properties/sides/const", "/properties/sides/enum"],
+        ],
+      },
+    ]);
+    expect(lint(schema, { providers: ["openai"] }).findings).toEqual([]);
   });
 
   it("lists null in the enum of a property it makes nullable, which the enum would otherwise rule out", () => {
