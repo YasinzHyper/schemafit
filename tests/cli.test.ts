@@ -1476,6 +1476,41 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write carries a comment on a const over to the enum it is written as, and types a bare enum", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      "type: object\nproperties:\n  version:\n    type: string\n    # Bumped by hand.\n    const: v2 # the only one\n  kind:\n    const: note\n  status:\n    enum: [open, closed] # lowercase\n  pinned: # always sent\n    const: true\nrequired: [pinned]\nadditionalProperties: false\n",
+    );
+
+    const { code, stderr } = await cli(["--fix", "-p", "openai", "--write", file]);
+    expect(code).toBe(0);
+    expect(stderr).not.toContain("comment");
+    expect(stderr).toContain(
+      'Add version, kind, status to "required", and "null" to the type of version, kind, status, and to the enum of version, kind, status, writing the "const" of version, kind as an "enum" and typing kind, status by their values.',
+    );
+    // "pinned" is required already, so its const and the comment on it stay as they were.
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  version:
+    type: [string, "null"]
+    # Bumped by hand.
+    enum: [v2, null] # the only one
+  kind:
+    type: [string, "null"]
+    enum: [note, null]
+  status:
+    type: [string, "null"]
+    enum: [open, closed, null] # lowercase
+  pinned: # always sent
+    const: true
+required: [pinned, version, kind, status]
+additionalProperties: false
+`);
+    expect((await cli(["-p", "openai", file])).code).toBe(0);
+  });
+
   it("--fix --write carries the comments of a root it wraps into the wrapper, and keeps those of what stays at the root", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "list.yaml");

@@ -193,11 +193,13 @@ export function fixExcept(schema: unknown, options: FixOptions, held: ReadonlySe
       if (finding.path === "") current = rewritten;
       else if (!setPointer(current, finding.path, rewritten)) continue;
 
+      const { renames } = finding.fix;
       applied.push({
         ruleId: finding.ruleId,
         provider: finding.provider,
         path: finding.path,
         title: finding.fix.title,
+        ...(renames !== undefined && renames.length > 0 ? { renames } : {}),
       });
       changed = true;
 

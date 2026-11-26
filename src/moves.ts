@@ -2,8 +2,8 @@
  * Where a fix moved the entries of the subschema it rewrote, so what points into a schema — a
  * comment read off a YAML file — can follow the rewrite. A fix that folds a keyword into
  * `description` moves what was said about the keyword there, since that is where the constraint
- * now lives. A fix not named here leaves every entry it keeps where it was, or takes it out, and
- * a pointer to it is returned as it is.
+ * now lives, and one that lists `renames` moves the entries it names. A fix not named here leaves
+ * every entry it keeps where it was, or takes it out, and a pointer to it is returned as it is.
  */
 
 import { joinPointer, unescapeToken } from "./pointer.js";
@@ -26,6 +26,16 @@ export function movedPointer(pointer: string, schema: string, applied: AppliedFi
  */
 export function pointerMover(schema: string, applied: AppliedFix): ((pointer: string) => string) | undefined {
   const at = schema + applied.path;
+  if (applied.renames !== undefined && applied.renames.length > 0) {
+    const pairs = applied.renames.map(([from, to]) => [at + from, at + to] as const);
+    return (pointer) => {
+      // The first rename that holds the entry moves it, so no entry is moved twice.
+      for (const [from, to] of pairs) {
+        if (within(pointer, from)) return to + pointer.slice(from.length);
+      }
+      return pointer;
+    };
+  }
   const folded = foldedKeyword(applied.title);
   if (folded !== undefined) {
     const [from, to] = [joinPointer(at, folded), joinPointer(at, "description")];
@@ -52,6 +62,10 @@ export function rewrappedRoot(schema: string, applied: AppliedFix): string | und
   return applied.ruleId === "openai/root-object" ? schema + applied.path : undefined;
 }
 
+function within(pointer: string, entry: string): boolean {
+  return pointer === entry || pointer.startsWith(`${entry}/`);
+}
+
 function renamed(pointer: string, from: string, to: string): string {
-  return pointer === from || pointer.startsWith(`${from}/`) ? to + pointer.slice(from.length) : pointer;
+  return within(pointer, from) ? to + pointer.slice(from.length) : pointer;
 }

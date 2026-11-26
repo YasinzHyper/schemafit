@@ -1,3 +1,4 @@
+import { joinPointer } from "../pointer.js";
 import { inlinableRef, refOnly, resolveLocalRef } from "../refs.js";
 import type { JsonSchema, Provider, Rule, RuleMeta } from "../types.js";
 import { children, isJsonSchema, isObjectSchema, typesOf } from "../walk.js";
@@ -105,24 +106,74 @@ const rootObject: Rule = {
   },
 };
 
+/** The JSON Schema type of an `enum` or `const` value, or undefined for null, an object, or an array. */
+function scalarType(value: unknown): string | undefined {
+  if (typeof value === "string") return "string";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+  return undefined;
+}
+
+/**
+ * The one type all of `values` have, or undefined when they have none in common. An integer is a
+ * number too, so integers and other numbers share "number".
+ */
+function sharedType(values: readonly unknown[]): string | undefined {
+  const types = new Set(values.map(scalarType));
+  if (types.size === 0 || types.has(undefined)) return undefined;
+  if (types.size === 1) return [...types][0];
+  return types.size === 2 && types.has("integer") && types.has("number") ? "number" : undefined;
+}
+
+/** `schema` with its `key` entry replaced by `entries`, where `key` stood. */
+function replaceEntry(schema: JsonSchema, key: string, entries: JsonSchema): JsonSchema {
+  const replaced: JsonSchema = {};
+  for (const [name, value] of Object.entries(schema)) {
+    if (name === key) Object.assign(replaced, entries);
+    else replaced[name] = value;
+  }
+  return replaced;
+}
+
 /**
  * The same schema, also accepting null. This is how the docs keep a field optional
  * under strict mode: "You can denote optional fields by adding `null` as a `type` option."
- * A schema with nothing to extend — a bare `enum`, a `const`, an empty schema — is
- * returned unchanged, because there is no documented way to make it nullable.
+ * A schema with nothing to extend — an empty schema, an `enum` whose values share no type —
+ * is returned unchanged, because there is no documented way to make it nullable.
  *
  * An `enum` beside the type gains `null` as well. It still applies beside a `type` array, so
  * `{ "type": ["string", "null"], "enum": ["F", "C"] }` allows "F" and "C" and nothing else to
  * a JSON Schema validator. The docs' moderation example lists it in both places:
  * `"type": ["string", "null"], "enum": ["violence", "sexual", "self_harm", null]`.
+ *
+ * Every `enum` in the docs sits beside a `type`, so a bare one is given the type its values
+ * share. A `const` is written as the `enum` of one value it stands for, which is how the docs
+ * spell a literal (`"status": { "type": "string", "enum": ["success"] }`), because `null` cannot
+ * be added to a `const`. Only a scalar `const` is: one holding an object or an array has entries
+ * of its own, which would move to a different place inside the `enum`.
  */
 function nullable(schema: JsonSchema): JsonSchema {
   const types = typesOf(schema);
   if (types.includes("null")) return schema;
+
+  if ("const" in schema) {
+    const type = scalarType(schema.const);
+    if (type === undefined || "enum" in schema) return schema;
+    const literal = { enum: [schema.const, null] };
+    if (types.length > 0) return replaceEntry({ ...schema, type: [...types, "null"] }, "const", literal);
+    return replaceEntry(schema, "const", { type: [type, "null"], ...literal });
+  }
+
   if (types.length > 0) {
     const widened: JsonSchema = { ...schema, type: [...types, "null"] };
     if (Array.isArray(schema.enum) && !schema.enum.includes(null)) widened.enum = [...schema.enum, null];
     return widened;
+  }
+
+  if (Array.isArray(schema.enum)) {
+    const type = sharedType(schema.enum);
+    if (type === undefined) return schema;
+    return replaceEntry(schema, "enum", { type: [type, "null"], enum: [...schema.enum, null] });
   }
 
   if (Array.isArray(schema.anyOf)) {
@@ -155,8 +206,11 @@ const allRequired: Rule = {
       'The fix keeps a property optional the way the docs do, by letting it be null: a "type" gains "null", an ' +
       '"anyOf" gains a { "type": "null" } branch, and a "$ref" is wrapped in an "anyOf" with one. An "enum" beside ' +
       'the type gains null too, as the docs\' moderation example lists it, because the enum still applies beside a ' +
-      '"type" array and would otherwise rule null out. A property with no type to extend, a bare "enum" or ' +
-      '"const", is required as it is, and the fix title names only the properties it made nullable.',
+      '"type" array and would otherwise rule null out. Every enum in the docs sits beside a "type", so a bare ' +
+      '"enum" is given the type its values share. A "const" is written as the "enum" of one value it stands for, ' +
+      'the way the docs spell a literal, since null cannot be added to a "const". A property with no type to ' +
+      'extend or derive, such as an "enum" whose values share none or a "const" holding an object, is required as ' +
+      "it is, and the fix title names only the properties it made nullable.",
   }),
   fixable: true,
   check(ctx) {
@@ -167,23 +221,36 @@ const allRequired: Rule = {
       if (missing.length === 0) continue;
 
       // Naming the keys the fix can keep optional keeps its title true to what it does.
-      const nullified = missing.filter((key) => {
-        const property = properties[key];
-        return isJsonSchema(property) && nullable(property) !== property;
-      });
-      const enums = nullified.filter((key) => {
-        const property = properties[key] as JsonSchema;
-        return nullable(property).enum !== property.enum;
-      });
+      const made: Array<{ key: string; before: JsonSchema; after: JsonSchema }> = [];
+      for (const key of missing) {
+        const before = properties[key];
+        if (!isJsonSchema(before)) continue;
+        const after = nullable(before);
+        if (after !== before) made.push({ key, before, after });
+      }
+      const pick = (test: (before: JsonSchema, after: JsonSchema) => boolean): string[] =>
+        made.filter(({ before, after }) => test(before, after)).map(({ key }) => key);
+      const nullified = pick(() => true);
+      const enums = pick((before, after) => after.enum !== before.enum);
+      const literals = pick((before, after) => "const" in before && !("const" in after));
+      const typeless = pick((before, after) => typesOf(before).length === 0 && typesOf(after).length > 0);
+
       const typed = nullified.length > 0 ? `, and "null" to the type of ${nullified.join(", ")}` : "";
       const listed = enums.length > 0 ? `, and to the enum of ${enums.join(", ")}` : "";
+      const how = [
+        literals.length > 0 ? `writing the "const" of ${literals.join(", ")} as an "enum"` : "",
+        typeless.length > 0 ? `typing ${typeless.join(", ")} by ${typeless.length === 1 ? "its" : "their"} values` : "",
+      ].filter((part) => part !== "");
+      const tail = how.length > 0 ? `, ${how.join(" and ")}` : "";
 
       ctx.report({
         path: node.path,
         message: `Properties missing from "required": ${missing.join(", ")}.`,
         hint: 'Add them to "required". To keep a field optional, make it nullable: "type": ["string", "null"].',
         fix: {
-          title: `Add ${missing.join(", ")} to "required"${typed}${listed}.`,
+          title: `Add ${missing.join(", ")} to "required"${typed}${listed}${tail}.`,
+          // A comment on a "const" goes with it to the "enum" it becomes.
+          renames: literals.map((key) => [joinPointer("", "properties", key, "const"), joinPointer("", "properties", key, "enum")]),
           rewrite(schema) {
             const current = schema.properties;
             if (!isJsonSchema(current)) return schema;
