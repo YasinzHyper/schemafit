@@ -873,7 +873,7 @@ properties:
   title: {type: string} # one line
   priority:
     type: [integer, "null"]
-    description: "1 is a question, 5 is an outage."
+    description: 1 is a question, 5 is an outage.
 required: [title, priority] # priority is optional
 additionalProperties: false
 `);
