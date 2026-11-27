@@ -21,8 +21,10 @@
  * scalar continued before its closing quote for one the file wrapped in quotes, each on the
  * lines the file wrapped it on, a literal block scalar (`|`) for any other string over several
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
- * takes `yes` and `off` for booleans, and in PyYAML, which ends a plain scalar inside a flow
- * collection at a `?` — and double-quoted where it does not. What it writes is
+ * takes `yes` and `off` for booleans and `1_000`, `1:30`, and `2026-11-27` for numbers and dates,
+ * and in PyYAML, which ends a plain scalar inside a flow collection at a `?` — and double-quoted
+ * where it does not. A string that starts with a digit is one of them: `1 is a question` reads
+ * back as itself, and only a whole string that reads as a number or a date is quoted. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
  *
@@ -51,8 +53,12 @@ const INDENT = 2;
 /** How long a line may grow for a list of scalars to be written on it in flow style. */
 const FLOW_WIDTH = 80;
 
-/** What a plain scalar cannot start with: an indicator, a quote, or what a number starts with. */
-const PLAIN_START = /^[-?:,[\]{}#&*!|>'"%@`~=<+.0-9]/;
+/**
+ * What a plain scalar cannot start with: an indicator, a quote, or what a number starts with
+ * other than a digit. A string that starts with a digit is plain unless it reads as a number or
+ * a date, which `isPlain` asks of the string as a whole.
+ */
+const PLAIN_START = /^[-?:,[\]{}#&*!|>'"%@`~=<+.]/;
 /** The characters YAML asks to be escaped, or a reader may take for a line break. */
 const UNPRINTABLE = /[\0-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
 /** The same, less the tab and the line break a literal block scalar holds as they are. */
@@ -65,6 +71,17 @@ const UNPRINTABLE_IN_BLOCK = /[\0-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800
 const FLOW_BREAKS = /[,?[\]{}]/;
 /** The plain scalars YAML 1.1 resolves to a boolean, which 1.2 left as strings. */
 const YAML11_BOOLEANS = /^(y|Y|yes|Yes|YES|n|N|no|No|NO|on|On|ON|off|Off|OFF)$/;
+/**
+ * The plain scalars PyYAML's YAML 1.1 resolver reads as an integer, a float, or a timestamp,
+ * copied from its `resolver.py`: besides what the 1.2 core schema reads as a number, `1_000`,
+ * `0b101`, the octal `0755`, the base-60 `1:30`, and the dates `2026-11-27` and
+ * `2026-11-27 10:30:00`, which 1.2 left as strings.
+ */
+const YAML11_INT = /^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$/;
+const YAML11_FLOAT =
+  /^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$/;
+const YAML11_TIMESTAMP =
+  /^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)$/;
 
 /**
  * What to write besides the value: the comments, by the JSON Pointer of the entry each one
@@ -674,9 +691,22 @@ function scalar(text: string, key: boolean): string {
 }
 
 function isPlain(text: string, key: boolean): boolean {
-  if (text === "" || text !== text.trim() || UNPRINTABLE.test(text) || PLAIN_START.test(text)) return false;
-  if (text.includes(": ") || text.includes(" #") || text.endsWith(":") || YAML11_BOOLEANS.test(text)) return false;
+  if (!startsPlain(text) || readsAsOther(text)) return false;
   return readsBack(key ? `${text}: 0\n` : `k: ${text}\n`, key ? { [text]: 0 } : { k: text });
+}
+
+/**
+ * Whether a line can be, or start, a plain scalar: nothing it starts with reads as an indicator,
+ * and nothing in it as a comment or a key's colon. What the scalar then reads as is another question.
+ */
+function startsPlain(line: string): boolean {
+  if (line === "" || line !== line.trim() || UNPRINTABLE.test(line) || PLAIN_START.test(line)) return false;
+  return !line.includes(": ") && !line.includes(" #") && !line.endsWith(":");
+}
+
+/** Whether a YAML 1.1 reader takes the plain scalar `text` for something other than a string. */
+function readsAsOther(text: string): boolean {
+  return YAML11_BOOLEANS.test(text) || YAML11_INT.test(text) || YAML11_FLOAT.test(text) || YAML11_TIMESTAMP.test(text);
 }
 
 /**
@@ -745,8 +775,10 @@ function foldedBlock(text: string, wrapped: readonly string[]): { header: string
  */
 function plainLines(text: string, wrapped: readonly string[], start: number, indent: number): string[] | undefined {
   const [first = ""] = wrapped;
-  // What the first line starts with is read as an indicator, which `- ` would make a sequence of under a dash.
-  if (wrapped.length < 2 || !isPlain(first, false) || UNPRINTABLE_IN_BLOCK.test(text)) return undefined;
+  // What the first line starts with is read as an indicator, which `- ` would make a sequence of
+  // under a dash. What the scalar reads as is the folded string's to say, not its first line's:
+  // `1` over `(lowest) to 5 (highest).` is a string.
+  if (wrapped.length < 2 || !startsPlain(first) || readsAsOther(text) || UNPRINTABLE_IN_BLOCK.test(text)) return undefined;
   if (plainReadsAs(wrapped, text)) return [...wrapped];
   const before = plainValue(wrapped);
   if (before === undefined || !text.startsWith(`${before} `)) return undefined;

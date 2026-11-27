@@ -79,6 +79,41 @@ b: |-
     );
   });
 
+  it("writes a string that starts with a digit plain, unless the whole string reads as a number or a date", () => {
+    const value = {
+      priority: "1 is a question, 5 is an outage.",
+      currency: "3-letter ISO 4217 currency code",
+      "2fa": "1.0.0",
+      enum: ["1st", "2nd", "10"],
+    };
+    expect(stringifyYaml(value)).toBe(`priority: 1 is a question, 5 is an outage.
+currency: 3-letter ISO 4217 currency code
+2fa: 1.0.0
+enum: [1st, 2nd, "10"]
+`);
+  });
+
+  it.each([
+    // What the YAML 1.2 core schema, and so this reader, reads as a number.
+    ["10"],
+    ["1.5"],
+    ["1e3"],
+    ["0o17"],
+    ["0x1F"],
+    // What PyYAML's YAML 1.1 resolver reads as a number or a timestamp, and 1.2 as a string.
+    ["1_000"],
+    ["0755"],
+    ["0b101"],
+    ["1:30"],
+    ["190:20:30.15"],
+    ["2026-11-27"],
+    ["2026-11-27 10:30:00"],
+    ["2026-11-27T10:30:00Z"],
+  ])("quotes %s, which a plain scalar would not read back as", (text) => {
+    expect(stringifyYaml({ k: text })).toBe(`k: "${text}"\n`);
+    expect(stringifyYaml({ [text]: 0 })).toBe(`"${text}": 0\n`);
+  });
+
   it("quotes a list item that holds a comma or a bracket in flow style", () => {
     expect(stringifyYaml({ enum: ["a, b", "c]", "d"] })).toBe(`enum: ["a, b", "c]", d]\n`);
   });
@@ -868,6 +903,39 @@ tags:
   from the first match. Must be at least 1.
   Must be at most 50.
 `);
+  });
+
+  it("keeps a plain scalar a file wrapped after a first line that reads as a number on the lines it wrapped it on", () => {
+    // What yaml.safe_dump(schema, sort_keys=False) writes at width=60 for `rating` and at width=12
+    // for `short`: neither string is a number, so PyYAML leaves both plain.
+    const text = `rating:
+  type: integer
+  description: 1 (lowest) to 5 (highest), where 1 is a question
+    that can wait and 5 is an outage that cannot.
+short:
+  description: 1
+    (lowest) to
+    5 (highest).
+`;
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+
+    const description = "1 (lowest) to 5 (highest). Must be at least 1.";
+    expect(stringifyYaml({ short: { description } }, [], [], layout)).toBe(`short:
+  description: 1
+    (lowest) to
+    5 (highest).
+    Must be at
+    least 1.
+`);
+  });
+
+  it("writes a plain scalar the file wrapped that reads as a date once folded on one line, quoted", () => {
+    // yaml.safe_load reads the folded "2026-11-27 10:30:00" as a datetime, though neither line is one alone.
+    const text = "due:\n  description: 2026-11-27\n    10:30:00\n";
+    expect(parseYaml(text)).toEqual({ due: { description: "2026-11-27 10:30:00" } });
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(`due:\n  description: "2026-11-27 10:30:00"\n`);
   });
 
   it.each([
