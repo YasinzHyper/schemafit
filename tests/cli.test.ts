@@ -879,6 +879,45 @@ additionalProperties: false
 `);
   });
 
+  it("--fix --write leaves the descriptions of a YAML file that start with - or . plain, on the lines the file wrapped them on", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
+    const file = join(dir, "tool.yaml");
+    await writeFile(
+      file,
+      `type: object
+properties:
+  limit:
+    type: integer
+    description: -1 means no limit, 0 means
+      the server default.
+  exclude:
+    type: array
+    items: {type: string}
+    description: .env files are skipped either way.
+    examples:
+    - -node_modules
+required: [exclude]
+`,
+    );
+
+    expect((await cli(["--fix", "-p", "openai", "--write", file])).code).toBe(0);
+    expect(await readFile(file, "utf8")).toBe(`type: object
+properties:
+  limit:
+    type: [integer, "null"]
+    description: -1 means no limit, 0 means
+      the server default.
+  exclude:
+    type: array
+    items: {type: string}
+    description: .env files are skipped either way.
+    examples:
+    - -node_modules
+required: [exclude, limit]
+additionalProperties: false
+`);
+  });
+
   it("--fix --write keeps the flow mappings of a YAML file on their lines, changing only the ones a fix touches", async () => {
     const dir = await mkdtemp(join(tmpdir(), "schemafit-"));
     const file = join(dir, "tool.yaml");
