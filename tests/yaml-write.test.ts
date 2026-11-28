@@ -114,6 +114,83 @@ enum: [1st, 2nd, "10"]
     expect(stringifyYaml({ [text]: 0 })).toBe(`"${text}": 0\n`);
   });
 
+  it("writes a string that starts with -, +, or . plain, unless the whole string reads as a number", () => {
+    const value = {
+      limit: "-1 means no limit, 0 means the server default.",
+      glob: ".env files are skipped.",
+      score: "+1 for each match",
+      "-v": "--verbose",
+      ".hidden": "-0o17",
+      enum: ["-v", ".env", "+1", "-1"],
+    };
+    expect(stringifyYaml(value)).toBe(`limit: -1 means no limit, 0 means the server default.
+glob: .env files are skipped.
+score: +1 for each match
+-v: --verbose
+.hidden: -0o17
+enum: [-v, .env, "+1", "-1"]
+`);
+    expect(parseYaml(stringifyYaml(value))).toEqual(value);
+  });
+
+  it("writes a string that starts with - plain under a sequence's dash, where it still reads as one item", () => {
+    const value = { examples: [{ limit: 1 }, "-1 means no limit", "-v"], tail: ["--verbose", { a: 1 }] };
+    const written = stringifyYaml(value);
+    expect(written).toBe(`examples:
+  - limit: 1
+  - -1 means no limit
+  - -v
+tail:
+  - --verbose
+  - a: 1
+`);
+    expect(parseYaml(written)).toEqual(value);
+    expect(stringifyYaml(["-v", { a: 1 }])).toBe("- -v\n- a: 1\n");
+    expect(parseYaml("- -v\n- a: 1\n")).toEqual(["-v", { a: 1 }]);
+  });
+
+  it.each([
+    // A dash on its own, or before a space, is a sequence entry.
+    ["-"],
+    ["- x"],
+    ["-\tx"],
+    // What the YAML 1.2 core schema, and so this reader, reads as a number.
+    ["-1"],
+    ["+1"],
+    [".5"],
+    ["-.5"],
+    ["+1e3"],
+    [".5e3"],
+    [".inf"],
+    ["-.Inf"],
+    [".NaN"],
+    // What PyYAML's YAML 1.1 resolver reads as a number, and 1.2 as a string.
+    ["-0x1F"],
+    ["+1_000"],
+    ["-0b101"],
+    ["-1:30"],
+    [".5_0"],
+    // A document marker, which a key at the start of a line would be read as.
+    ["---"],
+    ["--- x"],
+    ["..."],
+    ["... x"],
+  ])("quotes %j, which starts with -, +, or . and a plain scalar would not read back as", (text) => {
+    expect(stringifyYaml({ k: text })).toBe(`k: ${JSON.stringify(text)}\n`);
+    expect(stringifyYaml({ [text]: 0 })).toBe(`${JSON.stringify(text)}: 0\n`);
+  });
+
+  it.each([
+    ["a description that starts with -", "limit:\n  description: -1 means no limit, 0 means\n    the server default.\n"],
+    ["one whose first line is a negative number on its own", "limit:\n  description: -1\n    means no limit.\n"],
+    ["one that starts with .", "glob:\n  description: .env files are skipped, and so is\n    everything under node_modules.\n"],
+    ["one inside a flow mapping", "glob: {type: string, description: .env files are skipped and so\n    is everything under node_modules.}\n"],
+    ["a sequence item", "examples:\n- -1 means no\n  limit\n- .env\n"],
+  ])("keeps %s wrapped where the file wrapped it", (_, text) => {
+    const { value, layout } = readYaml(text);
+    expect(stringifyYaml(value, [], [], layout)).toBe(text);
+  });
+
   it("quotes a list item that holds a comma or a bracket in flow style", () => {
     expect(stringifyYaml({ enum: ["a, b", "c]", "d"] })).toBe(`enum: ["a, b", "c]", d]\n`);
   });

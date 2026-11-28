@@ -23,8 +23,9 @@
  * lines, and every other string plain where it reads back as itself — in this reader and in a YAML 1.1 one, which
  * takes `yes` and `off` for booleans and `1_000`, `1:30`, and `2026-11-27` for numbers and dates,
  * and in PyYAML, which ends a plain scalar inside a flow collection at a `?` — and double-quoted
- * where it does not. A string that starts with a digit is one of them: `1 is a question` reads
- * back as itself, and only a whole string that reads as a number or a date is quoted. What it writes is
+ * where it does not. A string that starts with a digit, a `+`, a `.`, or a `-` that no space
+ * follows is one of them: `1 is a question` and `-1 means no limit` read back as themselves, and
+ * only a whole string that reads as a number or a date is quoted. What it writes is
  * read back before it is returned, and a value that would not come back as itself is an error
  * rather than a file that says something else.
  *
@@ -54,11 +55,19 @@ const INDENT = 2;
 const FLOW_WIDTH = 80;
 
 /**
- * What a plain scalar cannot start with: an indicator, a quote, or what a number starts with
- * other than a digit. A string that starts with a digit is plain unless it reads as a number or
- * a date, which `isPlain` asks of the string as a whole.
+ * What a plain scalar cannot start with: an indicator or a quote, and a `-` that a space follows
+ * or that stands alone, which reads as a sequence entry. YAML 1.2 lets a `-` that any other
+ * character follows start a plain scalar, and `+`, `.`, and a digit are not indicators at all,
+ * so a string that starts with one of those is plain unless it reads as a number or a date,
+ * which `isPlain` asks of the string as a whole.
  */
-const PLAIN_START = /^[-?:,[\]{}#&*!|>'"%@`~=<+.]/;
+const PLAIN_START = /^(?:[?:,[\]{}#&*!|>'"%@`~=<]|-(?:\s|$))/;
+/**
+ * The document markers, which start or end a document where a line starts with one and a space
+ * or the end of the line follows, as a key written at the start of a line would: `... x: 0` is
+ * an end marker to PyYAML, and not a key.
+ */
+const DOCUMENT_MARKER = /^(?:---|\.\.\.)(?:\s|$)/;
 /** The characters YAML asks to be escaped, or a reader may take for a line break. */
 const UNPRINTABLE = /[\0-\x1f\x7f-\x9f\u2028\u2029\ufeff\ud800-\udfff]/u;
 /** The same, less the tab and the line break a literal block scalar holds as they are. */
@@ -700,7 +709,9 @@ function isPlain(text: string, key: boolean): boolean {
  * and nothing in it as a comment or a key's colon. What the scalar then reads as is another question.
  */
 function startsPlain(line: string): boolean {
-  if (line === "" || line !== line.trim() || UNPRINTABLE.test(line) || PLAIN_START.test(line)) return false;
+  if (line === "" || line !== line.trim() || UNPRINTABLE.test(line) || PLAIN_START.test(line) || DOCUMENT_MARKER.test(line)) {
+    return false;
+  }
   return !line.includes(": ") && !line.includes(" #") && !line.endsWith(":");
 }
 
